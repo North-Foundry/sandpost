@@ -606,7 +606,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandpost-authorization"
+name = "sandpost-auth"
 version = "0.1.0"
 dependencies = [
  "sandpost-core",
