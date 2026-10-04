@@ -1,4 +1,3 @@
-//! Administrative permissions and mail visibility are deliberately separate.
 use sandpost_core::{Membership, MessageFacts, Role, ScopeIdentifier, ScopeTree, UserIdentifier};
 use sandpost_query::CompiledQuery;
 use std::collections::HashSet;

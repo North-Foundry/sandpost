@@ -15,7 +15,7 @@ sandpost-query = { path = "crates/sandpost-query" }
 sandpost-match = { path = "crates/sandpost-match" }
 sandpost-mail = { path = "crates/sandpost-mail" }
 sandpost-storage = { path = "crates/sandpost-storage" }
-sandpost-authorization = { path = "crates/sandpost-authorization" }
+sandpost-auth = { path = "crates/sandpost-auth" }
 sandpost-web = { path = "crates/sandpost-web" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
