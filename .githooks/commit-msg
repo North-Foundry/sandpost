@@ -1,0 +1,42 @@
+#!/bin/sh
+
+set -eu
+
+message_file=${1:?usage: commit-msg <commit-message-file>}
+subject=$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$message_file" | head -n 1)
+
+if [ -z "$subject" ]; then
+  echo "error: commit message is empty" >&2
+  exit 1
+fi
+
+# Let Git-generated history-management commits and autosquash commits through.
+case "$subject" in
+  Merge\ *|Revert\ *|fixup\!\ *|squash\!\ *)
+    exit 0
+    ;;
+esac
+
+if [ "${#subject}" -gt 72 ]; then
+  echo "error: commit subject exceeds 72 characters (${#subject})" >&2
+  exit 1
+fi
+
+pattern='^(feat|fix|docs|refactor|perf|test|build|ci|style|chore|revert)(\([a-z0-9]+([.-][a-z0-9]+)*\))?(!)?: [a-z0-9](.*[^.])?$'
+
+if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+  cat >&2 <<'EOF'
+error: invalid commit subject
+
+Expected: <type>(<optional-scope>)<optional-!>: <description>
+Example:  feat(parser): support qualified unit literals
+
+Allowed types: feat, fix, docs, refactor, perf, test, build, ci, style,
+               chore, revert
+Rules: description starts lowercase, kebab-case scope, no trailing period,
+       subject no longer than 72 characters
+EOF
+  exit 1
+fi
+
+exit 0

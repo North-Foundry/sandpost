@@ -1,0 +1,19 @@
+[package]
+name = "sandpost"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sandpost-core.workspace = true
+sandpost-match.workspace = true
+sandpost-mail.workspace = true
+sandpost-storage.workspace = true
+sandpost-api.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "sandpost-match"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sandpost-core.workspace = true
+sandpost-query.workspace = true
+thiserror.workspace = true
