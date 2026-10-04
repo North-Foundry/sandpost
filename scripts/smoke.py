@@ -113,8 +113,8 @@ def main():
                 with urllib.request.urlopen(server_address + f'/api/v1/messages/{message_identifier}/raw') as downloaded:
                     assert downloaded.read() == raw_message
                 with sqlite3.connect(Path(data_directory) / 'sandpost.sqlite3') as database_connection:
-                    assert database_connection.execute('select count(*) from messages').fetchone()[0] == 1
-                    assert database_connection.execute('select count(*) from message_scope').fetchone()[0] == 1
+                    assert database_connection.execute('select count(*) from mail').fetchone()[0] == 1
+                    assert database_connection.execute('select count(*) from mail_scope').fetchone()[0] == 1
                     assert database_connection.execute('pragma user_version').fetchone()[0] >= 1
                     assert database_connection.execute('pragma journal_mode').fetchone()[0] == 'wal'
                 assert fetch_response_data(f"/api/v1/messages?before={message_rows[0]['seq']}") == []
