@@ -1,3 +1,5 @@
+//! Parse typed application settings from environment values.
+
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Debug)]
