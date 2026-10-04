@@ -85,7 +85,10 @@ pub fn parse_message(
                 filename: part.attachment_name().map(str::to_owned),
                 content_type,
                 size: attachment_bytes.len() as u64,
-                content_hash: format!("{:x}", Sha256::digest(attachment_bytes)),
+                content_hash: Sha256::digest(attachment_bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
             }
         })
         .collect::<Vec<_>>();
