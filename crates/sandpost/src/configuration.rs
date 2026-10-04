@@ -26,7 +26,7 @@ impl Configuration {
         Self::from_values(|setting_name| std::env::var(setting_name).ok())
     }
     /// Parse settings from a supplied lookup closure, using local defaults when absent.
-    fn from_values(
+    pub(crate) fn from_values(
         environment_value: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, ConfigurationError> {
         let parse_socket_address = |setting_name, default_address: &str| {

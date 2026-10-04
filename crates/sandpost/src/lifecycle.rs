@@ -1,10 +1,10 @@
 //! Bind, supervise, and drain the HTTP and SMTP transport tasks.
 
-use crate::{configuration::Configuration, ingestion::capture_message};
+use crate::{configuration::Configuration, ingestion::capture_message, startup::StartupSummary};
 use sandpost_match::Matcher;
 use sandpost_storage::Storage;
 use sandpost_web::ApplicationState;
-use std::{error::Error, sync::Arc};
+use std::{error::Error, io::Write, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{broadcast, watch},
@@ -23,7 +23,18 @@ pub(crate) async fn serve(
     });
     let web_listener = TcpListener::bind(application_configuration.web_listen_address).await?;
     let mail_listener = TcpListener::bind(application_configuration.mail_listen_address).await?;
-    tracing::info!(web = %web_listener.local_addr()?, mail = %mail_listener.local_addr()?, database = %application_configuration.database_path.display(), "Sand Post ready (local development, no authentication)");
+    let startup_summary = StartupSummary {
+        configuration: application_configuration,
+        mail_listen_address: mail_listener.local_addr()?,
+        web_listen_address: web_listener.local_addr()?,
+    };
+    tracing::debug!(web = %startup_summary.web_listen_address, mail = %startup_summary.mail_listen_address, "listeners initialized");
+    // Storage bootstrap and both binds have succeeded; output errors still fail startup.
+    {
+        let mut startup_output = std::io::stdout().lock();
+        write!(startup_output, "{startup_summary}")?;
+        startup_output.flush()?;
+    }
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let web_shutdown_receiver = shutdown_receiver.clone();
     let mut web_server_task = tokio::spawn(async move {
