@@ -1,5 +1,5 @@
 [package]
-name = "sandpost-auth"
+name = "sandpost-authorization"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

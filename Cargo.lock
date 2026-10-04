@@ -588,11 +588,11 @@ name = "sandpost"
 version = "0.1.0"
 dependencies = [
  "axum",
- "sandpost-api",
  "sandpost-core",
  "sandpost-mail",
  "sandpost-match",
  "sandpost-storage",
+ "sandpost-web",
  "thiserror",
  "tokio",
  "tracing",
@@ -601,23 +601,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandpost-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "http-body-util",
- "sandpost-core",
- "sandpost-storage",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tower",
- "tracing",
-]
-
-[[package]]
-name = "sandpost-auth"
+name = "sandpost-authorization"
 version = "0.1.0"
 dependencies = [
  "sandpost-core",
@@ -672,6 +656,22 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "sandpost-web"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "sandpost-core",
+ "sandpost-storage",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
