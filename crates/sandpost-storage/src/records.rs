@@ -1,5 +1,6 @@
 //! Public message summaries and validated database row decoding.
-use crate::StorageError;
+use crate::{StorageError, mail_parts::load_recipients};
+use rusqlite::Connection;
 use sandpost_core::{MessageIdentifier, MessageSequence};
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,7 @@ pub struct MessageSummary {
     pub attachment_count: u64,
 }
 
-pub(crate) type StoredSummary = (i64, String, String, String, String, i64, i64, i64);
+pub(crate) type StoredSummary = (i64, String, String, i64, i64, i64);
 
 /// Read the selected summary columns in their stable query order.
 pub(crate) fn summary_row(database_row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSummary> {
@@ -28,26 +29,36 @@ pub(crate) fn summary_row(database_row: &rusqlite::Row<'_>) -> rusqlite::Result<
         database_row.get(3)?,
         database_row.get(4)?,
         database_row.get(5)?,
-        database_row.get(6)?,
-        database_row.get(7)?,
     ))
 }
 
-/// Convert a stored summary row to domain values, validating numeric and serialized fields.
-pub(crate) fn decode_summary(
-    (sequence, identifier, subject, from, to, received_at, size, attachment_count): StoredSummary,
-) -> Result<MessageSummary, StorageError> {
-    Ok(MessageSummary {
-        sequence: MessageSequence(u64::try_from(sequence).map_err(|_| StorageError::IntegerRange)?),
-        identifier: parse_identifier(&identifier)?,
-        subject,
-        from: serde_json::from_str(&from)?,
-        to: serde_json::from_str(&to)?,
-        received_at,
-        size: u64::try_from(size).map_err(|_| StorageError::IntegerRange)?,
-        attachment_count: u64::try_from(attachment_count)
-            .map_err(|_| StorageError::IntegerRange)?,
-    })
+/// Decode scalar summaries and read their mailbox relations together without fetching mail bodies.
+pub(crate) fn decode_summaries(
+    connection: &Connection,
+    rows: Vec<StoredSummary>,
+) -> Result<Vec<MessageSummary>, StorageError> {
+    let sequences: Vec<_> = rows.iter().map(|row| row.0).collect();
+    let mut recipients = load_recipients(connection, &sequences)?;
+    rows.into_iter()
+        .map(
+            |(sequence, identifier, subject, received_at, size, attachment_count)| {
+                let mailboxes = recipients.remove(&sequence).unwrap_or_default();
+                Ok(MessageSummary {
+                    sequence: MessageSequence(
+                        u64::try_from(sequence).map_err(|_| StorageError::IntegerRange)?,
+                    ),
+                    identifier: parse_identifier(&identifier)?,
+                    subject,
+                    from: mailboxes.from,
+                    to: mailboxes.to,
+                    received_at,
+                    size: u64::try_from(size).map_err(|_| StorageError::IntegerRange)?,
+                    attachment_count: u64::try_from(attachment_count)
+                        .map_err(|_| StorageError::IntegerRange)?,
+                })
+            },
+        )
+        .collect()
 }
 
 /// Parse a stored identifier and preserve the invalid source value in the error.

@@ -3,7 +3,7 @@ use crate::{StorageError, schema};
 use rusqlite::{Connection, TransactionBehavior};
 
 pub(crate) const SCHEMA_VERSION: i64 = 1;
-pub(crate) const BASELINE_MIGRATIONS: [(&str, &str); 9] = [
+pub(crate) const BASELINE_MIGRATIONS: [(&str, &str); 10] = [
     (
         "0001_create_migrations_table.sql",
         include_str!("../migrations/0001_create_migrations_table.sql"),
@@ -25,20 +25,24 @@ pub(crate) const BASELINE_MIGRATIONS: [(&str, &str); 9] = [
         include_str!("../migrations/0005_create_inboxes_table.sql"),
     ),
     (
-        "0006_create_messages_table.sql",
-        include_str!("../migrations/0006_create_messages_table.sql"),
+        "0006_create_mail_table.sql",
+        include_str!("../migrations/0006_create_mail_table.sql"),
     ),
     (
-        "0007_create_message_recipients_table.sql",
-        include_str!("../migrations/0007_create_message_recipients_table.sql"),
+        "0007_create_mail_recipients_table.sql",
+        include_str!("../migrations/0007_create_mail_recipients_table.sql"),
     ),
     (
-        "0008_create_message_headers_table.sql",
-        include_str!("../migrations/0008_create_message_headers_table.sql"),
+        "0008_create_mail_headers_table.sql",
+        include_str!("../migrations/0008_create_mail_headers_table.sql"),
     ),
     (
-        "0009_create_message_scope_table.sql",
-        include_str!("../migrations/0009_create_message_scope_table.sql"),
+        "0009_create_mail_scope_table.sql",
+        include_str!("../migrations/0009_create_mail_scope_table.sql"),
+    ),
+    (
+        "0010_create_mail_attachments_table.sql",
+        include_str!("../migrations/0010_create_mail_attachments_table.sql"),
     ),
 ];
 

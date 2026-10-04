@@ -1,7 +1,7 @@
 
 mod connection;
 mod error;
-mod message_indexes;
+mod mail_parts;
 mod messages;
 mod migrations;
 mod records;

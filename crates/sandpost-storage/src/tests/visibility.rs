@@ -23,7 +23,7 @@ fn pagination_scope_materialization_union_and_policy_guard() {
         .unwrap();
     let connection = storage.connection().unwrap();
     let count: i64 = connection
-        .query_row("SELECT count(*) FROM message_scope", [], |database_row| {
+        .query_row("SELECT count(*) FROM mail_scope", [], |database_row| {
             database_row.get(0)
         })
         .unwrap();
@@ -53,7 +53,7 @@ fn pagination_scope_materialization_union_and_policy_guard() {
     let connection = storage.connection().unwrap();
     let rows: i64 = connection
         .query_row(
-            "SELECT count(*) FROM message_scope WHERE scope_id=?1 AND policy_version=3",
+            "SELECT count(*) FROM mail_scope WHERE scope_identifier=?1 AND policy_version=3",
             [scope_one.identifier.to_string()],
             |database_row| database_row.get(0),
         )
