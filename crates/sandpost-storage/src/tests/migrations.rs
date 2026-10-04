@@ -1,5 +1,5 @@
 //! Regression coverage for baseline migration creation and schema validation.
-use super::message;
+use super::{message, normalized_message};
 use crate::{
     Storage, StorageError,
     migrations::{BASELINE_MIGRATIONS, SCHEMA_VERSION, migrate},
@@ -79,7 +79,7 @@ fn assert_migration_rolls_back(connection: &mut Connection) -> StorageError {
     migration_error
 }
 
-/// Fresh migration creates the exact nine-entry batch-one baseline and version one.
+/// Fresh migration creates the exact ten-entry batch-one baseline and version one.
 #[test]
 fn fresh_database_records_all_baseline_migrations_once() {
     let mut connection = Connection::open_in_memory().unwrap();
@@ -92,7 +92,7 @@ fn fresh_database_records_all_baseline_migrations_once() {
         .collect();
     expected.sort();
     assert_eq!(history, expected);
-    assert_eq!(history.len(), 9);
+    assert_eq!(history.len(), 10);
     assert_eq!(
         connection
             .pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
@@ -179,7 +179,7 @@ fn rejects_unknown_and_negative_schema_versions() {
 #[test]
 fn rejects_incomplete_or_modified_migration_history() {
     for history_change in [
-        "DELETE FROM migrations WHERE migration = '0009_create_message_scope_table.sql'",
+        "DELETE FROM migrations WHERE migration = '0010_create_mail_attachments_table.sql'",
         "UPDATE migrations SET batch = 2 WHERE migration = '0001_create_migrations_table.sql'",
         "UPDATE migrations SET migration = 'unknown.sql' WHERE migration = '0001_create_migrations_table.sql'",
     ] {
@@ -195,24 +195,24 @@ fn rejects_incomplete_or_modified_migration_history() {
 fn rejects_malformed_current_schemas() {
     let changes = [
         (
-            "ALTER TABLE messages DROP COLUMN subject",
+            "ALTER TABLE mail DROP COLUMN subject",
             "partial summary column set",
         ),
         (
             "CREATE TABLE scopes_copy AS SELECT * FROM scopes; DROP TABLE scopes; ALTER TABLE scopes_copy RENAME TO scopes",
             "missing scope constraints and index",
         ),
-        ("DROP INDEX messages_received", "missing required index"),
+        ("DROP INDEX mail_received", "missing required index"),
         (
-            "CREATE TRIGGER extra_message_trigger AFTER INSERT ON messages BEGIN SELECT 1; END",
+            "CREATE TRIGGER extra_mail_trigger AFTER INSERT ON mail BEGIN SELECT 1; END",
             "additional trigger",
         ),
         (
-            "PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = replace(sql, '''[]''', '''[ ]''') WHERE type = 'table' AND name = 'messages'; PRAGMA schema_version = 999; PRAGMA writable_schema = OFF",
-            "changed quoted literal",
+            "PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = replace(sql, '''carbon_copy''', '''carbon copy''') WHERE type = 'table' AND name = 'mail_recipients'; PRAGMA schema_version = 999; PRAGMA writable_schema = OFF",
+            "changed recipient type literal",
         ),
         (
-            "PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = replace(sql, 'subject TEXT NOT NULL', 'subject TEXTNOTNULL') WHERE type = 'table' AND name = 'messages'; PRAGMA schema_version = 999; PRAGMA writable_schema = OFF",
+            "PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = replace(sql, 'subject TEXT NOT NULL', 'subject TEXTNOTNULL') WHERE type = 'table' AND name = 'mail'; PRAGMA schema_version = 999; PRAGMA writable_schema = OFF",
             "merged SQL keywords",
         ),
     ];
@@ -232,7 +232,7 @@ fn persistent_database_reopens_with_stable_migration_history() {
     let database_path = temporary_database_path("reopen");
     let first_storage = Storage::open(&database_path).unwrap();
     first_storage.health().unwrap();
-    let first_message = message();
+    let first_message = normalized_message();
     assert_eq!(
         first_storage.insert_message(&first_message, &[]).unwrap(),
         sandpost_core::MessageSequence(1)
@@ -240,13 +240,22 @@ fn persistent_database_reopens_with_stable_migration_history() {
     drop(first_storage);
 
     let second_storage = Storage::open(&database_path).unwrap();
+    let reopened_message = second_storage
+        .get_message(first_message.identifier)
+        .unwrap()
+        .unwrap();
+    let mut expected_facts = first_message.facts.clone();
+    expected_facts.attachment_count = first_message.attachments.len() as u64;
+    assert_eq!(reopened_message.facts, expected_facts);
+    assert_eq!(reopened_message.raw_message, first_message.raw_message);
+    assert_eq!(reopened_message.attachments, first_message.attachments);
     let second_message = message();
     assert_eq!(
         second_storage.insert_message(&second_message, &[]).unwrap(),
         sandpost_core::MessageSequence(2)
     );
     let connection = second_storage.connection().unwrap();
-    assert_eq!(migration_history(&connection).unwrap().len(), 9);
+    assert_eq!(migration_history(&connection).unwrap().len(), 10);
     assert_eq!(
         connection
             .pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
@@ -278,7 +287,7 @@ fn concurrent_open_of_empty_database_records_one_baseline() {
         .collect();
     barrier.wait();
     for worker in workers {
-        assert_eq!(worker.join().unwrap(), 9);
+        assert_eq!(worker.join().unwrap(), 10);
     }
     remove_temporary_database(&database_path);
 }

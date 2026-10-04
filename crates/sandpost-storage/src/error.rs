@@ -6,8 +6,6 @@ use sandpost_core::{MessageIdentifier, ScopeIdentifier};
 pub enum StorageError {
     #[error(transparent)]
     Database(#[from] rusqlite::Error),
-    #[error(transparent)]
-    Serialization(#[from] serde_json::Error),
     #[error("unsupported database schema version {0} (current baseline {SCHEMA_VERSION})")]
     NewerSchema(i64),
     #[error("scope {0} has a different policy version")]

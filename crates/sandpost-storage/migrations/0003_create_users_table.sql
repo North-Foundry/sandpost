@@ -1,6 +1,6 @@
 
 CREATE TABLE users (
-    id TEXT PRIMARY KEY,
+    identifier TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     personal_filter TEXT
 );

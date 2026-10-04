@@ -12,7 +12,7 @@ impl Storage {
         let transaction = connection.transaction()?;
         let previous: Option<(String, Option<String>, i64)> = transaction
             .query_row(
-                "SELECT filter, parent_id, policy_version FROM scopes WHERE id=?1",
+                "SELECT filter, parent_identifier, policy_version FROM scopes WHERE identifier=?1",
                 [scope.identifier.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -26,7 +26,7 @@ impl Storage {
             return Err(StorageError::PolicyVersionConflict(scope.identifier));
         }
         transaction.execute(
-            "INSERT INTO scopes(id, parent_id, name, description, filter, position, policy_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id, name=excluded.name, description=excluded.description, filter=excluded.filter, position=excluded.position, policy_version=excluded.policy_version",
+            "INSERT INTO scopes(identifier, parent_identifier, name, description, filter, position, policy_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(identifier) DO UPDATE SET parent_identifier=excluded.parent_identifier, name=excluded.name, description=excluded.description, filter=excluded.filter, position=excluded.position, policy_version=excluded.policy_version",
             params![scope.identifier.to_string(), scope.parent.map(|identifier| identifier.to_string()), scope.name, scope.description, scope.filter, scope.position, version],
         )?;
         transaction.commit()?;
@@ -36,7 +36,7 @@ impl Storage {
     /// Load scopes ordered by their configured position and identifier.
     pub fn load_scopes(&self) -> Result<Vec<Scope>, StorageError> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare_cached("SELECT id, parent_id, name, description, filter, position, policy_version FROM scopes ORDER BY position, id")?;
+        let mut statement = connection.prepare_cached("SELECT identifier, parent_identifier, name, description, filter, position, policy_version FROM scopes ORDER BY position, identifier")?;
         let rows = statement.query_map([], |database_row| {
             Ok((
                 database_row.get::<_, String>(0)?,

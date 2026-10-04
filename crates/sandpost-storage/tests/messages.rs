@@ -3,34 +3,52 @@
 mod common;
 
 use common::message;
-use sandpost_core::{MessageIdentifier, MessageSequence};
+use sandpost_core::{Attachment, MessageIdentifier, MessageSequence};
 use sandpost_storage::{Storage, StorageError};
 
-/// Reject unsigned summary counts outside SQLite's integer range without storing a message.
+/// Reject a mail size outside SQLite's integer range without storing a mail row.
 #[test]
-fn oversized_unsigned_counts_leave_no_message() {
+fn oversized_mail_size_leaves_no_message() {
     let storage = Storage::memory().expect("create in-memory storage");
+    let mut invalid_message = message("oversized mail size");
+    invalid_message.facts.size = u64::MAX;
+    let identifier = invalid_message.identifier;
 
-    for oversized_field in ["size", "attachment_count"] {
-        let mut invalid_message = message(oversized_field);
-        if oversized_field == "size" {
-            invalid_message.facts.size = u64::MAX;
-        } else {
-            invalid_message.facts.attachment_count = u64::MAX;
-        }
-        let identifier = invalid_message.identifier;
+    assert!(matches!(
+        storage.insert_message(&invalid_message, &[]),
+        Err(StorageError::IntegerRange)
+    ));
+    assert!(
+        storage
+            .get_message(identifier)
+            .expect("look up rejected message")
+            .is_none()
+    );
+}
 
-        assert!(matches!(
-            storage.insert_message(&invalid_message, &[]),
-            Err(StorageError::IntegerRange)
-        ));
-        assert!(
-            storage
-                .get_message(identifier)
-                .expect("look up rejected message")
-                .is_none()
-        );
-    }
+/// Roll back a mail row and earlier children when an attachment size exceeds SQLite's range.
+#[test]
+fn oversized_attachment_size_rolls_back_mail_and_children() {
+    let storage = Storage::memory().expect("create in-memory storage");
+    let mut invalid_message = message("oversized attachment size");
+    invalid_message.attachments.push(Attachment {
+        filename: Some("too-large.bin".into()),
+        content_type: "application/octet-stream".into(),
+        size: u64::MAX,
+        content_hash: "hash".into(),
+    });
+    let identifier = invalid_message.identifier;
+
+    assert!(matches!(
+        storage.insert_message(&invalid_message, &[]),
+        Err(StorageError::IntegerRange)
+    ));
+    assert!(
+        storage
+            .get_message(identifier)
+            .expect("look up rolled-back mail")
+            .is_none()
+    );
 }
 
 /// Enforce newest-first cursors, empty zero-sized pages, and the maximum page size.

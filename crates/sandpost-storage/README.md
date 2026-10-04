@@ -68,19 +68,33 @@ Each ordered SQL file creates one table and its indexes:
 | `0003_create_users_table.sql` | `users`: domain user records |
 | `0004_create_memberships_table.sql` | `memberships`: user/scope roles |
 | `0005_create_inboxes_table.sql` | `inboxes`: user-owned named filters |
-| `0006_create_messages_table.sql` | `messages`: sequence, facts, raw bytes, and summary columns |
-| `0007_create_message_recipients_table.sql` | `message_recipients`: mailbox projections |
-| `0008_create_message_headers_table.sql` | `message_headers`: ordered header values |
-| `0009_create_message_scope_table.sql` | `message_scope`: versioned scope matches |
+| `0006_create_mail_table.sql` | `mail`: sequence, identifier, subject, bodies, RFC message identifier, raw bytes, receipt time, and size |
+| `0007_create_mail_recipients_table.sql` | `mail_recipients`: ordered envelope and header mailboxes, with role and domain |
+| `0008_create_mail_headers_table.sql` | `mail_headers`: ordered header names and values |
+| `0009_create_mail_scope_table.sql` | `mail_scope`: versioned scope matches, keyed by scope identifier and mail sequence |
+| `0010_create_mail_attachments_table.sql` | `mail_attachments`: ordered attachment metadata and content hashes |
 
-These nine files collectively form **schema version 1**, recorded in SQLite's
+The baseline uses complete identifier names in its columns. `mail` contains
+`sequence`, `identifier`, `subject`, `text_body`, `markup_body`,
+`message_identifier`, `raw_message`, `received_at`, and `size`.
+`mail_recipients` contains `mail_sequence`, `recipient_type`, `ordinal`,
+`address`, and `domain`; `mail_headers` contains `mail_sequence`, `name`,
+`value`, and `ordinal`; `mail_scope` contains `scope_identifier`,
+`mail_sequence`, and `policy_version`; and `mail_attachments` contains
+`mail_sequence`, `ordinal`, `filename`, `content_type`, `size`, and
+`content_hash`. The primary keys in `scopes`, `users`, and `inboxes` are named
+`identifier`; their foreign keys use `parent_identifier`, `user_identifier`,
+and `scope_identifier` as appropriate. Mail relations spell out references as
+`mail_sequence` and `scope_identifier`.
+
+These ten files collectively form **schema version 1**, recorded in SQLite's
 `PRAGMA user_version`. File prefixes express execution order, not separate schema
-versions. All nine history entries have batch 1, including creation of the
+versions. All ten history entries have batch 1, including creation of the
 history table. Files are embedded at compilation; deployment needs no SQL files
 on disk. There is no migration framework or additional dependency.
 
 Startup acquires a SQLite write transaction before checking the version. It
-supports two states: a fresh empty version 0 database, which receives all nine
+supports two states: a fresh empty version 0 database, which receives all ten
 baseline migrations atomically, and version 1 with matching migration history
 and schema, which opens without rerunning creation files. It rejects negative
 or newer versions, a populated version 0 database, and version 1 without
@@ -100,7 +114,7 @@ does not yet provide persistence methods for those domain records.
 | `migrations.rs` | Baseline order, transaction, version, and migration history |
 | `schema.rs` | Baseline schema validation and empty-database detection |
 | `messages.rs` | Message ingestion and retrieval |
-| `message_indexes.rs` | Recipient and header projections during ingestion |
+| `mail_parts.rs` | Relational recipient, header, and attachment writes and reads |
 | `scopes.rs` | Scope persistence and policy version guards |
 | `visibility.rs` | Materialization replacement and deduplicated visibility reads |
 | `records.rs` | Public summaries and validated row decoding |
@@ -111,10 +125,18 @@ the shared connection, serializing reads and writes; WAL does not remove that
 lock. These APIs are synchronous. The application runs database work on its
 blocking pool. Additional connections should follow measured contention.
 
-Recipient indexes merge envelope recipients, To, and Cc. The sender-domain
-projection prefers the envelope sender, then From. These projections are useful
-candidate indexes, not a complete index for every query-language field. Raw mail
-contains attachment bytes; the separate attachments field stores metadata.
+Mail facts are stored in relational columns and child rows; the database stores
+no JSON-encoded message facts. `mail_recipients` preserves each mailbox's role,
+ordinal, address, and domain, including duplicates across envelope and header
+roles. The role values are `envelope_from`, `envelope_to`, `from`, `to`, and
+`carbon_copy`. Candidate lookup indexes are role-aware and do not merge these
+mailbox sets; they remain candidate indexes, not complete indexes for every
+query-language field. Headers preserve the order of repeated values for each name.
+`mail_attachments` stores ordered metadata and content hashes, while attachment
+bytes remain in the original `raw_message` bytes in `mail`. Summary attachment
+counts and detail child-row counts are computed from relational rows; an input
+`attachment_count` is not persisted. Summary reads remain bounded to 100 rows
+and omit body and raw-message bytes; each page loads its mailbox rows in one query.
 
 ## Verification
 

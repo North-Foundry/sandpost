@@ -2,7 +2,7 @@
 use crate::{
     MessageSummary, Storage, StorageError,
     messages::MAXIMUM_PAGE_SIZE,
-    records::{decode_summary, summary_row},
+    records::{decode_summaries, summary_row},
 };
 use rusqlite::{OptionalExtension, params};
 use sandpost_core::{MessageSequence, ScopeIdentifier};
@@ -18,7 +18,8 @@ impl Storage {
         if scope_identifiers.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let connection = self.connection()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
         let limit = limit.min(MAXIMUM_PAGE_SIZE);
         let scope_placeholders = (2..scope_identifiers.len() + 2)
             .map(|index| format!("?{index}"))
@@ -26,15 +27,16 @@ impl Storage {
             .join(",");
         let query_statement = format!(
             "WITH visible AS MATERIALIZED (\
-                SELECT scope_matches.message_seq FROM message_scope scope_matches \
-                JOIN scopes current_scopes ON current_scopes.id = scope_matches.scope_id AND scope_matches.policy_version = current_scopes.policy_version \
-                WHERE scope_matches.scope_id IN ({scope_placeholders}) AND (?1 IS NULL OR scope_matches.message_seq < ?1) \
-                GROUP BY scope_matches.message_seq ORDER BY scope_matches.message_seq DESC LIMIT ?{}\
-             ) SELECT stored_messages.seq, stored_messages.id, stored_messages.subject, stored_messages.from_json, stored_messages.to_json, stored_messages.received_at, stored_messages.size, stored_messages.attachment_count \
-             FROM visible JOIN messages stored_messages ON stored_messages.seq = visible.message_seq ORDER BY stored_messages.seq DESC",
+                SELECT scope_matches.mail_sequence FROM mail_scope scope_matches \
+                JOIN scopes current_scopes ON current_scopes.identifier = scope_matches.scope_identifier AND scope_matches.policy_version = current_scopes.policy_version \
+                WHERE scope_matches.scope_identifier IN ({scope_placeholders}) AND (?1 IS NULL OR scope_matches.mail_sequence < ?1) \
+                GROUP BY scope_matches.mail_sequence ORDER BY scope_matches.mail_sequence DESC LIMIT ?{}\
+             ) SELECT stored_mail.sequence, stored_mail.identifier, stored_mail.subject, stored_mail.received_at, stored_mail.size, \
+                (SELECT COUNT(*) FROM mail_attachments WHERE mail_sequence = stored_mail.sequence) \
+             FROM visible JOIN mail stored_mail ON stored_mail.sequence = visible.mail_sequence ORDER BY stored_mail.sequence DESC",
             scope_identifiers.len() + 2,
         );
-        let mut statement = connection.prepare_cached(&query_statement)?;
+        let mut statement = transaction.prepare_cached(&query_statement)?;
         let mut values = Vec::with_capacity(scope_identifiers.len() + 2);
         let before = before
             .map(|sequence| i64::try_from(sequence.0).map_err(|_| StorageError::IntegerRange))
@@ -49,13 +51,10 @@ impl Storage {
                 .map(|identifier| rusqlite::types::Value::Text(identifier.to_string())),
         );
         values.push(rusqlite::types::Value::Integer(limit as i64));
-        let rows = statement.query_map(rusqlite::params_from_iter(values), summary_row)?;
-        rows.map(|database_row| {
-            database_row
-                .map_err(StorageError::from)
-                .and_then(decode_summary)
-        })
-        .collect()
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(values), summary_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        decode_summaries(&transaction, rows)
     }
 
     /// Replace one scope's complete match set only when its policy version is current.
@@ -69,7 +68,7 @@ impl Storage {
         let transaction = connection.transaction()?;
         let current: Option<i64> = transaction
             .query_row(
-                "SELECT policy_version FROM scopes WHERE id=?1",
+                "SELECT policy_version FROM scopes WHERE identifier=?1",
                 [scope_identifier.to_string()],
                 |row| row.get(0),
             )
@@ -78,11 +77,11 @@ impl Storage {
             return Err(StorageError::StalePolicy(scope_identifier));
         }
         transaction.execute(
-            "DELETE FROM message_scope WHERE scope_id=?1",
+            "DELETE FROM mail_scope WHERE scope_identifier=?1",
             [scope_identifier.to_string()],
         )?;
         {
-            let mut statement = transaction.prepare_cached("INSERT INTO message_scope(scope_id, message_seq, policy_version) VALUES (?1, ?2, ?3)")?;
+            let mut statement = transaction.prepare_cached("INSERT INTO mail_scope(scope_identifier, mail_sequence, policy_version) VALUES (?1, ?2, ?3)")?;
             for sequence in message_sequences {
                 statement.execute(params![
                     scope_identifier.to_string(),
