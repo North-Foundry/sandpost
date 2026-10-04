@@ -28,7 +28,7 @@ axum = "0.8"
 tokio-stream = { version = "0.1", features = ["sync"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 mail-parser = "0.11"
-sha2 = "0.10"
+sha2 = "0.11"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 

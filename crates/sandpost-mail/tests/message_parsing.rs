@@ -1,5 +1,4 @@
 use sandpost_mail::parse_message;
-use sha2::{Digest, Sha256};
 
 const MULTIPART_MESSAGE: &str = "From: Alice <Alice@Example.COM>\r\nTo: Bob <Bob@Example.COM>\r\nCc: Carol@Example.COM\r\nSubject: Hello\r\nX-Tag: one\r\nX-Tag: two\r\nX-Folded: =?UTF-8?Q?caf=C3=A9?=\r\n\tcontinued\r\nMessage-ID: <id@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=boundary\r\n\r\n--boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nbody\r\n--boundary\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=note.txt\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n--boundary--\r\n";
 
@@ -35,7 +34,7 @@ fn parse_normalizes_addresses_preserves_headers_and_hashes_attachments() {
     assert_eq!(attachment.size, 5);
     assert_eq!(
         attachment.content_hash,
-        format!("{:x}", Sha256::digest(b"hello"))
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
     );
 }
 
