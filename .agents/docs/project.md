@@ -32,6 +32,35 @@ with smtplib.SMTP('127.0.0.1', 1025) as smtp:
 PY
 ```
 
+After storage and both listeners initialize, startup prints a plain-text summary
+to stdout. Operational tracing goes to stderr; ANSI colors are used only for a
+TTY when `NO_COLOR` is absent. The summary reports the actual
+`GET /api/v1/messages` endpoint, listener bind addresses, SMTP host and actual
+port, SQLite path, and that SMTP encryption and authentication are disabled
+(credentials are not required). Attachments remain inside each original message
+in SQLite. For client connection addresses, wildcard binds map to the matching
+address-family loopback (`127.0.0.1` or `::1`); the `Listening` row still shows
+the actual bind address. If configured with port `0`, the summary shows the
+system-allocated port. The following is the current-default excerpt, omitting
+the title, subtitle, and final readiness line:
+
+```text
+SMTP
+  Host       127.0.0.1
+  Port       1025
+  Encryption none
+  Auth       disabled (no credentials required)
+  Listening  127.0.0.1:1025
+
+HTTP
+  API        http://127.0.0.1:8025/api/v1/messages
+  Listening  127.0.0.1:8025
+
+Storage
+  Database     SQLite · data/sandpost.sqlite3
+  Attachments  in original messages (SQLite)
+```
+
 The binary bundles SQLite and serves the HTTP API without a browser interface.
 Mail is stored once in `data/sandpost.sqlite3`; extracted facts and attachment metadata use relational
 columns and child rows, while the original raw message retains attachment
