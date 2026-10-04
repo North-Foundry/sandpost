@@ -9,7 +9,7 @@ use axum::{
     },
     routing::get,
 };
-use sandpost_core::{Attachment, MessageFacts, MessageId, MessageSeq};
+use sandpost_core::{Attachment, MessageFacts, MessageIdentifier, MessageSequence};
 use sandpost_storage::{MessageSummary, Storage};
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, time::Duration};
@@ -18,29 +18,33 @@ use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MessageEvent {
-    pub id: MessageId,
-    pub seq: MessageSeq,
+    #[serde(rename = "id")]
+    pub identifier: MessageIdentifier,
+    #[serde(rename = "seq")]
+    pub sequence: MessageSequence,
 }
 
 #[derive(Clone)]
-pub struct ApiState {
+pub struct ApplicationState {
     pub storage: Storage,
     pub events: broadcast::Sender<MessageEvent>,
 }
 
-pub fn router(state: ApiState) -> Router {
+/// Build the HTTP router for the catcher API.
+pub fn router(state: ApplicationState) -> Router {
     Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/messages", get(list_messages))
-        .route("/api/v1/messages/{id}", get(message))
-        .route("/api/v1/messages/{id}/raw", get(raw_message))
+        .route("/api/v1/messages/{identifier}", get(message))
+        .route("/api/v1/messages/{identifier}/raw", get(raw_message))
         .route("/api/v1/events", get(events))
         .with_state(state)
 }
 
 #[derive(Debug)]
-struct ApiError(StatusCode, &'static str);
-impl IntoResponse for ApiError {
+struct ApplicationError(StatusCode, &'static str);
+impl IntoResponse for ApplicationError {
+    /// Convert the application error into its status and JSON error response.
     fn into_response(self) -> Response {
         (self.0, Json(ErrorBody { error: self.1 })).into_response()
     }
@@ -50,15 +54,17 @@ struct ErrorBody {
     error: &'static str,
 }
 
-fn internal(error: impl std::fmt::Display) -> ApiError {
+/// Log an internal failure and return a generic server error to the client.
+fn internal(error: impl std::fmt::Display) -> ApplicationError {
     tracing::error!(%error, "API storage operation failed");
-    ApiError(
+    ApplicationError(
         StatusCode::INTERNAL_SERVER_ERROR,
         "storage operation failed",
     )
 }
 
-async fn health(State(state): State<ApiState>) -> Result<Json<Health>, ApiError> {
+/// Report whether the backing storage can answer a health query.
+async fn health(State(state): State<ApplicationState>) -> Result<Json<Health>, ApplicationError> {
     tokio::task::spawn_blocking(move || state.storage.health())
         .await
         .map_err(internal)?
@@ -79,13 +85,14 @@ struct Page {
     before: Option<u64>,
     limit: Option<usize>,
 }
+/// Return a page of stored messages with the requested cursor and limit.
 async fn list_messages(
-    State(state): State<ApiState>,
+    State(state): State<ApplicationState>,
     Query(page): Query<Page>,
-) -> Result<Json<Vec<MessageSummary>>, ApiError> {
+) -> Result<Json<Vec<MessageSummary>>, ApplicationError> {
     let limit = page.limit.unwrap_or(50);
     if !(1..=100).contains(&limit) {
-        return Err(ApiError(
+        return Err(ApplicationError(
             StatusCode::BAD_REQUEST,
             "limit must be between 1 and 100",
         ));
@@ -93,7 +100,7 @@ async fn list_messages(
     let rows = tokio::task::spawn_blocking(move || {
         state
             .storage
-            .list_messages(page.before.map(MessageSeq), limit)
+            .list_messages(page.before.map(MessageSequence), limit)
     })
     .await
     .map_err(internal)?
@@ -103,35 +110,38 @@ async fn list_messages(
 
 #[derive(Serialize)]
 struct MessageDetail {
-    id: MessageId,
+    #[serde(rename = "id")]
+    identifier: MessageIdentifier,
     facts: MessageFacts,
     attachments: Vec<Attachment>,
 }
+/// Return parsed facts and attachment metadata for the requested message.
 async fn message(
-    State(state): State<ApiState>,
-    Path(id): Path<MessageId>,
-) -> Result<Json<MessageDetail>, ApiError> {
+    State(state): State<ApplicationState>,
+    Path(identifier): Path<MessageIdentifier>,
+) -> Result<Json<MessageDetail>, ApplicationError> {
     let (facts, attachments) =
-        tokio::task::spawn_blocking(move || state.storage.get_message_metadata(id))
+        tokio::task::spawn_blocking(move || state.storage.get_message_metadata(identifier))
             .await
             .map_err(internal)?
             .map_err(internal)?
-            .ok_or(ApiError(StatusCode::NOT_FOUND, "message not found"))?;
+            .ok_or(ApplicationError(StatusCode::NOT_FOUND, "message not found"))?;
     Ok(Json(MessageDetail {
-        id,
+        identifier,
         facts,
         attachments,
     }))
 }
+/// Return the original RFC 822 bytes for the requested message.
 async fn raw_message(
-    State(state): State<ApiState>,
-    Path(id): Path<MessageId>,
-) -> Result<Response, ApiError> {
-    let message = tokio::task::spawn_blocking(move || state.storage.get_message(id))
+    State(state): State<ApplicationState>,
+    Path(identifier): Path<MessageIdentifier>,
+) -> Result<Response, ApplicationError> {
+    let message = tokio::task::spawn_blocking(move || state.storage.get_message(identifier))
         .await
         .map_err(internal)?
         .map_err(internal)?
-        .ok_or(ApiError(StatusCode::NOT_FOUND, "message not found"))?;
+        .ok_or(ApplicationError(StatusCode::NOT_FOUND, "message not found"))?;
     Ok((
         [
             (header::CONTENT_TYPE, "message/rfc822"),
@@ -140,19 +150,20 @@ async fn raw_message(
                 "attachment; filename=message.eml",
             ),
         ],
-        message.raw_mime,
+        message.raw_message,
     )
         .into_response())
 }
 
+/// Stream message notifications and resynchronization events to subscribers.
 async fn events(
-    State(state): State<ApiState>,
+    State(state): State<ApplicationState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let updates = BroadcastStream::new(state.events.subscribe()).map(|event| {
         let event = match event {
             Ok(message) => match Event::default()
                 .event("message")
-                .id(message.seq.0.to_string())
+                .id(message.sequence.0.to_string())
                 .json_data(message)
             {
                 Ok(event) => event,
@@ -176,27 +187,29 @@ mod tests {
     use http_body_util::BodyExt;
     use sandpost_core::Message;
     use tower::ServiceExt;
-    fn app() -> Router {
+    /// Build a test router containing one sample message.
+    fn build_test_application() -> Router {
         let storage = Storage::memory().unwrap();
         let message = Message {
-            id: MessageId::new(),
+            identifier: MessageIdentifier::new(),
             facts: MessageFacts {
                 subject: "hello".into(),
                 ..MessageFacts::default()
             },
-            raw_mime: b"Subject: hello\r\n\r\nbody".to_vec(),
+            raw_message: b"Subject: hello\r\n\r\nbody".to_vec(),
             attachments: vec![],
         };
         storage.insert_message(&message, &[]).unwrap();
-        router(ApiState {
+        router(ApplicationState {
             storage,
             events: broadcast::channel(16).0,
         })
     }
+    /// Verify health, listing, detail, raw-message, and pagination error responses.
     #[tokio::test]
     async fn health_list_detail_raw_and_validation() {
-        let app = app();
-        let response = app
+        let application = build_test_application();
+        let response = application
             .clone()
             .oneshot(
                 Request::builder()
@@ -207,7 +220,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let response = app
+        let response = application
             .clone()
             .oneshot(
                 Request::builder()
@@ -220,13 +233,13 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let rows: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(rows[0]["subject"], "hello");
-        let id = rows[0]["id"].as_str().unwrap();
+        let identifier = rows[0]["id"].as_str().unwrap();
         for suffix in ["", "/raw"] {
-            let response = app
+            let response = application
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri(format!("/api/v1/messages/{id}{suffix}"))
+                        .uri(format!("/api/v1/messages/{identifier}{suffix}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -234,7 +247,7 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
         }
-        let response = app
+        let response = application
             .clone()
             .oneshot(
                 Request::builder()
@@ -245,10 +258,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let response = app
+        let response = application
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/messages/{}", MessageId::new()))
+                    .uri(format!("/api/v1/messages/{}", MessageIdentifier::new()))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -259,9 +272,9 @@ mod tests {
     /// Verify absent frontend routes and the initial server-sent event handshake.
     #[tokio::test]
     async fn absent_frontend_routes_and_initial_server_sent_event_handshake() {
-        let app = app();
+        let application = build_test_application();
         for resource_path in ["/", "/app.js", "/style.css"] {
-            let response = app
+            let response = application
                 .clone()
                 .oneshot(
                     Request::builder()
@@ -273,7 +286,7 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
-        let response = app
+        let response = application
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/events")
@@ -298,14 +311,15 @@ mod tests {
                 .contains("event: ready")
         );
     }
+    /// Verify lagging event subscribers receive a resynchronization event.
     #[tokio::test]
-    async fn slow_sse_subscribers_receive_resync_instead_of_silent_loss() {
+    async fn slow_server_sent_event_subscribers_receive_resynchronization_instead_of_silent_loss() {
         let (events, _) = broadcast::channel(1);
-        let app = router(ApiState {
+        let application = router(ApplicationState {
             storage: Storage::memory().unwrap(),
             events: events.clone(),
         });
-        let response = app
+        let response = application
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/events")
@@ -316,11 +330,11 @@ mod tests {
             .unwrap();
         let mut body = response.into_body();
         body.frame().await.unwrap().unwrap();
-        for seq in 1..=3 {
+        for sequence in 1..=3 {
             events
                 .send(MessageEvent {
-                    id: MessageId::new(),
-                    seq: MessageSeq(seq),
+                    identifier: MessageIdentifier::new(),
+                    sequence: MessageSequence(sequence),
                 })
                 .unwrap();
         }

@@ -1,5 +1,5 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use sandpost_core::{Message, MessageId, MessageSeq, Scope, ScopeId};
+use sandpost_core::{Message, MessageIdentifier, MessageSequence, Scope, ScopeIdentifier};
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
@@ -8,22 +8,22 @@ use std::{
 };
 
 const SCHEMA_VERSION: i64 = 2;
-const MAX_PAGE_SIZE: usize = 100;
+const MAXIMUM_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error(transparent)]
-    Sqlite(#[from] rusqlite::Error),
+    Database(#[from] rusqlite::Error),
     #[error(transparent)]
-    Json(#[from] serde_json::Error),
+    Serialization(#[from] serde_json::Error),
     #[error("unsupported database schema version {0} (max supported {SCHEMA_VERSION})")]
     NewerSchema(i64),
     #[error("scope {0} has a different policy version")]
-    StalePolicy(ScopeId),
+    StalePolicy(ScopeIdentifier),
     #[error("message {0} already exists")]
-    DuplicateMessageId(MessageId),
+    DuplicateMessageIdentifier(MessageIdentifier),
     #[error("scope {0} policy versions must increase when its filter or parent changes")]
-    PolicyVersionConflict(ScopeId),
+    PolicyVersionConflict(ScopeIdentifier),
     #[error("integer value is outside SQLite's supported range")]
     IntegerRange,
     #[error("storage connection lock was poisoned")]
@@ -34,8 +34,10 @@ pub enum StorageError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageSummary {
-    pub seq: MessageSeq,
-    pub id: MessageId,
+    #[serde(rename = "seq")]
+    pub sequence: MessageSequence,
+    #[serde(rename = "id")]
+    pub identifier: MessageIdentifier,
     pub subject: String,
     pub from: Vec<sandpost_core::Mailbox>,
     pub to: Vec<sandpost_core::Mailbox>,
@@ -49,15 +51,18 @@ pub struct MessageSummary {
 pub struct Storage(Arc<Mutex<Connection>>);
 
 impl Storage {
+    /// Open or create a database at the supplied path and apply pending migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let connection = Connection::open(path)?;
         Self::initialize(connection)
     }
 
+    /// Create an in-memory database and apply the current schema.
     pub fn memory() -> Result<Self, StorageError> {
         Self::initialize(Connection::open_in_memory()?)
     }
 
+    /// Configure the connection, migrate its schema, and wrap it for shared access.
     fn initialize(connection: Connection) -> Result<Self, StorageError> {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -66,10 +71,12 @@ impl Storage {
         Ok(Self(Arc::new(Mutex::new(connection))))
     }
 
+    /// Lock the shared database connection, reporting a poisoned lock as a storage error.
     fn connection(&self) -> Result<MutexGuard<'_, Connection>, StorageError> {
         self.0.lock().map_err(|_| StorageError::LockPoisoned)
     }
 
+    /// Check that the database can execute a trivial query.
     pub fn health(&self) -> Result<(), StorageError> {
         self.connection()?.query_row("SELECT 1", [], |_| Ok(()))?;
         Ok(())
@@ -79,10 +86,10 @@ impl Storage {
     pub fn insert_message(
         &self,
         message: &Message,
-        matches: &[(ScopeId, u64)],
-    ) -> Result<MessageSeq, StorageError> {
+        matches: &[(ScopeIdentifier, u64)],
+    ) -> Result<MessageSequence, StorageError> {
         let mut connection = self.connection()?;
-        let tx = connection.transaction()?;
+        let transaction = connection.transaction()?;
         let facts = serde_json::to_string(&message.facts)?;
         let attachments = serde_json::to_string(&message.attachments)?;
         let sender_domain = message
@@ -90,12 +97,12 @@ impl Storage {
             .envelope_from
             .as_ref()
             .or_else(|| message.facts.from.first())
-            .map(|m| m.domain.as_str())
+            .map(|mailbox| mailbox.domain.as_str())
             .unwrap_or("");
-        let inserted = tx.execute(
+        let inserted = transaction.execute(
             "INSERT INTO messages(id, facts, raw_mime, attachments, sender_domain, received_at, subject, from_json, to_json, size, attachment_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                message.id.to_string(), facts, message.raw_mime, attachments, sender_domain,
+                message.identifier.to_string(), facts, message.raw_message, attachments, sender_domain,
                 message.facts.received_at, message.facts.subject,
                 serde_json::to_string(&message.facts.from)?, serde_json::to_string(&message.facts.to)?,
                 i64::try_from(message.facts.size).map_err(|_| StorageError::IntegerRange)?,
@@ -107,77 +114,84 @@ impl Storage {
             Err(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
-                return Err(StorageError::DuplicateMessageId(message.id));
+                return Err(StorageError::DuplicateMessageIdentifier(message.identifier));
             }
             Err(error) => return Err(error.into()),
         };
-        let raw_seq: i64 = tx.query_row(
+        let stored_sequence: i64 = transaction.query_row(
             "SELECT seq FROM messages WHERE id = ?1",
-            [message.id.to_string()],
+            [message.identifier.to_string()],
             |row| row.get(0),
         )?;
-        let seq = MessageSeq(u64::try_from(raw_seq).map_err(|_| StorageError::IntegerRange)?);
+        let sequence = MessageSequence(
+            u64::try_from(stored_sequence).map_err(|_| StorageError::IntegerRange)?,
+        );
         if inserted > 0 {
-            index_message(&tx, raw_seq, message)?;
+            index_message(&transaction, stored_sequence, message)?;
         }
-        for (scope_id, version) in matches {
-            let current: Option<i64> = tx
+        for (scope_identifier, policy_version) in matches {
+            let current: Option<i64> = transaction
                 .query_row(
                     "SELECT policy_version FROM scopes WHERE id = ?1",
-                    [scope_id.to_string()],
+                    [scope_identifier.to_string()],
                     |row| row.get(0),
                 )
                 .optional()?;
             let Some(current) = current else {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
             };
-            if u64::try_from(current).ok() != Some(*version) {
-                return Err(StorageError::StalePolicy(*scope_id));
+            if u64::try_from(current).ok() != Some(*policy_version) {
+                return Err(StorageError::StalePolicy(*scope_identifier));
             }
-            tx.execute(
+            transaction.execute(
                 "INSERT INTO message_scope(scope_id, message_seq, policy_version) VALUES (?1, ?2, ?3) ON CONFLICT(scope_id, message_seq) DO UPDATE SET policy_version = excluded.policy_version",
-                params![scope_id.to_string(), raw_seq, i64::try_from(*version).map_err(|_| StorageError::IntegerRange)?],
+                params![scope_identifier.to_string(), stored_sequence, i64::try_from(*policy_version).map_err(|_| StorageError::IntegerRange)?],
             )?;
         }
-        tx.commit()?;
-        Ok(seq)
+        transaction.commit()?;
+        Ok(sequence)
     }
 
+    /// List messages newest first, optionally restricting results to sequences before a cursor.
     pub fn list_messages(
         &self,
-        before: Option<MessageSeq>,
+        before: Option<MessageSequence>,
         limit: usize,
     ) -> Result<Vec<MessageSummary>, StorageError> {
         let connection = self.connection()?;
-        let limit = limit.min(MAX_PAGE_SIZE);
+        let limit = limit.min(MAXIMUM_PAGE_SIZE);
         let mut statement = connection.prepare_cached(
             "SELECT seq, id, subject, from_json, to_json, received_at, size, attachment_count FROM messages WHERE (?1 IS NULL OR seq < ?1) ORDER BY seq DESC LIMIT ?2",
         )?;
         let before = before
-            .map(|seq| i64::try_from(seq.0).map_err(|_| StorageError::IntegerRange))
+            .map(|sequence| i64::try_from(sequence.0).map_err(|_| StorageError::IntegerRange))
             .transpose()?;
         let rows = statement.query_map(params![before, limit as i64], summary_row)?;
-        rows.map(|row| row.map_err(StorageError::from).and_then(decode_summary))
-            .collect()
+        rows.map(|database_row| {
+            database_row
+                .map_err(StorageError::from)
+                .and_then(decode_summary)
+        })
+        .collect()
     }
 
     /// List current matches from these scopes. Scope count is bounded by SQLite's bind limit.
     pub fn list_visible_messages(
         &self,
-        scope_ids: &[ScopeId],
-        before: Option<MessageSeq>,
+        scope_identifiers: &[ScopeIdentifier],
+        before: Option<MessageSequence>,
         limit: usize,
     ) -> Result<Vec<MessageSummary>, StorageError> {
-        if scope_ids.is_empty() || limit == 0 {
+        if scope_identifiers.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
         let connection = self.connection()?;
-        let limit = limit.min(MAX_PAGE_SIZE);
-        let scope_placeholders = (2..scope_ids.len() + 2)
+        let limit = limit.min(MAXIMUM_PAGE_SIZE);
+        let scope_placeholders = (2..scope_identifiers.len() + 2)
             .map(|index| format!("?{index}"))
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!(
+        let query_statement = format!(
             "WITH visible AS MATERIALIZED (\
                 SELECT ms.message_seq FROM message_scope ms \
                 JOIN scopes s ON s.id = ms.scope_id AND ms.policy_version = s.policy_version \
@@ -185,43 +199,51 @@ impl Storage {
                 GROUP BY ms.message_seq ORDER BY ms.message_seq DESC LIMIT ?{}\
              ) SELECT m.seq, m.id, m.subject, m.from_json, m.to_json, m.received_at, m.size, m.attachment_count \
              FROM visible JOIN messages m ON m.seq = visible.message_seq ORDER BY m.seq DESC",
-            scope_ids.len() + 2,
+            scope_identifiers.len() + 2,
         );
-        let mut statement = connection.prepare_cached(&sql)?;
-        let mut values = Vec::with_capacity(scope_ids.len() + 2);
+        let mut statement = connection.prepare_cached(&query_statement)?;
+        let mut values = Vec::with_capacity(scope_identifiers.len() + 2);
         let before = before
-            .map(|seq| i64::try_from(seq.0).map_err(|_| StorageError::IntegerRange))
+            .map(|sequence| i64::try_from(sequence.0).map_err(|_| StorageError::IntegerRange))
             .transpose()?;
         values.push(before.map_or(
             rusqlite::types::Value::Null,
             rusqlite::types::Value::Integer,
         ));
         values.extend(
-            scope_ids
+            scope_identifiers
                 .iter()
-                .map(|id| rusqlite::types::Value::Text(id.to_string())),
+                .map(|identifier| rusqlite::types::Value::Text(identifier.to_string())),
         );
         values.push(rusqlite::types::Value::Integer(limit as i64));
         let rows = statement.query_map(rusqlite::params_from_iter(values), summary_row)?;
-        rows.map(|row| row.map_err(StorageError::from).and_then(decode_summary))
-            .collect()
+        rows.map(|database_row| {
+            database_row
+                .map_err(StorageError::from)
+                .and_then(decode_summary)
+        })
+        .collect()
     }
 
-    pub fn get_message(&self, id: MessageId) -> Result<Option<Message>, StorageError> {
+    /// Load a message, including its original raw message bytes, by identifier.
+    pub fn get_message(
+        &self,
+        identifier: MessageIdentifier,
+    ) -> Result<Option<Message>, StorageError> {
         let connection = self.connection()?;
         let stored: Option<(String, Vec<u8>, String)> = connection
             .query_row(
                 "SELECT facts, raw_mime, attachments FROM messages WHERE id = ?1",
-                [id.to_string()],
+                [identifier.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
         stored
-            .map(|(facts, raw_mime, attachments)| {
+            .map(|(facts, raw_message, attachments)| {
                 Ok(Message {
-                    id,
+                    identifier,
                     facts: serde_json::from_str(&facts)?,
-                    raw_mime,
+                    raw_message,
                     attachments: serde_json::from_str(&attachments)?,
                 })
             })
@@ -231,14 +253,14 @@ impl Storage {
     /// Read parsed message data and attachment metadata without fetching raw MIME bytes.
     pub fn get_message_metadata(
         &self,
-        id: MessageId,
+        identifier: MessageIdentifier,
     ) -> Result<Option<(sandpost_core::MessageFacts, Vec<sandpost_core::Attachment>)>, StorageError>
     {
         let connection = self.connection()?;
         let stored: Option<(String, String)> = connection
             .query_row(
                 "SELECT facts, attachments FROM messages WHERE id = ?1",
-                [id.to_string()],
+                [identifier.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
@@ -252,15 +274,16 @@ impl Storage {
             .transpose()
     }
 
+    /// Save a scope while enforcing policy-version changes for filter or parent updates.
     pub fn save_scope(&self, scope: &Scope) -> Result<(), StorageError> {
         let version =
             i64::try_from(scope.policy_version).map_err(|_| StorageError::IntegerRange)?;
         let mut connection = self.connection()?;
-        let tx = connection.transaction()?;
-        let previous: Option<(String, Option<String>, i64)> = tx
+        let transaction = connection.transaction()?;
+        let previous: Option<(String, Option<String>, i64)> = transaction
             .query_row(
                 "SELECT filter, parent_id, policy_version FROM scopes WHERE id=?1",
-                [scope.id.to_string()],
+                [scope.identifier.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
@@ -268,37 +291,41 @@ impl Storage {
             && (version < old_version
                 || (version == old_version
                     && (scope.filter != old_filter
-                        || scope.parent.map(|id| id.to_string()) != old_parent)))
+                        || scope.parent.map(|identifier| identifier.to_string()) != old_parent)))
         {
-            return Err(StorageError::PolicyVersionConflict(scope.id));
+            return Err(StorageError::PolicyVersionConflict(scope.identifier));
         }
-        tx.execute(
+        transaction.execute(
             "INSERT INTO scopes(id, parent_id, name, description, filter, position, policy_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id, name=excluded.name, description=excluded.description, filter=excluded.filter, position=excluded.position, policy_version=excluded.policy_version",
-            params![scope.id.to_string(), scope.parent.map(|id| id.to_string()), scope.name, scope.description, scope.filter, scope.position, version],
+            params![scope.identifier.to_string(), scope.parent.map(|identifier| identifier.to_string()), scope.name, scope.description, scope.filter, scope.position, version],
         )?;
-        tx.commit()?;
+        transaction.commit()?;
         Ok(())
     }
 
+    /// Load scopes ordered by their configured position and identifier.
     pub fn load_scopes(&self) -> Result<Vec<Scope>, StorageError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare_cached("SELECT id, parent_id, name, description, filter, position, policy_version FROM scopes ORDER BY position, id")?;
-        let rows = statement.query_map([], |row| {
+        let rows = statement.query_map([], |database_row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
+                database_row.get::<_, String>(0)?,
+                database_row.get::<_, Option<String>>(1)?,
+                database_row.get::<_, String>(2)?,
+                database_row.get::<_, Option<String>>(3)?,
+                database_row.get::<_, String>(4)?,
+                database_row.get::<_, i64>(5)?,
+                database_row.get::<_, i64>(6)?,
             ))
         })?;
-        rows.map(|row| {
-            let (id, parent, name, description, filter, position, policy_version) = row?;
+        rows.map(|database_row| {
+            let (identifier, parent, name, description, filter, position, policy_version) =
+                database_row?;
             Ok(Scope {
-                id: parse_id(&id)?,
-                parent: parent.map(|id| parse_id(&id)).transpose()?,
+                identifier: parse_identifier(&identifier)?,
+                parent: parent
+                    .map(|identifier| parse_identifier(&identifier))
+                    .transpose()?,
                 name,
                 description,
                 filter,
@@ -313,60 +340,65 @@ impl Storage {
     /// Replace one scope's complete match set only when its policy version is current.
     pub fn replace_scope_matches(
         &self,
-        scope_id: ScopeId,
-        version: u64,
-        seqs: &[MessageSeq],
+        scope_identifier: ScopeIdentifier,
+        policy_version: u64,
+        message_sequences: &[MessageSequence],
     ) -> Result<(), StorageError> {
         let mut connection = self.connection()?;
-        let tx = connection.transaction()?;
-        let current: Option<i64> = tx
+        let transaction = connection.transaction()?;
+        let current: Option<i64> = transaction
             .query_row(
                 "SELECT policy_version FROM scopes WHERE id=?1",
-                [scope_id.to_string()],
+                [scope_identifier.to_string()],
                 |row| row.get(0),
             )
             .optional()?;
-        if current.and_then(|value| u64::try_from(value).ok()) != Some(version) {
-            return Err(StorageError::StalePolicy(scope_id));
+        if current.and_then(|value| u64::try_from(value).ok()) != Some(policy_version) {
+            return Err(StorageError::StalePolicy(scope_identifier));
         }
-        tx.execute(
+        transaction.execute(
             "DELETE FROM message_scope WHERE scope_id=?1",
-            [scope_id.to_string()],
+            [scope_identifier.to_string()],
         )?;
         {
-            let mut statement = tx.prepare_cached("INSERT INTO message_scope(scope_id, message_seq, policy_version) VALUES (?1, ?2, ?3)")?;
-            for seq in seqs {
+            let mut statement = transaction.prepare_cached("INSERT INTO message_scope(scope_id, message_seq, policy_version) VALUES (?1, ?2, ?3)")?;
+            for sequence in message_sequences {
                 statement.execute(params![
-                    scope_id.to_string(),
-                    i64::try_from(seq.0).map_err(|_| StorageError::IntegerRange)?,
-                    i64::try_from(version).map_err(|_| StorageError::IntegerRange)?
+                    scope_identifier.to_string(),
+                    i64::try_from(sequence.0).map_err(|_| StorageError::IntegerRange)?,
+                    i64::try_from(policy_version).map_err(|_| StorageError::IntegerRange)?
                 ])?;
             }
         }
-        tx.commit()?;
+        transaction.commit()?;
         Ok(())
     }
 }
 
-fn index_message(tx: &Transaction<'_>, seq: i64, message: &Message) -> Result<(), StorageError> {
-    let mut recipients = tx.prepare_cached("INSERT OR IGNORE INTO message_recipients(message_seq, address, domain) VALUES (?1, ?2, ?3)")?;
+/// Index a message's recipient addresses and ordered headers inside its insert transaction.
+fn index_message(
+    transaction: &Transaction<'_>,
+    sequence: i64,
+    message: &Message,
+) -> Result<(), StorageError> {
+    let mut recipients = transaction.prepare_cached("INSERT OR IGNORE INTO message_recipients(message_seq, address, domain) VALUES (?1, ?2, ?3)")?;
     for mailbox in message
         .facts
         .envelope_to
         .iter()
         .chain(&message.facts.to)
-        .chain(&message.facts.cc)
+        .chain(&message.facts.carbon_copy)
     {
-        recipients.execute(params![seq, mailbox.address, mailbox.domain])?;
+        recipients.execute(params![sequence, mailbox.address, mailbox.domain])?;
     }
     drop(recipients);
-    let mut headers = tx.prepare_cached(
+    let mut headers = transaction.prepare_cached(
         "INSERT INTO message_headers(message_seq, name, value, ordinal) VALUES (?1, ?2, ?3, ?4)",
     )?;
     for (name, values) in &message.facts.headers {
         for (ordinal, value) in values.iter().enumerate() {
             headers.execute(params![
-                seq,
+                sequence,
                 name,
                 value,
                 i64::try_from(ordinal).map_err(|_| StorageError::IntegerRange)?
@@ -376,6 +408,7 @@ fn index_message(tx: &Transaction<'_>, seq: i64, message: &Message) -> Result<()
     Ok(())
 }
 
+/// Apply missing schema migrations atomically and reject databases from newer versions.
 fn migrate(connection: &Connection) -> Result<(), StorageError> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version > SCHEMA_VERSION {
@@ -417,25 +450,27 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
 
 type StoredSummary = (i64, String, String, String, String, i64, i64, i64);
 
-fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSummary> {
+/// Read the selected summary columns in their stable query order.
+fn summary_row(database_row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSummary> {
     Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
-        row.get(5)?,
-        row.get(6)?,
-        row.get(7)?,
+        database_row.get(0)?,
+        database_row.get(1)?,
+        database_row.get(2)?,
+        database_row.get(3)?,
+        database_row.get(4)?,
+        database_row.get(5)?,
+        database_row.get(6)?,
+        database_row.get(7)?,
     ))
 }
 
+/// Convert a stored summary row to domain values, validating numeric and serialized fields.
 fn decode_summary(
-    (seq, id, subject, from, to, received_at, size, attachment_count): StoredSummary,
+    (sequence, identifier, subject, from, to, received_at, size, attachment_count): StoredSummary,
 ) -> Result<MessageSummary, StorageError> {
     Ok(MessageSummary {
-        seq: MessageSeq(u64::try_from(seq).map_err(|_| StorageError::IntegerRange)?),
-        id: parse_id(&id)?,
+        sequence: MessageSequence(u64::try_from(sequence).map_err(|_| StorageError::IntegerRange)?),
+        identifier: parse_identifier(&identifier)?,
         subject,
         from: serde_json::from_str(&from)?,
         to: serde_json::from_str(&to)?,
@@ -446,7 +481,10 @@ fn decode_summary(
     })
 }
 
-fn parse_id<T: std::str::FromStr>(value: &str) -> Result<T, StorageError> {
+/// Parse a stored identifier and preserve the invalid source value in the error.
+fn parse_identifier<IdentifierType: std::str::FromStr>(
+    value: &str,
+) -> Result<IdentifierType, StorageError> {
     value
         .parse()
         .map_err(|_| StorageError::InvalidData(value.to_owned()))
@@ -457,9 +495,10 @@ mod tests {
     use super::*;
     use sandpost_core::{Attachment, Mailbox, MessageFacts};
 
+    /// Create a representative message with sender, recipient, and attachment data.
     fn message() -> Message {
         Message {
-            id: MessageId::new(),
+            identifier: MessageIdentifier::new(),
             facts: MessageFacts {
                 envelope_from: Some(Mailbox {
                     address: "sender@example.org".into(),
@@ -481,7 +520,7 @@ mod tests {
                 headers: [("x-tag".into(), vec!["one".into(), "two".into()])].into(),
                 ..Default::default()
             },
-            raw_mime: b"raw".to_vec(),
+            raw_message: b"raw".to_vec(),
             attachments: vec![Attachment {
                 filename: Some("a.bin".into()),
                 content_type: "application/octet-stream".into(),
@@ -490,27 +529,30 @@ mod tests {
             }],
         }
     }
-    fn scope(version: u64) -> Scope {
+    /// Create a root scope with the requested policy version.
+    fn scope(policy_version: u64) -> Scope {
         Scope {
-            id: ScopeId::new(),
+            identifier: ScopeIdentifier::new(),
             parent: None,
             name: "root".into(),
             description: None,
             filter: String::new(),
             position: 0,
-            policy_version: version,
+            policy_version,
         }
     }
 
+    /// Verify migrations can reopen a database and reject a newer schema version.
     #[test]
     fn migration_is_idempotent_across_reopen_and_schema_must_not_be_newer() {
-        let path = std::env::temp_dir().join(format!("sandpost-{}.db", MessageId::new()));
+        let path = std::env::temp_dir().join(format!("sandpost-{}.db", MessageIdentifier::new()));
         Storage::open(&path).unwrap();
         Storage::open(&path).unwrap().health().unwrap();
-        let db = Connection::open(&path).unwrap();
-        db.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
             .unwrap();
-        drop(db);
+        drop(connection);
         assert!(matches!(
             Storage::open(&path),
             Err(StorageError::NewerSchema(3))
@@ -520,27 +562,30 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
+    /// Verify migration from the first schema fills in message summary columns.
     #[test]
     fn version_one_database_backfills_narrow_summary_columns() {
-        let path = std::env::temp_dir().join(format!("sandpost-v1-{}.db", MessageId::new()));
+        let path =
+            std::env::temp_dir().join(format!("sandpost-v1-{}.db", MessageIdentifier::new()));
         let original = message();
-        let db = Connection::open(&path).unwrap();
-        db.execute_batch(include_str!("../migrations/0001_initial.sql"))
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/0001_initial.sql"))
             .unwrap();
-        db.execute(
+        connection.execute(
             "INSERT INTO messages(id, facts, raw_mime, attachments, sender_domain, received_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
-                original.id.to_string(),
+                original.identifier.to_string(),
                 serde_json::to_string(&original.facts).unwrap(),
-                original.raw_mime,
+                original.raw_message,
                 serde_json::to_string(&original.attachments).unwrap(),
                 "example.org",
                 original.facts.received_at,
             ],
         )
         .unwrap();
-        db.pragma_update(None, "user_version", 1).unwrap();
-        drop(db);
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        drop(connection);
 
         let storage = Storage::open(&path).unwrap();
         let summary = storage.list_messages(None, 10).unwrap().remove(0);
@@ -554,116 +599,137 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
+    /// Verify message insertion, retrieval, metadata decoding, and duplicate rejection.
     #[test]
     fn ingest_roundtrip_metadata_and_duplicate_rejection() {
         let storage = Storage::memory().unwrap();
         let original = message();
-        let seq = storage.insert_message(&original, &[]).unwrap();
+        let sequence = storage.insert_message(&original, &[]).unwrap();
         let mut duplicate = original.clone();
-        duplicate.raw_mime = b"replacement".to_vec();
+        duplicate.raw_message = b"replacement".to_vec();
         assert!(matches!(
             storage.insert_message(&duplicate, &[]),
-            Err(StorageError::DuplicateMessageId(id)) if id == original.id
+            Err(StorageError::DuplicateMessageIdentifier(identifier)) if identifier == original.identifier
         ));
-        let saved = storage.get_message(original.id).unwrap().unwrap();
-        assert_eq!(saved.raw_mime, b"raw");
+        let saved = storage.get_message(original.identifier).unwrap().unwrap();
+        assert_eq!(saved.raw_message, b"raw");
         assert_eq!(saved.facts, original.facts);
         assert_eq!(saved.attachments, original.attachments);
         assert_eq!(
-            storage.get_message_metadata(original.id).unwrap().unwrap(),
+            storage
+                .get_message_metadata(original.identifier)
+                .unwrap()
+                .unwrap(),
             (original.facts.clone(), original.attachments.clone())
         );
-        assert_eq!(storage.list_messages(None, 10).unwrap()[0].seq, seq);
+        assert_eq!(
+            storage.list_messages(None, 10).unwrap()[0].sequence,
+            sequence
+        );
     }
 
+    /// Verify a foreign-key failure rolls back the message and its scope matches.
     #[test]
     fn foreign_key_failure_rolls_back_message_and_scope_matches() {
         let storage = Storage::memory().unwrap();
-        let msg = message();
-        let unknown = ScopeId::new();
-        assert!(storage.insert_message(&msg, &[(unknown, 1)]).is_err());
-        assert!(storage.get_message(msg.id).unwrap().is_none());
+        let message = message();
+        let unknown = ScopeIdentifier::new();
+        assert!(storage.insert_message(&message, &[(unknown, 1)]).is_err());
+        assert!(storage.get_message(message.identifier).unwrap().is_none());
     }
 
+    /// Verify pagination, match materialization, scope unions, and policy version guards.
     #[test]
     fn pagination_scope_materialization_union_and_policy_guard() {
         let storage = Storage::memory().unwrap();
-        let a = scope(3);
-        let b = scope(8);
-        storage.save_scope(&a).unwrap();
-        storage.save_scope(&b).unwrap();
+        let scope_one = scope(3);
+        let scope_two = scope(8);
+        storage.save_scope(&scope_one).unwrap();
+        storage.save_scope(&scope_two).unwrap();
         assert_eq!(storage.load_scopes().unwrap().len(), 2);
-        let first = message();
-        let first_seq = storage
-            .insert_message(&first, &[(a.id, 3), (b.id, 8)])
+        let first_message = message();
+        let first_sequence = storage
+            .insert_message(
+                &first_message,
+                &[(scope_one.identifier, 3), (scope_two.identifier, 8)],
+            )
             .unwrap();
-        let mut second = message();
-        second.id = MessageId::new();
-        let second_seq = storage.insert_message(&second, &[(a.id, 3)]).unwrap();
-        let db = storage.connection().unwrap();
-        let count: i64 = db
-            .query_row("SELECT count(*) FROM message_scope", [], |r| r.get(0))
+        let mut second_message = message();
+        second_message.identifier = MessageIdentifier::new();
+        let second_sequence = storage
+            .insert_message(&second_message, &[(scope_one.identifier, 3)])
+            .unwrap();
+        let connection = storage.connection().unwrap();
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM message_scope", [], |database_row| {
+                database_row.get(0)
+            })
             .unwrap();
         assert_eq!(count, 3);
-        drop(db);
-        assert_eq!(storage.list_messages(None, 1).unwrap()[0].seq, second_seq);
+        drop(connection);
         assert_eq!(
-            storage.list_messages(Some(second_seq), 10).unwrap()[0].seq,
-            first_seq
+            storage.list_messages(None, 1).unwrap()[0].sequence,
+            second_sequence
         );
-        let visible = storage.list_visible_messages(&[a.id], None, 10).unwrap();
         assert_eq!(
-            visible.iter().map(|row| row.seq).collect::<Vec<_>>(),
-            vec![second_seq, first_seq]
+            storage.list_messages(Some(second_sequence), 10).unwrap()[0].sequence,
+            first_sequence
+        );
+        let visible = storage
+            .list_visible_messages(&[scope_one.identifier], None, 10)
+            .unwrap();
+        assert_eq!(
+            visible.iter().map(|row| row.sequence).collect::<Vec<_>>(),
+            vec![second_sequence, first_sequence]
         );
         assert!(
-            matches!(storage.replace_scope_matches(a.id, 2, &[first_seq]), Err(StorageError::StalePolicy(id)) if id == a.id)
+            matches!(storage.replace_scope_matches(scope_one.identifier, 2, &[first_sequence]), Err(StorageError::StalePolicy(identifier)) if identifier == scope_one.identifier)
         );
         storage
-            .replace_scope_matches(a.id, 3, &[first_seq])
+            .replace_scope_matches(scope_one.identifier, 3, &[first_sequence])
             .unwrap();
-        let db = storage.connection().unwrap();
-        let rows: i64 = db
+        let connection = storage.connection().unwrap();
+        let rows: i64 = connection
             .query_row(
                 "SELECT count(*) FROM message_scope WHERE scope_id=?1 AND policy_version=3",
-                [a.id.to_string()],
-                |r| r.get(0),
+                [scope_one.identifier.to_string()],
+                |database_row| database_row.get(0),
             )
             .unwrap();
         assert_eq!(rows, 1);
-        drop(db);
-        let mut changed = a.clone();
+        drop(connection);
+        let mut changed = scope_one.clone();
         changed.filter = "subject contains 'changed'".into();
         assert!(
-            matches!(storage.save_scope(&changed), Err(StorageError::PolicyVersionConflict(id)) if id == a.id)
+            matches!(storage.save_scope(&changed), Err(StorageError::PolicyVersionConflict(identifier)) if identifier == scope_one.identifier)
         );
         changed.policy_version = 4;
         storage.save_scope(&changed).unwrap();
         assert!(
             storage
-                .list_visible_messages(&[a.id], None, 10)
+                .list_visible_messages(&[scope_one.identifier], None, 10)
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
             storage
-                .list_visible_messages(&[a.id, b.id], None, 10)
+                .list_visible_messages(&[scope_one.identifier, scope_two.identifier], None, 10)
                 .unwrap()
                 .len(),
             1
         );
         let mut reparented = changed.clone();
-        reparented.parent = Some(b.id);
+        reparented.parent = Some(scope_two.identifier);
         assert!(matches!(
             storage.save_scope(&reparented),
-            Err(StorageError::PolicyVersionConflict(id)) if id == a.id
+            Err(StorageError::PolicyVersionConflict(identifier)) if identifier == scope_one.identifier
         ));
         storage
-            .replace_scope_matches(a.id, 4, &[first_seq])
+            .replace_scope_matches(scope_one.identifier, 4, &[first_sequence])
             .unwrap();
         assert_eq!(
             storage
-                .list_visible_messages(&[a.id], None, 10)
+                .list_visible_messages(&[scope_one.identifier], None, 10)
                 .unwrap()
                 .len(),
             1
