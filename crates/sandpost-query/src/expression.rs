@@ -16,6 +16,7 @@ pub enum Field {
     Subject,
     Text,
     MarkupBody,
+    Content,
     MessageIdentifier,
     ReceivedAt,
     Size,
@@ -82,5 +83,15 @@ impl Field {
                 | Field::CarbonCopyAddress
                 | Field::CarbonCopyDomain
         )
+    }
+
+    /// Report whether string comparisons ignore ASCII letter case for this field.
+    pub(crate) fn is_ascii_case_insensitive(&self) -> bool {
+        self.is_mailbox_field() || matches!(self, Self::Content)
+    }
+
+    /// Report whether every string comparison, including ordering, folds ASCII case.
+    pub(crate) fn uses_ascii_case_insensitive_ordering(&self) -> bool {
+        matches!(self, Self::Content)
     }
 }

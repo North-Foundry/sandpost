@@ -170,6 +170,7 @@ fn fingerprint_field(hasher: &mut Sha256, field: &Field) {
         Field::AttachmentCount => 16,
         Field::HasAttachments => 17,
         Field::Header(_) => 18,
+        Field::Content => 19,
     };
     hasher.update([tag]);
     if let Field::Header(name) = field {

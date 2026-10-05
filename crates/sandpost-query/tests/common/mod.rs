@@ -28,7 +28,10 @@ pub fn facts() -> MessageFacts {
         size: u64::MAX,
         attachment_count: 2,
         headers: BTreeMap::from([
-            ("x-tag".into(), vec!["Blue".into(), "green".into()]),
+            (
+                "x-tag".into(),
+                vec!["Blue".into(), "green".into(), "literal 50%_ marker".into()],
+            ),
             ("subject".into(), vec!["Header value".into()]),
         ]),
     }

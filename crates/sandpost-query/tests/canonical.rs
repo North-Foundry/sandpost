@@ -160,3 +160,20 @@ fn format_v1_fingerprint_matches_pre_refactor_goldens() {
         assert_eq!(compile(source).unwrap().fingerprint(), expected, "{source}");
     }
 }
+
+#[test]
+/// Verify Content's new v1 field tag and ASCII-normalized literals preserve old tags.
+fn content_uses_an_appended_field_tag_and_normalized_fingerprint() {
+    assert_eq!(
+        compile("content contains 'NEEDLE'").unwrap().fingerprint(),
+        compile("content contains 'needle'").unwrap().fingerprint()
+    );
+    assert_ne!(
+        compile("content contains 'needle'").unwrap().fingerprint(),
+        compile("text contains 'needle'").unwrap().fingerprint()
+    );
+    assert_eq!(
+        compile("false").unwrap().fingerprint(),
+        "a7b8d8e4206ca55761252e8aadb880b2d19431cd42252e636acbbbd8f13d95fc"
+    );
+}

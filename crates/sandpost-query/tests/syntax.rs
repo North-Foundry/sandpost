@@ -54,6 +54,8 @@ fn all_fields_and_literal_operator_types_are_accepted() {
         "subject >= 'Café'",
         "text <= 'Z'",
         "html > 'a'",
+        "content contains 'NEEDLE%_'",
+        "content >= 'Header'",
         "message_id != 'other'",
         "received_at == -9223372036854775808",
         "size == 9223372036854775807",

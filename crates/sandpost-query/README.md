@@ -57,6 +57,7 @@ contain zero or more values and use the same `ANY` rule described below.
 | `subject` | String; empty if no subject was parsed. |
 | `text` | String formed by joining parsed text body parts with newlines. |
 | `html` | String formed by joining parsed HTML body parts with newlines. |
+| `content` | Collection of subject, text, HTML, envelope and MIME addresses, RFC Message-ID, and header names and values. |
 | `message_id` | Optional RFC Message-ID string, distinct from Sand Post's public message UUID. |
 | `header["name"]` | Collection of values for a header name; duplicate header values are preserved. |
 | `received_at` | Signed integer: Unix UTC seconds. |
@@ -89,11 +90,15 @@ The ten comparison operators are:
 
 Mailbox fields (`envelope.*`, `from.*`, `to.*`, `cc.*`) accept `==`, `!=`,
 `contains`, `starts_with`, `ends_with`, and `matches`. `subject`, `text`, `html`,
-`message_id`, and `header["name"]` accept those string operators plus ordered
+`content`, `message_id`, and `header["name"]` accept those string operators plus ordered
 comparisons `>`, `>=`, `<`, and `<=`. Numeric fields (`received_at`, `size`, and
 `attachment_count`) accept the six symbolic comparisons with an integer.
 `has_attachments` accepts only `==` and `!=` with `true` or `false`. String
 ordering compares Unicode strings lexicographically.
+
+`content` uses collection `ANY` semantics and ASCII-case-insensitive string
+comparisons, including ordered comparisons; non-ASCII characters are unchanged.
+Its values include header names as well as header values.
 
 Boolean precedence, highest first, is comparison, `not`, `and`, then `or`.
 `not` is unary; `and` and `or` combine two expressions (and may be repeated).
@@ -152,10 +157,12 @@ escapes, not regular-expression escapes.
 Field names and keywords are case-insensitive. Header names are trimmed and
 ASCII-lowercased for lookup. Mailbox values are normalized to lowercase during
 ingest, and mailbox comparisons are ASCII-case-insensitive; the compiler also
-lowercases mailbox string literals. Other string values, including header
+lowercases mailbox string literals. Content comparisons are ASCII-case-insensitive
+and leave non-ASCII characters unchanged. Other string values, including header
 values, are case-sensitive. `contains`, `starts_with`, and `ends_with` on
 mailbox fields use ASCII-case-insensitive matching. Mailbox `matches` patterns
-use the same ASCII-case-insensitive character comparison.
+use the same ASCII-case-insensitive character comparison. `content` `matches`
+patterns apply that rule to ASCII characters and preserve non-ASCII characters.
 
 `matches` is a whole-string glob, not a regular expression:
 
