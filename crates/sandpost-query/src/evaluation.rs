@@ -29,6 +29,7 @@ impl Predicate {
             | Field::Size
             | Field::AttachmentCount
             | Field::HasAttachments => 1,
+            Field::Content => 7,
             Field::EnvelopeFromAddress
             | Field::EnvelopeFromDomain
             | Field::FromAddress
@@ -90,6 +91,10 @@ impl Field {
             Self::Subject => vec![Value::String(facts.subject.clone())],
             Self::Text => vec![Value::String(facts.text.clone())],
             Self::MarkupBody => vec![Value::String(facts.markup_body.clone())],
+            Self::Content => content_strings(facts)
+                .into_iter()
+                .map(|value| Value::String(value.to_ascii_lowercase()))
+                .collect(),
             Self::MessageIdentifier => {
                 owned_strings(facts.message_identifier.iter().cloned().collect())
             }
@@ -151,6 +156,9 @@ impl Field {
             Self::Subject => matches_value(&BorrowedValue::String(&facts.subject)),
             Self::Text => matches_value(&BorrowedValue::String(&facts.text)),
             Self::MarkupBody => matches_value(&BorrowedValue::String(&facts.markup_body)),
+            Self::Content => content_strings(facts)
+                .into_iter()
+                .any(|value| matches_value(&BorrowedValue::String(value))),
             Self::MessageIdentifier => facts
                 .message_identifier
                 .as_deref()
@@ -188,14 +196,14 @@ fn compare_borrowed_value(
 ) -> bool {
     let ordering = match (actual_value, expected_value) {
         (BorrowedValue::String(actual_string), Value::String(expected_string))
-            if field.is_mailbox_field()
-                && matches!(operator, Operator::Equal | Operator::NotEqual) =>
+            if field.uses_ascii_case_insensitive_ordering()
+                || (field.is_mailbox_field()
+                    && matches!(operator, Operator::Equal | Operator::NotEqual)) =>
         {
-            Some(if actual_string.eq_ignore_ascii_case(expected_string) {
-                Ordering::Equal
-            } else {
-                Ordering::Greater
-            })
+            Some(compare_ascii_case_insensitive(
+                actual_string,
+                expected_string,
+            ))
         }
         (BorrowedValue::String(actual_string), Value::String(expected_string)) => {
             Some(actual_string.cmp(&expected_string.as_str()))
@@ -228,9 +236,54 @@ fn compare_borrowed_value(
             else {
                 return false;
             };
-            compare_strings(text, pattern, operator, field.is_mailbox_field())
+            compare_strings(text, pattern, operator, field.is_ascii_case_insensitive())
         }
     }
+}
+
+/// Return all literal-search values, including header names, without allocating strings.
+fn content_strings(facts: &MessageFacts) -> Vec<&str> {
+    let mut values = vec![
+        facts.subject.as_str(),
+        facts.text.as_str(),
+        facts.markup_body.as_str(),
+    ];
+    values.extend(
+        facts
+            .envelope_from
+            .iter()
+            .map(|mailbox| mailbox.address.as_str()),
+    );
+    values.extend(
+        facts
+            .envelope_to
+            .iter()
+            .map(|mailbox| mailbox.address.as_str()),
+    );
+    values.extend(facts.from.iter().map(|mailbox| mailbox.address.as_str()));
+    values.extend(facts.to.iter().map(|mailbox| mailbox.address.as_str()));
+    values.extend(
+        facts
+            .carbon_copy
+            .iter()
+            .map(|mailbox| mailbox.address.as_str()),
+    );
+    if let Some(identifier) = facts.message_identifier.as_deref() {
+        values.push(identifier);
+    }
+    for (name, header_values) in &facts.headers {
+        values.push(name);
+        values.extend(header_values.iter().map(String::as_str));
+    }
+    values
+}
+
+/// Compare UTF-8 strings lexicographically after folding ASCII letters only.
+fn compare_ascii_case_insensitive(first: &str, second: &str) -> Ordering {
+    first
+        .bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(second.bytes().map(|byte| byte.to_ascii_lowercase()))
 }
 
 /// Apply a string operator, using ASCII-insensitive matching only for mailbox fields.

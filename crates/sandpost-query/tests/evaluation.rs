@@ -1,6 +1,6 @@
 mod common;
 
-use sandpost_query::compile;
+use sandpost_query::{Field, Value, compile};
 
 #[test]
 /// Verify comparison operators across scalar types and glob matching.
@@ -19,6 +19,14 @@ fn comparison_operators_cover_strings_numbers_booleans_and_globs() {
         ("text matches 'Body*🦀'", true),
         ("text matches 'body*🦀'", false),
         ("html contains 'Bright'", true),
+        ("content contains 'BODY'", true),
+        ("content contains 'X-TAG'", true),
+        ("content contains 'GREEN'", true),
+        ("content contains 'Café'", true),
+        ("content contains 'CAFÉ'", false),
+        ("content contains '50%_'", true),
+        ("content contains '50%X'", false),
+        ("content matches 'BODY*🦀'", true),
         ("message_id contains 'msg.1'", true),
         ("header['subject'] > 'Header'", true),
         ("header['x-tag'] == 'green'", true),
@@ -51,6 +59,68 @@ fn comparison_operators_cover_strings_numbers_booleans_and_globs() {
     }
     assert!(compile("received_at == 9223372036854775808").is_err());
     assert!(compile("received_at == -9223372036854775809").is_err());
+}
+
+#[test]
+/// Verify Content values include all supported literal fields in ASCII-lowercase form.
+fn content_field_collects_normalized_subject_body_mailbox_and_headers() {
+    let mut facts = common::facts();
+    facts.envelope_from = Some(sandpost_core::Mailbox {
+        address: "Env-Sender@Example.test".into(),
+        domain: "example.test".into(),
+    });
+    facts.envelope_to.push(sandpost_core::Mailbox {
+        address: "Env-Recipient@Example.test".into(),
+        domain: "example.test".into(),
+    });
+    facts.carbon_copy.push(sandpost_core::Mailbox {
+        address: "Copy@Three.test".into(),
+        domain: "three.test".into(),
+    });
+    facts.message_identifier = Some("<Message-ID@example.test>".into());
+    facts
+        .headers
+        .get_mut("x-tag")
+        .unwrap()
+        .push("literal 50%_ marker".into());
+    let content = Field::Content.values(&facts);
+    for value in [
+        "café hello, world",
+        "body has straße and 🦀",
+        "env-sender@example.test",
+        "env-recipient@example.test",
+        "sender@example.com",
+        "first@one.test",
+        "second@two.test",
+        "copy@three.test",
+        "<message-id@example.test>",
+        "x-tag",
+        "blue",
+        "green",
+    ] {
+        assert!(content.contains(&Value::String(value.into())), "{value}");
+    }
+    assert!(
+        compile("content >= 'CAFé HELLO, WORLD'")
+            .unwrap()
+            .evaluate(&facts)
+    );
+    assert!(
+        compile("content == 'CAFé HELLO, WORLD'")
+            .unwrap()
+            .evaluate(&facts)
+    );
+    assert!(
+        compile("content contains 'X-TAG'")
+            .unwrap()
+            .evaluate(&facts)
+    );
+    assert!(
+        compile("content contains '50%_' ")
+            .unwrap()
+            .evaluate(&facts)
+    );
+    assert!(!compile("content contains '50%X'").unwrap().evaluate(&facts));
 }
 
 #[test]

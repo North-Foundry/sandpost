@@ -132,7 +132,7 @@ impl Parser {
                 "operator and literal type do not match this field",
             ));
         }
-        if field.is_mailbox_field()
+        if field.is_ascii_case_insensitive()
             && let Value::String(string) = &mut value
         {
             *string = string.to_ascii_lowercase();
@@ -273,6 +273,7 @@ impl Parser {
             "subject" => Ok(Field::Subject),
             "text" => Ok(Field::Text),
             "html" => Ok(Field::MarkupBody),
+            "content" => Ok(Field::Content),
             "message_id" => Ok(Field::MessageIdentifier),
             "received_at" => Ok(Field::ReceivedAt),
             "size" => Ok(Field::Size),
@@ -332,6 +333,7 @@ fn valid_comparison(field: &Field, operator: Operator, value: &Value) -> bool {
                 Field::Subject
                     | Field::Text
                     | Field::MarkupBody
+                    | Field::Content
                     | Field::MessageIdentifier
                     | Field::Header(_)
             )
