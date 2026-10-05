@@ -86,7 +86,10 @@ impl Field {
     }
 
     /// Report whether string comparisons ignore ASCII letter case for this field.
-    pub(crate) fn is_ascii_case_insensitive(&self) -> bool {
+    ///
+    /// Backends that index or compare message facts use this to reproduce the evaluator's case
+    /// rule instead of keeping a parallel list of fields.
+    pub fn is_ascii_case_insensitive(&self) -> bool {
         self.is_mailbox_field() || matches!(self, Self::Content)
     }
 
