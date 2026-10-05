@@ -10,8 +10,9 @@ Core models facts and relationships; it does not parse mail, compile filters,
 implement authorization, or depend on HTTP or SQL. Mail normalization belongs
 to ingest (`sandpost-mail`). Scope and inbox filters, along with a user's
 personal filter, are plain source strings here; parsing, validation and
-compilation happen in other crates. User records and scope memberships describe
-the domain and do not implement authentication or permission evaluation.
+compilation happen in other crates. Authority is expressed with roles, not
+action flags: a user has one instance-wide [GlobalRole], one [EndpointRole] and
+one [MailAccess] per endpoint membership, and scope memberships are role-less.
 
 Mailboxes and envelope facts are separate from message identity and payload.
 `MessageFacts` carries normalized envelope sender/recipients independently of
@@ -22,21 +23,28 @@ attachment metadata (`filename`, content type, size and content hash). The raw
 message preserves the original MIME content; attachment bytes are not fields of
 `Attachment`.
 
-`User` has a name and optional personal filter. `Membership` associates a user
-with a scope and a `Role` (`Owner`, `Administrator`, `Member` or `Viewer`). An
-`Inbox` belongs to a user and has a name and plain string filter. These records
-express domain data only; visibility and inherited administrative grants live
-in `sandpost-auth`.
+`User` is the single canonical account record: name, email, application-owned
+password hash, instance-wide `GlobalRole` (`Owner`, `Admin` or `Member`),
+optional personal filter, and timestamps. `EndpointMembership` associates a
+user with an endpoint and carries an `EndpointRole` (`Admin`, `Member` or
+`Viewer`) plus a `MailAccess` mode (`All` or `Scoped`), keeping authority and
+mail visibility independent. `ScopeMembership` is role-less and only selects
+mail subsets. `SmtpEndpoint` has an identifier and name. `View` has an
+endpoint, optional owner, name, and plain filter. An `Inbox` remains as a
+compatibility domain record.
 
 ## Identifiers and serialized names
 
-`MessageIdentifier`, `ScopeIdentifier`, `UserIdentifier` and `InboxIdentifier`
-are distinct transparent UUID wrappers. Each can generate a random UUID with
+`MessageIdentifier`, `ScopeIdentifier`, `UserIdentifier`, `InboxIdentifier`,
+`EndpointIdentifier` and `ViewIdentifier` are distinct transparent UUID wrappers. Each can generate a random UUID with
 `new` or `Default`, display in canonical UUID form, and parse from a UUID
 string. `MessageSequence` is a separate transparent `u64` used as a numeric
 message sequence, for example as an internal persistence or pagination key; it
 is not an opaque UUID. The storage boundary is responsible for database integer
 conversion.
+
+`default_endpoint_identifier()` returns the stable UUID ending in `0002`,
+which is used when migrating existing scopes and messages to endpoint routing.
 
 Serde field names are part of the external representation. Depending on the
 record, they include `id`, `cc`, `html`, `message_id`, `user_id` and
@@ -63,8 +71,8 @@ order, because its backing index is a hash map.
 `move_scope` validates the full proposed hierarchy before replacing the tree.
 `set_filter` changes the selected scope's source filter. Both return the
 affected subtree in preorder and advance policy versions only for that subtree,
-so callers can recompile policies and refresh materializations at the relevant
-boundary. Failures are atomic: invalid topology, unknown identifiers, or a
+so callers can recompile policies at the relevant boundary. The active application
+uses current filters per request and performs no message materialization. Failures are atomic: invalid topology, unknown identifiers, or a
 policy-version overflow leave the existing tree unchanged. Filter syntax is
 outside core, so callers validate/compile it before applying the edit.
 
@@ -75,6 +83,7 @@ let root_identifier = ScopeIdentifier::new();
 let child_identifier = ScopeIdentifier::new();
 let root_scope = Scope {
     identifier: root_identifier,
+    endpoint_identifier: sandpost_core::default_endpoint_identifier(),
     parent: None,
     name: "team".into(),
     description: None,
@@ -84,6 +93,7 @@ let root_scope = Scope {
 };
 let child_scope = Scope {
     identifier: child_identifier,
+    endpoint_identifier: sandpost_core::default_endpoint_identifier(),
     parent: Some(root_identifier),
     name: "alerts".into(),
     description: None,
@@ -102,9 +112,9 @@ assert_eq!(tree.get(child_identifier).unwrap().policy_version, 2);
 
 ## Module map
 
-- `identifiers.rs`: four opaque UUID identifiers and `MessageSequence`.
+- `identifiers.rs`: opaque UUID identifiers and `MessageSequence`.
 - `messages.rs`: `Mailbox`, `MessageFacts`, `Attachment` and `Message`.
-- `users.rs`: `User`, `Role`, `Membership` and `Inbox`.
+- `users.rs`: `User`, `GlobalRole`, `EndpointRole`, `MailAccess`, `EndpointMembership`, `ScopeMembership`, endpoints, views and legacy `Inbox`.
 - `scopes.rs`: `Scope`, `TreeError` and indexed `ScopeTree`.
 - `lib.rs`: re-exports the public API from the crate root.
 

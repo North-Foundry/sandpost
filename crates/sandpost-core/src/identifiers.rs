@@ -40,6 +40,8 @@ opaque_identifier!(MessageIdentifier);
 opaque_identifier!(ScopeIdentifier);
 opaque_identifier!(UserIdentifier);
 opaque_identifier!(InboxIdentifier);
+opaque_identifier!(EndpointIdentifier);
+opaque_identifier!(ViewIdentifier);
 
 /// Internal SQLite AUTOINCREMENT key; opaque UUIDs are used in public APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

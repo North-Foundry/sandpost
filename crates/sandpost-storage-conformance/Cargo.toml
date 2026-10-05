@@ -1,5 +1,5 @@
 [package]
-name = "sandpost-storage"
+name = "sandpost-storage-conformance"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 sandpost-core.workspace = true
+sandpost-storage.workspace = true
 sandpost-query.workspace = true
-async-trait.workspace = true
-serde.workspace = true
-thiserror.workspace = true
+tokio.workspace = true

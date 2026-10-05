@@ -6,8 +6,12 @@ mod scopes;
 mod users;
 
 pub use identifiers::{
-    InboxIdentifier, MessageIdentifier, MessageSequence, ScopeIdentifier, UserIdentifier,
+    EndpointIdentifier, InboxIdentifier, MessageIdentifier, MessageSequence, ScopeIdentifier,
+    UserIdentifier, ViewIdentifier,
 };
 pub use messages::{Attachment, Mailbox, Message, MessageFacts};
-pub use scopes::{Scope, ScopeTree, TreeError};
-pub use users::{Inbox, Membership, Role, User};
+pub use scopes::{Scope, ScopeTree, TreeError, default_endpoint_identifier};
+pub use users::{
+    EndpointMembership, EndpointRole, GlobalRole, Inbox, MailAccess, ScopeMembership, SmtpEndpoint,
+    User, View,
+};

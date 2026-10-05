@@ -1,119 +1,177 @@
 # Storage
 
-This guide is the authoritative agent reference for persisted data and database
-behavior. The current backend is SQLite, provided by `sandpost-storage`. The
-storage boundary owns schema initialization and validation, transactional writes,
-prepared reads, decoding, and persistence of scopes, messages, and materialized
-scope visibility. Domain types remain in core; callers exchange domain records
-rather than SQL rows. SQLite and a writable data directory are the baseline
-infrastructure.
+Persistence in SandPost is split into a backend-independent contract and a concrete
+backend. `sandpost-storage` defines the contract — capability traits, domain types,
+request/result DTOs, and semantic errors — with no database driver and no SQL.
+`sandpost-storage-sqlite` implements that contract on top of rusqlite and owns the
+physical schema, its forward migrations, and filter-to-SQL compilation. SQLite remains the
+authoritative source of truth; Tantivy is a disposable derived search index that can be
+reconstructed from SQLite.
 
-## SQLite: implemented behavior
+The dependency direction is `application/services -> sandpost-storage (contract) <-
+sandpost-storage-sqlite (backend)`. The application depends only on the trait object
+`Arc<dyn Storage>`; backend selection happens once at the composition/bootstrap
+boundary, and nothing in the contract depends on a backend.
 
-### Startup and schema baseline
+## Contract
 
-Schema baseline 1 consists of ten ordered SQL migration files, all recorded in
-`migrations` with batch 1. `PRAGMA user_version` is set to 1. Initialization
-runs in an immediate write transaction:
+`sandpost-storage` defines the capability traits `UserStorage`,
+`EndpointStorage`, `ScopeStorage`, `ViewStorage`, `MessageStorage`,
+`SearchSynchronizationStorage`, and `StorageHealth`, and composes them into the
+object-safe `Storage` trait through a blanket implementation for any type that
+implements every capability. No rusqlite type, SQL text, connection, transaction object, or
+backend-specific error appears here.
 
-- A fresh, empty version 0 database receives the baseline.
-- A version 1 database is reopened only when its migration history exactly
-  matches the ten expected entries and its tables, indexes, constraints, views,
-  and triggers match the expected schema.
-- Negative or newer schema versions, a populated version 0 database, missing
-  migration history, mismatched history, or a changed/incomplete schema are
-  rejected. There is no legacy-schema compatibility or automatic repair path.
+- Errors are semantic `StorageError` values: `Unavailable`, `Conflict`,
+  `NotFound`, `ConstraintViolation`, `InvalidData`, `Migration`,
+  `NewerSchema`, `DuplicateMessageIdentifier`, `DuplicateUserEmail`,
+  `DuplicateInboxAddress`, `InvalidInboxAddress`, `StaleRevision`,
+  `PolicyVersionConflict`, `LastOwner`, `InstanceAlreadyInitialized`,
+  `IntegerRange`, `BatchLimitExceeded`, and `Backend`. A backend maps its
+  own driver failures into these.
+- Filters are the canonical query AST; `FilterExpression` is
+  `sandpost_query::Expression`, never a SQL fragment.
+- Atomicity is a property of a storage operation, not of an exposed transaction object.
+- The contract re-exports the shared domain types and defines the DTOs exchanged across the
+  boundary: `NewUser`, `UpdateUser`, `MessageListQuery`,
+  `MessageSummary`, `IndexedMessage`, `SearchOperation`, and
+  `SearchSynchronization`.
 
-Every connection enables foreign keys, requests WAL journal mode, and uses a
-five-second busy timeout. The timeout bounds waiting on SQLite locks; it does
-not add parallel writers.
+## Logical model
 
-### Relational data model
+The logical model is backend-independent and is realized by the SQLite backend as a single
+physical schema baseline.
 
-The ten tables are:
+- **Users.** One canonical record holds identity (`identifier`, `name`,
+  `email`, `password_hash`), a `global_role` (`owner`, `admin`,
+  `member`), an optional `personal_filter`, and
+  `created_at`/`updated_at`. There is no separate owner or credentials table and
+  no boolean permission block. The bootstrap owner is a normal user whose `global_role`
+  is `owner`; the "at least one owner" invariant is enforced by the backend as
+  `StorageError::LastOwner`, and the unique email constraint surfaces as
+  `DuplicateUserEmail`.
+- **Endpoints.** SMTP endpoints with stable identifiers, unchanged in shape.
+- **Endpoint memberships.** `EndpointMembership { user_identifier, endpoint_identifier,
+  role: EndpointRole, mail_access: MailAccess }`, keyed by
+  `(user_identifier, endpoint_identifier)`. The endpoint role (`admin`,
+  `member`, `viewer`) carries endpoint-local administrative authority; mail access
+  (`all`, `scoped`) carries mail visibility.
+- **Scopes.** Endpoint-associated, hierarchical query definitions with
+  identifier/parent/name/description/filter/position/policy_version, unchanged in shape.
+- **Scope memberships.** `ScopeMembership { user_identifier, scope_identifier }` is
+  role-less and only answers which mail subsets reach a user. A scope membership requires an
+  endpoint membership for the scope's endpoint; the storage API rejects an orphaned
+  assignment with `ConstraintViolation`.
+- **Views.** Optional owner: a user-owned view is private to its owner, while a null owner
+  denotes a shared view. A view contains an endpoint and a canonical filter. Views organize
+  mail and never grant access.
+- **Mail.** Messages, normalized recipient/header/attachment facts, raw MIME in the mail row,
+  and search synchronization state.
 
-| Table | Stored facts and relationships |
-| --- | --- |
-| `migrations` | Applied migration filename and positive batch number. |
-| `scopes` | Scope identity, optional parent, descriptive fields, filter, ordering position, and nonnegative policy version. The parent foreign key has no deletion cascade. |
-| `users` | User identity, name, and optional personal filter. |
-| `memberships` | User-to-scope membership and role (`owner`, `admin`, `member`, or `viewer`); deleting either parent cascades. |
-| `inboxes` | User-owned inbox identity, name, and filter; deleting the user cascades. |
-| `mail` | One row per message: numeric sequence, unique public identifier, subject, text and markup bodies, optional message identifier, original raw message bytes, received time, and nonnegative size. |
-| `mail_recipients` | Ordered mailbox facts with role, address, and domain. Roles preserve envelope sender, envelope recipients, MIME From, To, and Cc separately. |
-| `mail_headers` | Ordered values by message and header name, preserving repeated header values. |
-| `mail_scope` | Materialized message-to-scope visibility with the policy version used to compute each match. |
-| `mail_attachments` | Ordered attachment metadata and content hash, including optional filename, content type, and nonnegative size. |
+## SQLite backend, startup, and migrations
 
-Child mail facts reference `mail.sequence` and cascade on message deletion.
-Recipient role and ordinal are part of the primary key, so duplicates at
-separate positions and original order are retained. The envelope sender has
-ordinal zero and at most one row for a message. Header values are ordered within
-each name. Attachment count is derived from attachment rows, not stored as a
-separate fact. Indexes support scope adjacency, membership/inbox lookup, mail
-sequence/time ordering, recipient address/domain lookup by role, header lookup,
-and scope-to-message access. These are candidate and lookup indexes; they do
-not constitute a complete index for every query predicate.
+`PRAGMA user_version` is schema version 1 under `sandpost-storage-sqlite`. The schema is a
+single flattened baseline applied from ordered per-operation scripts: SandPost has not been
+deployed, so a fresh database is created directly at the current physical schema and there is no
+incremental migration history to replay.
 
-The recipient role values are `envelope_from`, `envelope_to`, `from`, `to`, and
-`carbon_copy`. Users, memberships, and inboxes have schema tables, but their
-domain records do not yet have persistence methods in the storage API.
+Fresh databases receive the baseline atomically and record it in the `migrations` history
+table. Reopening validates that the stored `user_version` equals the baseline and that every
+table, constraint, index, and trigger matches it. Negative, newer, unversioned-populated,
+missing-history, mismatched-history, or structurally invalid databases fail startup; older
+schemas are rejected rather than migrated and there is no schema repair.
 
-There are no JSON-encoded mail facts in SQLite. The original MIME message is
-stored as a BLOB. Extracted attachment data currently consists of metadata and a
-content hash; attachment bytes can be recovered from the raw MIME message, and
-are not stored as separate blobs.
+The physical schema is a SQLite implementation detail. The logical model above is what the
+sandpost-storage contract guarantees to every backend, so a future backend may model it
+differently as long as the observable behavior holds.
 
-### Transactions and visibility consistency
+## Async execution
 
-Scope writes reject decreasing policy versions. Changing a stored filter or
-parent requires a higher version; changing descriptive fields can keep the same
-version. Policy evaluation and authorization remain the caller's responsibility: a
-visibility query does not verify access rights to the supplied scopes.
+SQLite itself is synchronous, but the backend exposes only async trait methods. Every call
+schedules its blocking work through `tokio::task::spawn_blocking` behind one
+mutex-protected connection, so async callers never block runtime worker threads. The
+connection enables foreign keys, requests WAL mode (retrying busy errors for up to five
+seconds), and uses a five-second busy timeout. That internal synchronization is an
+implementation detail and never crosses the crate boundary: one `SqliteStorage` handle
+serializes every operation, including reads, and SQLite serializes writes across separate
+connections. WAL does not make a single handle concurrently queryable.
 
-Message insertion stores the mail row, recipient/header/attachment rows, and
-provided scope matches in one transaction. Before writing each match, storage
-checks that the scope still has the policy version used by the matcher. A stale
-version or any insert/validation failure aborts the transaction, so neither a
-partial message nor partial visibility links are committed. Callers acknowledge
-ingestion and publish notifications only after persistence succeeds.
+## Mail writes and reads
 
-Replacing a scope's materialized match set checks the current policy version,
-then deletes and inserts that scope's links in a single transaction. Visibility
-reads include only links whose stored policy version still equals the current
-scope version. Queries across multiple scopes deduplicate messages, since a
-message may be visible through more than one scope. Foreign keys enforce the
-referential links to scopes and messages.
+SMTP ingestion writes the message, normalized recipient/header/attachment facts, and
+transactional search-outbox operations in one transaction. A failed transaction produces
+neither a partial message nor an outbox row. The SMTP server acknowledges only after the
+transaction commits. Message deletion transactionally cascades dependent facts and enqueues
+the corresponding index operation. Raw MIME remains in the mail row; attachment bytes are
+decoded from that source when requested.
 
-### Reads, bounds, and integer conversion
+Message identity and insertion sequence are immutable SQL keys; sequence is the stable
+ordering key. Lists and search pages use newest-first keyset pagination
+(`sequence < before`) rather than offsets. SQL reads are bounded; search
+indexing/rebuild fetches rows in bounded sequence batches, and application hydration loads
+only the selected result batch. Summary reads use bounded excerpts and metadata, while
+full/raw reads are explicit. Storage validates unsigned-to-SQLite integer conversions and
+rejects values outside SQLite's signed integer range. Instance identity/bootstrap metadata is
+separately stored as `instance.json` in the configured data directory; it is not a
+SQLite record.
 
-Summary reads select scalar message fields and attachment counts without
-loading bodies or raw MIME bytes. Mailbox relations are loaded for the selected
-page. Full message reads include raw bytes; metadata reads do not. Message lists
-are newest-first and use a sequence cursor, with a maximum page size of 100.
-Visible-message queries apply the same page bound and deduplicate shared
-messages. Storage checks conversions between unsigned domain values and
-SQLite's signed integer range, returning an error when a value cannot be
-represented.
+## Direct authorization
 
-### Connection and concurrency model
+Direct message authorization must use the same composed plan as search: per endpoint, mail
+access `all` or the union of the user's assigned scopes with inherited filters, then
+personal restrictions, plus requested view/query constraints. Direct reads evaluate that plan
+against endpoint, facts, and requested payload from one SQL snapshot. Keep this check in front
+of summary, full-message, raw MIME, attachment, and event operations as applicable. Unknown
+and unauthorized identifiers should not reveal existence where the API currently returns a
+common not-found result.
 
-A `Storage` handle shares one SQLite connection behind one standard mutex.
-Every operation, including reads, takes this lock. Async callers schedule
-storage and matching work on Tokio's blocking pool so synchronous SQLite calls
-do not block runtime worker threads. The mutex serializes reads and writes
-through this handle; WAL and the busy timeout do not create concurrent queries
-on a single locked connection. SQLite itself still serializes writers across
-connections. Maximum-size concurrent mail submissions, blocking-pool queueing,
-and MIME allocations consume resources; configured input/session limits are
-ceilings, not throughput guarantees. No performance guarantee is implied
+## Search outbox and derived index
+
+The SQL outbox is durable synchronization state, not the search index itself. Outbox writes
+are part of the message transaction. The worker reads operations in batches of 64, updates
+Tantivy from current SQL state (making replay idempotent), commits the index, and only then
+acknowledges the operations in SQLite. A crash between index commit and acknowledgment safely
+replays the batch. The worker polls on a 100 ms interval; search can lag committed SQL state
+until it catches up.
+
+The installation has a `CURRENT` generation pointer and a process-exclusive writer lock.
+The active generation is durable, but disposable: missing, corrupt, or behind state is rebuilt
+from SQL. Rebuild takes a bounded baseline through a captured sequence, replays retained
+insert/delete operations through a cutoff while ingestion continues, then publishes the
+generation atomically and acknowledges the replayed watermark. Later outbox work remains for
+the worker. Reader handles keep retired generations alive until in-flight queries finish.
+
+Search status reports SQL's latest mutation sequence, acknowledged/indexed sequence, and
+pending operation count. The CLI `search status` command reads this SQL state directly and
+does not acquire the search writer lock. CLI `search rebuild` opens the coordinator and
+must acquire the same process-exclusive lock used by the runtime, so it cannot run while a live
+runtime owns that lock. HTTP status and rebuild require an administrator (owner or admin) and
+use the running coordinator; rebuild is serialized through that coordinator's writer gate
+without attempting to acquire a second installation lock.
+
+## Concurrency
+
+The shared storage handle serializes every operation, including reads. Async entry points
+schedule synchronous SQLite work away from Tokio worker threads. SQLite serializes writes
+across separate connections; WAL does not make a single handle concurrently queryable. Search
+has a separate writer gate and one installation lock. Rebuild is bounded by page/batch sizes
+but consumes time and disk proportional to the corpus. No throughput guarantee is implied
 without representative measurements.
 
-## Planned storage work
+Every message carries a persistent search revision assigned from the globally monotonic outbox
+sequence. Indexed-fact, endpoint, raw MIME, recipient, header, and attachment changes advance
+the revision and enqueue synchronization in the same transaction. Delete/reinsert cannot reuse
+a revision. Index reads obtain revision and normalized facts from one SQL read transaction.
+`hydrate_current_messages` batch-loads lightweight summaries only for identifier/revision
+pairs equal to the current mail row, with child summaries in the same snapshot; stale hits are
+omitted until indexing catches up. Temporary memory indexes retain their own observed watermark
+and cannot prune the durable SQL outbox.
 
-A separate blob store for attachment bytes is deferred. Any future implementation
-must coordinate staged blob writes with database references and safely reclaim
-orphaned blobs after failed or interrupted writes. Search-specific full-text
-indexing and a bounded writer queue with separate read-only connections are
-also future work; the current implementation uses SQLite tables and the shared
-connection described above.
+Refresh notifications wait for a captured committed index watermark through a watch channel,
+then recheck message visibility and session validity before exposing IDs. SSE `ready` also
+waits for that captured watermark. SMTP acknowledgement still depends only on the SQL
+transaction, and direct reads remain immediately available. Shutdown releases the installation
+and Tantivy writer locks even when application/reader handles survive, allowing native restart;
+closed writers reject further mutations and wake pending waits. Temporary coordinators fence
+rebuilds against concurrent durable outbox pruning and retry or explicitly fail under sustained
+acknowledgement churn.
