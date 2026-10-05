@@ -1,5 +1,5 @@
 //! Scope policies and validated indexed hierarchy traversal and edits.
-use crate::ScopeIdentifier;
+use crate::{EndpointIdentifier, ScopeIdentifier};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 pub struct Scope {
     #[serde(rename = "id")]
     pub identifier: ScopeIdentifier,
+    #[serde(default = "default_endpoint_identifier")]
+    pub endpoint_identifier: EndpointIdentifier,
     pub parent: Option<ScopeIdentifier>,
     pub name: String,
     pub description: Option<String>,
@@ -14,6 +16,11 @@ pub struct Scope {
     pub filter: String,
     pub position: i64,
     pub policy_version: u64,
+}
+
+/// Return the stable endpoint assigned to scopes created before endpoint routing.
+pub fn default_endpoint_identifier() -> EndpointIdentifier {
+    EndpointIdentifier(uuid::Uuid::from_u128(2))
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -178,8 +185,7 @@ impl ScopeTree {
         *self = next;
         Ok(affected)
     }
-    /// Return precisely the subtree that needs a new compiled policy and
-    /// materialization. Query validation occurs before calling this domain edit.
+    /// Return the subtree whose inherited policy changes. Validate query source before this edit.
     pub fn set_filter(
         &mut self,
         identifier: ScopeIdentifier,

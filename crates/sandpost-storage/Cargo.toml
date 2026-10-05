@@ -6,10 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-rusqlite.workspace = true
+sandpost-core.workspace = true
+sandpost-query.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-sandpost-core.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true

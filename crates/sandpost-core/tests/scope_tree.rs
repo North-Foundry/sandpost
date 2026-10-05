@@ -6,6 +6,7 @@ use sandpost_core::{Scope, ScopeIdentifier, ScopeTree, TreeError};
 fn scope(parent: Option<ScopeIdentifier>) -> Scope {
     Scope {
         identifier: ScopeIdentifier::new(),
+        endpoint_identifier: sandpost_core::default_endpoint_identifier(),
         parent,
         name: "scope".into(),
         description: None,
