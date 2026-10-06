@@ -12,7 +12,6 @@ repository = "https://github.com/North-Foundry/sandpost"
 [workspace.dependencies]
 sandpost-core = { path = "crates/sandpost-core" }
 sandpost-query = { path = "crates/sandpost-query" }
-sandpost-match = { path = "crates/sandpost-match" }
 sandpost-mail = { path = "crates/sandpost-mail" }
 sandpost-storage = { path = "crates/sandpost-storage" }
 sandpost-storage-sqlite = { path = "crates/sandpost-storage-sqlite" }

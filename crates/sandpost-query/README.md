@@ -259,8 +259,7 @@ assert!(error.to_string().contains("at byte"));
 | `6` | All remaining fields, including recipient fields and body text |
 
 The matching layer can use cheap exact predicates as candidate anchors and
-order work using these hints. `sandpost-match` interns equivalent predicates
-and expressions for shared evaluation. See the
+order work using these hints. See the
 [architecture guide](../../docs/architecture.md) for crate boundaries and the
 [query-language reference](../../docs/query-language.md) for the compact DSL
 reference and safety rationale.
