@@ -1,5 +1,6 @@
 name: CI
-on: [push, pull_request]
+# Temporarily pause automatic CI; keep manual runs available.
+on: workflow_dispatch
 permissions:
   contents: read
 jobs:
