@@ -1368,15 +1368,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandpost-match"
-version = "0.1.0"
-dependencies = [
- "sandpost-core",
- "sandpost-query",
- "thiserror",
-]
-
-[[package]]
 name = "sandpost-node"
 version = "0.1.0"
 dependencies = [
