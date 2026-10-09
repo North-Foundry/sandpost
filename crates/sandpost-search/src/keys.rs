@@ -7,12 +7,6 @@
 use sandpost_query::Field as QueryField;
 use std::collections::HashSet;
 
-/// Document-kind marker stored on every indexed message.
-pub(super) const MESSAGE_MARKER: &str = "message";
-
-/// Marker term that matches no document, used to plan a false expression.
-pub(super) const NEVER_MARKER: &str = "never";
-
 /// Stable index key for one DSL field.
 pub(super) fn field_key(field: &QueryField) -> String {
     match field {

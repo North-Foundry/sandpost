@@ -1,35 +1,26 @@
 //! Search request types and semantics-preserving Tantivy candidate planning.
 
-use crate::{index::SearchFields, keys};
-use sandpost_core::{EndpointIdentifier, MessageIdentifier, MessageSequence};
+use crate::{keys, schema::SearchFields};
+use sandpost_core::{MessageIdentifier, MessageSequence};
 use sandpost_query::{Expression, Field as QueryField, Operator, Predicate, Value};
 use tantivy::{
     Term,
-    query::{AllQuery, BooleanQuery, Occur, Query, TermQuery},
+    query::{AllQuery, BooleanQuery, EmptyQuery, Occur, Query, TermQuery},
     schema::IndexRecordOption,
 };
 
 /// Maximum result batch returned by a search request.
 pub const MAXIMUM_SEARCH_BATCH_SIZE: usize = 256;
 
-/// One endpoint-bound expression in an OR authorization set.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EndpointQuery {
-    /// Endpoint whose documents this expression may authorize.
-    pub endpoint_identifier: EndpointIdentifier,
-    /// Query evaluated against the message facts after endpoint restriction.
-    pub expression: Expression,
-}
-
 /// Complete search request, including centralized authorization and keyset pagination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageQuery {
-    /// `None` allows global access; `Some([])` denies all; otherwise clauses are ORed.
-    pub authorization: Option<Vec<EndpointQuery>>,
+    /// `None` allows all mail; otherwise only messages whose facts satisfy the expression.
+    ///
+    /// `Some(Expression::False)` denies everything without consulting the index.
+    pub authorization: Option<Expression>,
     /// Additional caller-selected filter applied after authorization.
     pub filter: Expression,
-    /// Optional endpoint restriction applied to authorized results.
-    pub endpoint_identifier: Option<EndpointIdentifier>,
     /// Optional direct public message identifier restriction.
     pub message_identifier: Option<MessageIdentifier>,
     /// Exclusive upper sequence bound for newest-first keyset pagination.
@@ -42,7 +33,7 @@ pub struct MessageQuery {
 pub(super) fn candidate_query(expression: &Expression, fields: SearchFields) -> Box<dyn Query> {
     match expression {
         Expression::True => Box::new(AllQuery),
-        Expression::False => term_query(fields.marker, keys::NEVER_MARKER),
+        Expression::False => Box::new(EmptyQuery),
         Expression::Predicate(predicate) => predicate_candidate(predicate, fields),
         Expression::Not(_) => Box::new(AllQuery),
         Expression::And(children) if children.is_empty() => Box::new(AllQuery),
@@ -52,9 +43,7 @@ pub(super) fn candidate_query(expression: &Expression, fields: SearchFields) -> 
                 .map(|child| (Occur::Must, candidate_query(child, fields)))
                 .collect(),
         )),
-        Expression::Or(children) if children.is_empty() => {
-            term_query(fields.marker, keys::NEVER_MARKER)
-        }
+        Expression::Or(children) if children.is_empty() => Box::new(EmptyQuery),
         Expression::Or(children) => {
             if children
                 .iter()
@@ -70,6 +59,38 @@ pub(super) fn candidate_query(expression: &Expression, fields: SearchFields) -> 
                 ))
             }
         }
+    }
+}
+
+/// Report whether candidate hits need evaluation against the canonical expression.
+///
+/// Only constants, compositions of exact expressions, numeric comparisons, and attachment
+/// presence comparisons are represented exactly by indexed fields.
+pub(crate) fn requires_verification(expression: &Expression) -> bool {
+    match expression {
+        Expression::True | Expression::False => false,
+        Expression::And(children) | Expression::Or(children) => {
+            children.iter().any(requires_verification)
+        }
+        Expression::Predicate(predicate) => match (&predicate.field, &predicate.value) {
+            (
+                QueryField::ReceivedAt | QueryField::Size | QueryField::AttachmentCount,
+                Value::Number(_),
+            ) => !matches!(
+                predicate.operator,
+                Operator::Equal
+                    | Operator::NotEqual
+                    | Operator::GreaterThan
+                    | Operator::GreaterThanOrEqual
+                    | Operator::LessThan
+                    | Operator::LessThanOrEqual
+            ),
+            (QueryField::HasAttachments, Value::Boolean(_)) => {
+                !matches!(predicate.operator, Operator::Equal | Operator::NotEqual)
+            }
+            _ => true,
+        },
+        Expression::Not(_) => true,
     }
 }
 
@@ -89,6 +110,19 @@ fn predicate_candidate(predicate: &Predicate, fields: SearchFields) -> Box<dyn Q
             fields.exact_values,
             &keys::exact_term(&field_key, value, fold_case),
         ),
+        (Value::Boolean(value), Operator::Equal | Operator::NotEqual)
+            if matches!(predicate.field, QueryField::HasAttachments) =>
+        {
+            let has_attachments = *value ^ (predicate.operator == Operator::NotEqual);
+            if has_attachments {
+                unsigned_range(fields.attachment_count, 0, Operator::GreaterThan)
+            } else {
+                Box::new(TermQuery::new(
+                    Term::from_field_u64(fields.attachment_count, 0),
+                    IndexRecordOption::Basic,
+                ))
+            }
+        }
         (Value::Boolean(value), Operator::Equal) => term_query(
             fields.exact_values,
             &keys::exact_term(&field_key, &value.to_string(), fold_case),
@@ -141,9 +175,7 @@ fn numeric_candidate(
                     IndexRecordOption::Basic,
                 ))
             }
-            QueryField::Size | QueryField::AttachmentCount => {
-                term_query(fields.marker, keys::NEVER_MARKER)
-            }
+            QueryField::Size | QueryField::AttachmentCount => Box::new(EmptyQuery),
             _ => Box::new(AllQuery),
         };
     }
@@ -158,7 +190,7 @@ fn numeric_candidate(
         return Box::new(AllQuery);
     }
     if matches!(field, QueryField::ReceivedAt) {
-        return signed_range(fields.received_at, value, operator, fields.marker);
+        return signed_range(fields.received_at, value, operator);
     }
     if matches!(field, QueryField::Size | QueryField::AttachmentCount) {
         if value < 0 {
@@ -166,7 +198,7 @@ fn numeric_candidate(
                 operator,
                 Operator::LessThan | Operator::LessThanOrEqual | Operator::Equal
             ) {
-                term_query(fields.marker, keys::NEVER_MARKER)
+                Box::new(EmptyQuery)
             } else {
                 Box::new(AllQuery)
             };
@@ -179,91 +211,59 @@ fn numeric_candidate(
             },
             value as u64,
             operator,
-            fields.marker,
         );
     }
     Box::new(AllQuery)
 }
 
 /// Build the signed integer range for one scalar field.
-fn signed_range(
-    field: tantivy::schema::Field,
-    value: i64,
-    operator: Operator,
-    marker: tantivy::schema::Field,
-) -> Box<dyn Query> {
+fn signed_range(field: tantivy::schema::Field, value: i64, operator: Operator) -> Box<dyn Query> {
     use Operator::{GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, NotEqual};
     use std::ops::Bound::{Excluded, Included, Unbounded};
     match operator {
-        GreaterThan => signed_range_query(Excluded(Term::from_field_i64(field, value)), Unbounded),
-        GreaterThanOrEqual => {
-            signed_range_query(Included(Term::from_field_i64(field, value)), Unbounded)
-        }
-        LessThan => signed_range_query(Unbounded, Excluded(Term::from_field_i64(field, value))),
-        LessThanOrEqual => {
-            signed_range_query(Unbounded, Included(Term::from_field_i64(field, value)))
-        }
+        GreaterThan => range_query(Excluded(Term::from_field_i64(field, value)), Unbounded),
+        GreaterThanOrEqual => range_query(Included(Term::from_field_i64(field, value)), Unbounded),
+        LessThan => range_query(Unbounded, Excluded(Term::from_field_i64(field, value))),
+        LessThanOrEqual => range_query(Unbounded, Included(Term::from_field_i64(field, value))),
         NotEqual => Box::new(BooleanQuery::new(vec![
             (
                 Occur::Should,
-                signed_range_query(Unbounded, Excluded(Term::from_field_i64(field, value))),
+                range_query(Unbounded, Excluded(Term::from_field_i64(field, value))),
             ),
             (
                 Occur::Should,
-                signed_range_query(Excluded(Term::from_field_i64(field, value)), Unbounded),
+                range_query(Excluded(Term::from_field_i64(field, value)), Unbounded),
             ),
         ])),
-        _ => term_query(marker, keys::NEVER_MARKER),
+        _ => Box::new(AllQuery),
     }
 }
 
 /// Build an unsigned integer range for one scalar field.
-fn unsigned_range(
-    field: tantivy::schema::Field,
-    value: u64,
-    operator: Operator,
-    marker: tantivy::schema::Field,
-) -> Box<dyn Query> {
+fn unsigned_range(field: tantivy::schema::Field, value: u64, operator: Operator) -> Box<dyn Query> {
     use Operator::{GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, NotEqual};
     use std::ops::Bound::{Excluded, Included, Unbounded};
     match operator {
-        GreaterThan => {
-            unsigned_range_query(Excluded(Term::from_field_u64(field, value)), Unbounded)
-        }
-        GreaterThanOrEqual => {
-            unsigned_range_query(Included(Term::from_field_u64(field, value)), Unbounded)
-        }
-        LessThan => unsigned_range_query(Unbounded, Excluded(Term::from_field_u64(field, value))),
-        LessThanOrEqual => {
-            unsigned_range_query(Unbounded, Included(Term::from_field_u64(field, value)))
-        }
+        GreaterThan => range_query(Excluded(Term::from_field_u64(field, value)), Unbounded),
+        GreaterThanOrEqual => range_query(Included(Term::from_field_u64(field, value)), Unbounded),
+        LessThan => range_query(Unbounded, Excluded(Term::from_field_u64(field, value))),
+        LessThanOrEqual => range_query(Unbounded, Included(Term::from_field_u64(field, value))),
         NotEqual => Box::new(BooleanQuery::new(vec![
             (
                 Occur::Should,
-                unsigned_range_query(Unbounded, Excluded(Term::from_field_u64(field, value))),
+                range_query(Unbounded, Excluded(Term::from_field_u64(field, value))),
             ),
             (
                 Occur::Should,
-                unsigned_range_query(Excluded(Term::from_field_u64(field, value)), Unbounded),
+                range_query(Excluded(Term::from_field_u64(field, value)), Unbounded),
             ),
         ])),
-        _ => term_query(marker, keys::NEVER_MARKER),
+        _ => Box::new(AllQuery),
     }
 }
 
-/// Construct a Tantivy signed range query.
-fn signed_range_query(
-    lower: std::ops::Bound<Term>,
-    upper: std::ops::Bound<Term>,
-) -> Box<dyn Query> {
-    Box::new(tantivy::query::RangeQuery::new(lower, upper))
-}
-
-/// Construct a Tantivy unsigned range query.
-fn unsigned_range_query(
-    lower: std::ops::Bound<Term>,
-    upper: std::ops::Bound<Term>,
-) -> Box<dyn Query> {
+/// Construct a Tantivy integer range query.
+fn range_query(lower: std::ops::Bound<Term>, upper: std::ops::Bound<Term>) -> Box<dyn Query> {
     Box::new(tantivy::query::RangeQuery::new(lower, upper))
 }
 
@@ -300,16 +300,23 @@ fn edge_candidate(
     prefix: bool,
     fields: SearchFields,
 ) -> Box<dyn Query> {
-    let normalized = keys::normalize_string(value, fold_case);
-    let characters: Vec<char> = normalized.chars().collect();
-    if characters.len() < 3 {
+    let fold = |character: char| {
+        if fold_case {
+            character.to_ascii_lowercase()
+        } else {
+            character
+        }
+    };
+    let boundary: String = if prefix {
+        value.chars().map(fold).take(3).collect()
+    } else {
+        let mut characters: Vec<char> = value.chars().rev().map(fold).take(3).collect();
+        characters.reverse();
+        characters.into_iter().collect()
+    };
+    if boundary.chars().count() < 3 {
         return term_query(fields.exact_values, &keys::presence_term(field_key));
     }
-    let boundary: String = if prefix {
-        characters[..3].iter().collect()
-    } else {
-        characters[characters.len() - 3..].iter().collect()
-    };
     term_query(fields.trigrams, &keys::trigram_term(field_key, &boundary))
 }
 
@@ -343,8 +350,102 @@ fn glob_candidate(
 
 /// Build an indexed exact-term query.
 fn term_query(field: tantivy::schema::Field, value: &str) -> Box<dyn Query> {
+    if value.len() > tantivy::tokenizer::MAX_TOKEN_LEN {
+        return Box::new(AllQuery);
+    }
     Box::new(TermQuery::new(
         Term::from_field_text(field, value),
         IndexRecordOption::Basic,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requires_verification;
+    use sandpost_query::{Expression, Field, Operator, Predicate, Value};
+
+    /// Build a predicate expression for verification classification tests.
+    fn predicate(field: Field, operator: Operator, value: Value) -> Expression {
+        Expression::Predicate(Predicate {
+            field,
+            operator,
+            value,
+        })
+    }
+
+    /// Confirm indexed numeric ranges and attachment equality need no reevaluation.
+    #[test]
+    fn supported_numeric_and_attachment_predicates_are_exact() {
+        let numeric_fields = [Field::ReceivedAt, Field::Size, Field::AttachmentCount];
+        let numeric_operators = [
+            Operator::Equal,
+            Operator::NotEqual,
+            Operator::GreaterThan,
+            Operator::GreaterThanOrEqual,
+            Operator::LessThan,
+            Operator::LessThanOrEqual,
+        ];
+        for field in numeric_fields {
+            for operator in numeric_operators {
+                assert!(!requires_verification(&predicate(
+                    field.clone(),
+                    operator,
+                    Value::Number(12),
+                )));
+            }
+        }
+        for operator in [Operator::Equal, Operator::NotEqual] {
+            for value in [false, true] {
+                assert!(!requires_verification(&predicate(
+                    Field::HasAttachments,
+                    operator,
+                    Value::Boolean(value),
+                )));
+            }
+        }
+    }
+
+    /// Keep unsupported operators and ill-typed predicates on the exact evaluator path.
+    #[test]
+    fn unsupported_and_mistyped_predicates_require_verification() {
+        for expression in [
+            predicate(Field::Size, Operator::Contains, Value::Number(12)),
+            predicate(Field::ReceivedAt, Operator::Equal, Value::Boolean(true)),
+            predicate(
+                Field::HasAttachments,
+                Operator::Contains,
+                Value::Boolean(false),
+            ),
+            predicate(Field::Subject, Operator::Equal, Value::Number(12)),
+        ] {
+            assert!(requires_verification(&expression));
+        }
+    }
+
+    /// Confirm exactness composes through AND/OR, while NOT stays conservative.
+    #[test]
+    fn boolean_compositions_preserve_verification_requirements() {
+        let exact = predicate(Field::ReceivedAt, Operator::GreaterThan, Value::Number(0));
+        let inexact = predicate(
+            Field::Subject,
+            Operator::Contains,
+            Value::String("needle".into()),
+        );
+        assert!(!requires_verification(&Expression::True));
+        assert!(!requires_verification(&Expression::False));
+        assert!(!requires_verification(&Expression::And(vec![
+            exact.clone(),
+            Expression::True,
+        ])));
+        assert!(!requires_verification(&Expression::Or(vec![exact.clone()])));
+        assert!(requires_verification(&Expression::And(vec![
+            exact.clone(),
+            inexact.clone(),
+        ])));
+        assert!(requires_verification(&Expression::Or(vec![
+            exact.clone(),
+            inexact
+        ])));
+        assert!(requires_verification(&Expression::Not(Box::new(exact))));
+    }
 }
