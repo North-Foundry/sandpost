@@ -1,14 +1,14 @@
 //! Differential and persistence tests for the Tantivy candidate compiler.
 
-use crate::{EndpointQuery, IndexedDocument, MessageQuery, SearchError, SearchIndex};
-use sandpost_core::{
-    Attachment, EndpointIdentifier, Mailbox, MessageFacts, MessageIdentifier, MessageSequence,
-};
+use crate::{IndexedDocument, MessageQuery, SearchError, SearchIndex};
+use sandpost_core::{Mailbox, MessageFacts, MessageIdentifier, MessageSequence};
 use sandpost_query::{Expression, Field, Operator, Predicate, Value};
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
+    sync::{Arc, Barrier, mpsc},
+    thread,
 };
 
 /// Build message facts with representative scalar, collection, optional, and Unicode values.
@@ -70,15 +70,12 @@ fn fixture_facts(index: usize) -> MessageFacts {
 /// Create an in-memory index populated and committed with the shared differential fixtures.
 fn fixture_index() -> (SearchIndex, Vec<IndexedDocument>) {
     let index = SearchIndex::memory().expect("memory index");
-    let endpoint = EndpointIdentifier::new();
     let documents: Vec<_> = (0..3)
         .map(|position| IndexedDocument {
             identifier: MessageIdentifier::new(),
             sequence: MessageSequence(position as u64 + 1),
             revision: 0,
-            endpoint_identifier: endpoint,
             facts: fixture_facts(position),
-            attachments: Vec::<Attachment>::new(),
         })
         .collect();
     index.upsert_batch(&documents).expect("index fixtures");
@@ -91,7 +88,6 @@ fn request(expression: Expression, limit: usize) -> MessageQuery {
     MessageQuery {
         authorization: None,
         filter: expression,
-        endpoint_identifier: None,
         message_identifier: None,
         before: None,
         limit,
@@ -322,61 +318,54 @@ fn boolean_and_missing_value_semantics_are_exact() {
     );
 }
 
-/// Enforce endpoint authorization union semantics and all direct request restrictions.
+/// Enforce authorization expressions and all direct request restrictions together.
 #[test]
-fn authorization_endpoint_identifier_and_cursor_compose() {
+fn authorization_message_identifier_and_cursor_compose() {
     let index = SearchIndex::memory().expect("memory index");
-    let first_endpoint = EndpointIdentifier::new();
-    let second_endpoint = EndpointIdentifier::new();
     let mut documents = Vec::new();
     for position in 1..=3 {
+        let mut facts = fixture_facts(1);
+        if position == 2 {
+            facts.subject = "Hidden".to_owned();
+        }
         documents.push(IndexedDocument {
             identifier: MessageIdentifier::new(),
             sequence: MessageSequence(position),
             revision: 0,
-            endpoint_identifier: if position == 2 {
-                second_endpoint
-            } else {
-                first_endpoint
-            },
-            facts: fixture_facts(1),
-            attachments: Vec::new(),
+            facts,
         });
     }
     index.upsert_batch(&documents).expect("batch index");
     index.commit(3).expect("commit");
     let request = MessageQuery {
-        authorization: Some(vec![
-            EndpointQuery {
-                endpoint_identifier: first_endpoint,
-                expression: Expression::True,
+        authorization: Some(Expression::Not(Box::new(Expression::Predicate(
+            Predicate {
+                field: Field::Subject,
+                operator: Operator::Contains,
+                value: Value::String("Hidden".to_owned()),
             },
-            EndpointQuery {
-                endpoint_identifier: second_endpoint,
-                expression: Expression::Predicate(Predicate {
-                    field: Field::Subject,
-                    operator: Operator::Contains,
-                    value: Value::String("Test".to_owned()),
-                }),
-            },
-        ]),
+        )))),
         filter: Expression::True,
-        endpoint_identifier: None,
         message_identifier: None,
         before: None,
         limit: 256,
     };
-    assert_eq!(index.search(&request).expect("authorized search").len(), 3);
-    let mut denied = request.clone();
-    denied.authorization = Some(Vec::new());
-    assert!(index.search(&denied).expect("deny all").is_empty());
-    let mut endpoint_filtered = request.clone();
-    endpoint_filtered.endpoint_identifier = Some(second_endpoint);
     assert_eq!(
-        index.search(&endpoint_filtered).expect("endpoint filter"),
-        vec![documents[1].identifier]
+        index.search(&request).expect("authorized search"),
+        vec![documents[2].identifier, documents[0].identifier]
     );
+    let mut unrestricted = request.clone();
+    unrestricted.authorization = None;
+    assert_eq!(index.search(&unrestricted).expect("all mail").len(), 3);
+    let mut denied = request.clone();
+    denied.authorization = Some(Expression::False);
+    assert!(index.search(&denied).expect("deny all").is_empty());
     let mut direct = request.clone();
+    direct.message_identifier = Some(documents[1].identifier);
+    assert!(
+        index.search(&direct).expect("direct id").is_empty(),
+        "authorization applies to direct identifiers"
+    );
     direct.message_identifier = Some(documents[0].identifier);
     assert_eq!(
         index.search(&direct).expect("direct id"),
@@ -386,7 +375,7 @@ fn authorization_endpoint_identifier_and_cursor_compose() {
     cursor.before = Some(MessageSequence(3));
     assert_eq!(
         index.search(&cursor).expect("keyset page"),
-        vec![documents[1].identifier, documents[0].identifier]
+        vec![documents[0].identifier]
     );
 }
 
@@ -394,7 +383,6 @@ fn authorization_endpoint_identifier_and_cursor_compose() {
 #[test]
 fn substring_false_positives_do_not_hide_later_exact_matches() {
     let index = SearchIndex::memory().expect("memory index");
-    let endpoint = EndpointIdentifier::new();
     let mut documents = Vec::new();
     for sequence in 1..=257 {
         let mut facts = fixture_facts(0);
@@ -412,9 +400,7 @@ fn substring_false_positives_do_not_hide_later_exact_matches() {
             identifier: MessageIdentifier::new(),
             sequence: MessageSequence(sequence),
             revision: 0,
-            endpoint_identifier: endpoint,
             facts,
-            attachments: Vec::new(),
         });
     }
     let mut exact_facts = fixture_facts(0);
@@ -426,9 +412,7 @@ fn substring_false_positives_do_not_hide_later_exact_matches() {
         identifier: MessageIdentifier::new(),
         sequence: MessageSequence(0),
         revision: 0,
-        endpoint_identifier: endpoint,
         facts: exact_facts,
-        attachments: Vec::new(),
     };
     documents.push(exact.clone());
     index
@@ -461,9 +445,7 @@ fn upsert_delete_and_watermark_survive_reopen() {
         identifier: MessageIdentifier::new(),
         sequence: MessageSequence(41),
         revision: 17,
-        endpoint_identifier: EndpointIdentifier::new(),
         facts: fixture_facts(1),
-        attachments: Vec::new(),
     };
     document.facts.subject = "original subject".to_owned();
     index.upsert(&document).expect("first upsert");
@@ -534,15 +516,12 @@ fn corrupt_index_errors_and_search_batch_is_bounded() {
         MessageIdentifier::new()
     ));
     let index = SearchIndex::create(&path).expect("create index");
-    let endpoint = EndpointIdentifier::new();
     let documents: Vec<_> = (1..=257)
         .map(|sequence| IndexedDocument {
             identifier: MessageIdentifier::new(),
             sequence: MessageSequence(sequence),
             revision: 0,
-            endpoint_identifier: endpoint,
             facts: fixture_facts(1),
-            attachments: Vec::new(),
         })
         .collect();
     index.upsert_batch(&documents[..256]).expect("first batch");
@@ -589,4 +568,311 @@ fn corrupt_index_errors_and_search_batch_is_bounded() {
         Err(SearchError::CorruptIndex(_))
     ));
     fs::remove_dir_all(path).expect("remove index directory");
+}
+
+/// Generate bounded mixed boolean expressions from a reproducible seed.
+fn deterministic_mixed_expression(seed: &mut u64, depth: usize) -> Expression {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    let choice = (*seed % 8) as usize;
+    let predicates = [
+        Predicate {
+            field: Field::Subject,
+            operator: Operator::Contains,
+            value: Value::String("café".to_owned()),
+        },
+        Predicate {
+            field: Field::EnvelopeToDomain,
+            operator: Operator::NotEqual,
+            value: Value::String("example.test".to_owned()),
+        },
+        Predicate {
+            field: Field::Size,
+            operator: Operator::GreaterThanOrEqual,
+            value: Value::Number(1024),
+        },
+        Predicate {
+            field: Field::HasAttachments,
+            operator: Operator::Equal,
+            value: Value::Boolean(true),
+        },
+        Predicate {
+            field: Field::Header("x-app".to_owned()),
+            operator: Operator::Matches,
+            value: Value::String("b*".to_owned()),
+        },
+        Predicate {
+            field: Field::Text,
+            operator: Operator::EndsWith,
+            value: Value::String("🙂".to_owned()),
+        },
+        Predicate {
+            field: Field::MessageIdentifier,
+            operator: Operator::NotEqual,
+            value: Value::String("<Mail-ID@example.test>".to_owned()),
+        },
+        Predicate {
+            field: Field::ToAddress,
+            operator: Operator::Contains,
+            value: Value::String("abc".to_owned()),
+        },
+    ];
+    if depth == 0 || choice < predicates.len() / 2 {
+        return Expression::Predicate(predicates[choice].clone());
+    }
+    match choice % 3 {
+        0 => Expression::Not(Box::new(deterministic_mixed_expression(seed, depth - 1))),
+        1 => Expression::And(vec![
+            deterministic_mixed_expression(seed, depth - 1),
+            deterministic_mixed_expression(seed, depth - 1),
+        ]),
+        _ => Expression::Or(vec![
+            deterministic_mixed_expression(seed, depth - 1),
+            deterministic_mixed_expression(seed, depth - 1),
+            deterministic_mixed_expression(seed, depth - 1),
+        ]),
+    }
+}
+
+/// Compare reproducible nested mixed-field expressions against canonical evaluation.
+#[test]
+fn deterministic_mixed_expressions_match_canonical_evaluator() {
+    let (index, documents) = fixture_index();
+    let mut seed = 0x5eed_cafe_f00d_u64;
+    for _ in 0..96 {
+        assert_matches_evaluator(
+            &index,
+            &documents,
+            deterministic_mixed_expression(&mut seed, 4),
+        );
+    }
+}
+
+/// Check long exact and literal-glob terms around Tantivy's term byte boundary.
+#[test]
+fn oversized_subject_equality_and_literal_matches_are_exact() {
+    let (index, mut documents) = fixture_index();
+    let lengths = [65_522, 65_523, 65_530];
+    for (document, length) in documents.iter_mut().zip(lengths) {
+        document.facts.subject = "a".repeat(length);
+        index.upsert(document).expect("index oversized subject");
+    }
+    index.commit(3).expect("commit oversized subjects");
+
+    for (document, length) in documents.iter().zip(lengths) {
+        let value = "a".repeat(length);
+        for operator in [Operator::Equal, Operator::Matches] {
+            assert_matches_evaluator(
+                &index,
+                &documents,
+                Expression::Predicate(Predicate {
+                    field: Field::Subject,
+                    operator,
+                    value: Value::String(value.clone()),
+                }),
+            );
+            let results = index
+                .search(&request(
+                    Expression::Predicate(Predicate {
+                        field: Field::Subject,
+                        operator,
+                        value: Value::String(value.clone()),
+                    }),
+                    256,
+                ))
+                .expect("search oversized subject");
+            assert_eq!(results, vec![document.identifier]);
+        }
+    }
+}
+
+/// Ensure exact subject terms use UTF-8 byte lengths for long Unicode values.
+#[test]
+fn oversized_unicode_subject_terms_match_exactly() {
+    let (index, mut documents) = fixture_index();
+    let low = "é".repeat(32_763);
+    let high = "é".repeat(32_764);
+    documents[0].facts.subject = low.clone();
+    documents[1].facts.subject = high.clone();
+    index
+        .upsert_batch(&documents[..2])
+        .expect("index Unicode subjects");
+    index.commit(3).expect("commit Unicode subjects");
+
+    for (value, expected) in [
+        (low, documents[0].identifier),
+        (high, documents[1].identifier),
+    ] {
+        for operator in [Operator::Equal, Operator::Matches] {
+            assert_eq!(
+                index
+                    .search(&request(
+                        Expression::Predicate(Predicate {
+                            field: Field::Subject,
+                            operator,
+                            value: Value::String(value.clone()),
+                        }),
+                        256,
+                    ))
+                    .expect("search Unicode subject"),
+                vec![expected]
+            );
+        }
+    }
+}
+
+/// Keep short substring searches exact when the header name itself is oversized.
+#[test]
+fn short_header_contains_survives_oversized_header_name() {
+    let (index, mut documents) = fixture_index();
+    let header_name = "x".repeat(65_530);
+    documents[0].facts.headers.insert(
+        header_name.clone().to_ascii_lowercase(),
+        vec!["needle value".to_owned()],
+    );
+    index.upsert(&documents[0]).expect("index long header name");
+    index.commit(3).expect("commit long header name");
+    assert_eq!(
+        index
+            .search(&request(
+                Expression::Predicate(Predicate {
+                    field: Field::Header(header_name),
+                    operator: Operator::Contains,
+                    value: Value::String("eed".to_owned()),
+                }),
+                256,
+            ))
+            .expect("search short header substring"),
+        vec![documents[0].identifier]
+    );
+}
+
+/// Enforce deletion batch bounds and empty/cursor-zero search boundaries.
+#[test]
+fn delete_batch_limit_and_zero_cursor_boundaries() {
+    let index = SearchIndex::memory().expect("memory index");
+    let documents: Vec<_> = (1..=257)
+        .map(|sequence| IndexedDocument {
+            identifier: MessageIdentifier::new(),
+            sequence: MessageSequence(sequence),
+            revision: 0,
+            facts: fixture_facts(1),
+        })
+        .collect();
+    index.upsert_batch(&documents[..256]).expect("first batch");
+    index.upsert(&documents[256]).expect("last document");
+    index
+        .delete_batch(
+            &documents[..256]
+                .iter()
+                .map(|document| document.identifier)
+                .collect::<Vec<_>>(),
+        )
+        .expect("delete maximum batch");
+    assert!(matches!(
+        index.delete_batch(
+            &documents
+                .iter()
+                .map(|document| document.identifier)
+                .collect::<Vec<_>>()
+        ),
+        Err(SearchError::BatchTooLarge(257))
+    ));
+    index.commit(257).expect("commit deletions");
+
+    assert!(
+        index
+            .search(&request(Expression::True, 0))
+            .expect("zero result limit")
+            .is_empty()
+    );
+    let mut cursor_at_zero = request(Expression::True, 256);
+    cursor_at_zero.before = Some(MessageSequence(0));
+    assert!(
+        index
+            .search(&cursor_at_zero)
+            .expect("zero cursor")
+            .is_empty()
+    );
+    assert_eq!(
+        index
+            .search(&request(Expression::True, 256))
+            .expect("remaining document"),
+        vec![documents[256].identifier]
+    );
+}
+
+/// Exercise cloned writer and reader handles across synchronized write and commit phases.
+#[test]
+fn cloned_handles_concurrently_write_commit_and_read() {
+    const WRITER_COUNT: usize = 4;
+    const DOCUMENTS_PER_WRITER: usize = 24;
+    let index = SearchIndex::memory().expect("memory index");
+    let phase = Arc::new(Barrier::new(WRITER_COUNT + 2));
+    let mut writers = Vec::new();
+    let mut expected_identifiers = Vec::new();
+
+    for worker in 0..WRITER_COUNT {
+        let handle = index.clone();
+        let barrier = Arc::clone(&phase);
+        let documents: Vec<_> = (0..DOCUMENTS_PER_WRITER)
+            .map(|offset| IndexedDocument {
+                identifier: MessageIdentifier::new(),
+                sequence: MessageSequence((worker * DOCUMENTS_PER_WRITER + offset + 1) as u64),
+                revision: worker as u64,
+                facts: fixture_facts(worker % 3),
+            })
+            .collect();
+        expected_identifiers.extend(documents.iter().map(|document| document.identifier));
+        writers.push(thread::spawn(move || {
+            barrier.wait();
+            handle.upsert_batch(&documents).expect("concurrent upsert");
+            barrier.wait();
+        }));
+    }
+
+    let commit_handle = index.clone();
+    let commit_barrier = Arc::clone(&phase);
+    let committer = thread::spawn(move || {
+        commit_barrier.wait();
+        commit_barrier.wait();
+        commit_handle.commit((WRITER_COUNT * DOCUMENTS_PER_WRITER) as u64)
+    });
+
+    let reader_handle = index.clone();
+    let reader_barrier = Arc::clone(&phase);
+    let (read_sender, read_receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        reader_barrier.wait();
+        reader_barrier.wait();
+        read_sender
+            .send(reader_handle.search(&request(Expression::True, 256)))
+            .unwrap();
+    });
+
+    for writer in writers {
+        writer.join().expect("writer thread");
+    }
+    committer.join().expect("committer thread").expect("commit");
+    reader.join().expect("reader thread");
+    let concurrent_read = read_receiver
+        .recv()
+        .expect("concurrent read result")
+        .expect("search");
+    assert!(
+        concurrent_read
+            .iter()
+            .all(|identifier| expected_identifiers.contains(identifier))
+    );
+    assert!(
+        concurrent_read.is_empty() || concurrent_read.len() == DOCUMENTS_PER_WRITER * WRITER_COUNT
+    );
+    let mut expected_sorted = expected_identifiers;
+    expected_sorted.sort();
+    let mut actual_sorted = index
+        .search(&request(Expression::True, 256))
+        .expect("post-commit read");
+    actual_sorted.sort();
+    assert_eq!(actual_sorted, expected_sorted);
 }

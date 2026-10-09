@@ -1,44 +1,20 @@
-//! Tantivy schema, durable index lifecycle, and verified keyset search.
+//! Public index facade and durable reader/writer lifecycle.
 
-use crate::{EndpointQuery, MessageQuery, keys, query::candidate_query};
-use sandpost_core::{
-    Attachment, EndpointIdentifier, MessageFacts, MessageIdentifier, MessageSequence,
+use crate::{
+    IndexedDocument, MessageQuery,
+    document::tantivy_document,
+    schema::{SearchFields, schema},
 };
-use sandpost_query::Field as QueryField;
-use serde::{Deserialize, Serialize};
+use sandpost_core::MessageIdentifier;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
-use tantivy::{
-    Index, IndexMeta, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, TantivyError, Term,
-    collector::TopDocs,
-    query::{BooleanQuery, Occur, Query, TermQuery},
-    schema::{
-        FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, Value as TantivyValue,
-    },
-};
+use tantivy::{Index, IndexMeta, IndexReader, IndexWriter, ReloadPolicy, TantivyError, Term};
 use thiserror::Error;
 
-const WRITER_HEAP_BYTES: usize = 50_000_000;
+const WRITER_HEAP_BYTES: usize = 15_000_000;
 const MAXIMUM_INDEX_BATCH_SIZE: usize = 256;
-
-/// Searchable facts and attachment metadata for one persisted message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndexedDocument {
-    /// Public message identifier used for idempotent replacement and deletion.
-    pub identifier: MessageIdentifier,
-    /// Monotonically increasing persistence sequence used for pagination.
-    pub sequence: MessageSequence,
-    /// Persistence revision bound to the message facts for authorization hydration.
-    pub revision: u64,
-    /// Endpoint which owns or exposes this message.
-    pub endpoint_identifier: EndpointIdentifier,
-    /// Normalized message facts evaluated by the canonical query interpreter.
-    pub facts: MessageFacts,
-    /// Attachment facts retained with the indexed message document.
-    pub attachments: Vec<Attachment>,
-}
 
 /// Failures returned by the embedded search index.
 #[derive(Debug, Error)]
@@ -88,57 +64,6 @@ pub struct SearchIndex {
     fields: SearchFields,
 }
 
-/// Tantivy field handles kept private so Tantivy types stay out of the API.
-#[derive(Clone, Copy)]
-pub(super) struct SearchFields {
-    pub(super) identifier: Field,
-    pub(super) endpoint: Field,
-    pub(super) sequence: Field,
-    pub(super) revision: Field,
-    pub(super) marker: Field,
-    pub(super) facts: Field,
-    pub(super) attachments: Field,
-    pub(super) exact_values: Field,
-    pub(super) trigrams: Field,
-    pub(super) received_at: Field,
-    pub(super) size: Field,
-    pub(super) attachment_count: Field,
-}
-
-/// Build the fixed schema used by new index directories.
-fn schema() -> (Schema, SearchFields) {
-    let mut builder = Schema::builder();
-    let identifier = builder.add_text_field("identifier", STRING | STORED);
-    let endpoint = builder.add_text_field("endpoint", STRING | STORED);
-    let sequence = builder.add_u64_field("sequence", INDEXED | FAST | STORED);
-    let revision = builder.add_u64_field("revision", STORED);
-    let marker = builder.add_text_field("document_kind", STRING);
-    let facts = builder.add_text_field("facts_json", STORED);
-    let attachments = builder.add_text_field("attachments_json", STORED);
-    let exact_values = builder.add_text_field("exact_values", STRING);
-    let trigrams = builder.add_text_field("trigrams", STRING);
-    let received_at = builder.add_i64_field("received_at", INDEXED | FAST | STORED);
-    let size = builder.add_u64_field("size", INDEXED | FAST | STORED);
-    let attachment_count = builder.add_u64_field("attachment_count", INDEXED | FAST | STORED);
-    (
-        builder.build(),
-        SearchFields {
-            identifier,
-            endpoint,
-            sequence,
-            revision,
-            marker,
-            facts,
-            attachments,
-            exact_values,
-            trigrams,
-            received_at,
-            size,
-            attachment_count,
-        },
-    )
-}
-
 /// Open or create a durable Tantivy index in `path`.
 pub fn open_index(path: impl AsRef<Path>) -> Result<SearchIndex, SearchError> {
     let path = path.as_ref();
@@ -177,7 +102,8 @@ fn finish_open(index: Index, fields: SearchFields) -> Result<SearchIndex, Search
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
         .try_into()?;
-    let writer = index.writer(WRITER_HEAP_BYTES)?;
+    // Keep small batches on one worker to limit the number of segments per commit.
+    let writer = index.writer_with_num_threads(1, WRITER_HEAP_BYTES)?;
     Ok(SearchIndex {
         index,
         reader,
@@ -209,21 +135,19 @@ impl SearchIndex {
         self.upsert_batch(std::slice::from_ref(document))
     }
 
-    /// Queue up to 256 idempotent replacements under one writer lock for the next commit.
+    /// Queue up to 256 replacements under one writer lock, preparing one document at a time.
+    /// A failed batch may leave earlier items queued; these mutations become visible on commit.
     pub fn upsert_batch(&self, documents: &[IndexedDocument]) -> Result<(), SearchError> {
         if documents.len() > MAXIMUM_INDEX_BATCH_SIZE {
             return Err(SearchError::BatchTooLarge(documents.len()));
         }
-        let tantivy_documents = documents
-            .iter()
-            .map(|document| self.tantivy_document(document))
-            .collect::<Result<Vec<_>, _>>()?;
         let writer = self
             .writer
             .lock()
             .map_err(|_| SearchError::WriterPoisoned)?;
         let writer = writer.as_ref().ok_or(SearchError::WriterClosed)?;
-        for (document, tantivy_document) in documents.iter().zip(tantivy_documents) {
+        for document in documents {
+            let tantivy_document = tantivy_document(document, self.fields)?;
             writer.delete_term(Term::from_field_text(
                 self.fields.identifier,
                 &document.identifier.to_string(),
@@ -306,372 +230,6 @@ impl SearchIndex {
         &self,
         request: &MessageQuery,
     ) -> Result<Vec<(MessageIdentifier, u64)>, SearchError> {
-        let result_limit = request.limit.min(crate::query::MAXIMUM_SEARCH_BATCH_SIZE);
-        if result_limit == 0
-            || matches!(request.authorization, Some(ref clauses) if clauses.is_empty())
-        {
-            return Ok(Vec::new());
-        }
-        let mut required: Vec<Box<dyn Query>> = vec![self.marker_query(keys::MESSAGE_MARKER)];
-        if let Some(sequence) = request.before {
-            let max_sequence = sequence.0.checked_sub(1);
-            let Some(max_sequence) = max_sequence else {
-                return Ok(Vec::new());
-            };
-            required.push(Box::new(tantivy::query::RangeQuery::new(
-                std::ops::Bound::Unbounded,
-                std::ops::Bound::Included(Term::from_field_u64(self.fields.sequence, max_sequence)),
-            )));
-        }
-        if let Some(identifier) = request.message_identifier {
-            required.push(Box::new(TermQuery::new(
-                Term::from_field_text(self.fields.identifier, &identifier.to_string()),
-                IndexRecordOption::Basic,
-            )));
-        }
-        if let Some(endpoint) = request.endpoint_identifier {
-            required.push(Box::new(self.endpoint_query(endpoint)));
-        }
-        required.push(candidate_query(&request.filter, self.fields));
-        if let Some(authorization) = &request.authorization {
-            let branches = authorization
-                .iter()
-                .map(|clause| self.authorization_query(clause))
-                .collect::<Vec<_>>();
-            required.push(Box::new(BooleanQuery::new(
-                branches
-                    .into_iter()
-                    .map(|query| (Occur::Should, query))
-                    .collect(),
-            )));
-        }
-        let query = BooleanQuery::new(
-            required
-                .into_iter()
-                .map(|query| (Occur::Must, query))
-                .collect(),
-        );
-        let searcher = self.reader.searcher();
-        let mut results = Vec::with_capacity(result_limit);
-        let mut upper_sequence = request.before.map(|sequence| sequence.0);
-        while results.len() < result_limit {
-            let mut page_clauses = vec![(Occur::Must, Box::new(query.clone()) as Box<dyn Query>)];
-            if let Some(upper_sequence) = upper_sequence {
-                let Some(inclusive_upper) = upper_sequence.checked_sub(1) else {
-                    break;
-                };
-                page_clauses.push((
-                    Occur::Must,
-                    Box::new(tantivy::query::RangeQuery::new(
-                        std::ops::Bound::Unbounded,
-                        std::ops::Bound::Included(Term::from_field_u64(
-                            self.fields.sequence,
-                            inclusive_upper,
-                        )),
-                    )),
-                ));
-            }
-            let page_query = BooleanQuery::new(page_clauses);
-            let hits = searcher.search(
-                &page_query,
-                &TopDocs::with_limit(crate::query::MAXIMUM_SEARCH_BATCH_SIZE)
-                    .order_by_fast_field::<u64>("sequence", tantivy::Order::Desc),
-            )?;
-            if hits.is_empty() {
-                break;
-            }
-            let mut last_sequence = None;
-            for (_, address) in &hits {
-                let document: TantivyDocument = searcher.doc(*address)?;
-                let sequence = document
-                    .get_first(self.fields.sequence)
-                    .and_then(|value| value.as_u64())
-                    .ok_or_else(|| TantivyError::InvalidArgument("missing sequence".into()))?;
-                last_sequence = Some(sequence);
-                if self.matches_request(&document, request)? {
-                    let identifier = document
-                        .get_first(self.fields.identifier)
-                        .and_then(|value| value.as_str())
-                        .ok_or_else(|| TantivyError::InvalidArgument("missing identifier".into()))?
-                        .parse()
-                        .map_err(|error| {
-                            TantivyError::InvalidArgument(format!("invalid identifier: {error}"))
-                        })?;
-                    let revision = document
-                        .get_first(self.fields.revision)
-                        .and_then(|value| value.as_u64())
-                        .ok_or_else(|| TantivyError::InvalidArgument("missing revision".into()))?;
-                    results.push((identifier, revision));
-                    if results.len() == result_limit {
-                        break;
-                    }
-                }
-            }
-            if results.len() == result_limit || hits.len() < crate::query::MAXIMUM_SEARCH_BATCH_SIZE
-            {
-                break;
-            }
-            upper_sequence = last_sequence;
-        }
-        Ok(results)
+        crate::search::search_hits(&self.reader, self.fields, request)
     }
-
-    /// Verify stored endpoint, authorization, and filter semantics exactly.
-    fn matches_request(
-        &self,
-        document: &TantivyDocument,
-        request: &MessageQuery,
-    ) -> Result<bool, TantivyError> {
-        let endpoint_identifier = document
-            .get_first(self.fields.endpoint)
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| TantivyError::InvalidArgument("missing endpoint".into()))?
-            .parse()
-            .map_err(|error| TantivyError::InvalidArgument(format!("invalid endpoint: {error}")))?;
-        let facts: MessageFacts = serde_json::from_str(
-            document
-                .get_first(self.fields.facts)
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| TantivyError::InvalidArgument("missing facts".into()))?,
-        )
-        .map_err(|error| TantivyError::InvalidArgument(format!("invalid stored facts: {error}")))?;
-        let authorized = match &request.authorization {
-            None => true,
-            Some(clauses) => clauses.iter().any(|clause| {
-                clause.endpoint_identifier == endpoint_identifier
-                    && clause.expression.evaluate(&facts)
-            }),
-        };
-        Ok(authorized
-            && request
-                .endpoint_identifier
-                .is_none_or(|endpoint| endpoint == endpoint_identifier)
-            && request.filter.evaluate(&facts))
-    }
-
-    /// Build the stored Tantivy representation and its safe candidate terms.
-    fn tantivy_document(&self, document: &IndexedDocument) -> Result<TantivyDocument, SearchError> {
-        let mut indexed = TantivyDocument::default();
-        indexed.add_text(self.fields.identifier, document.identifier.to_string());
-        indexed.add_text(
-            self.fields.endpoint,
-            document.endpoint_identifier.to_string(),
-        );
-        indexed.add_u64(self.fields.sequence, document.sequence.0);
-        indexed.add_u64(self.fields.revision, document.revision);
-        indexed.add_text(self.fields.marker, keys::MESSAGE_MARKER);
-        indexed.add_text(self.fields.facts, serde_json::to_string(&document.facts)?);
-        indexed.add_text(
-            self.fields.attachments,
-            serde_json::to_string(&document.attachments)?,
-        );
-        indexed.add_i64(self.fields.received_at, document.facts.received_at);
-        indexed.add_u64(self.fields.size, document.facts.size);
-        indexed.add_u64(
-            self.fields.attachment_count,
-            document.facts.attachment_count,
-        );
-        for (field, values) in indexed_string_values(&document.facts) {
-            let field_key = keys::field_key(&field);
-            let fold_case = keys::folds_ascii_case(&field);
-            let body_field = matches!(field, QueryField::Text | QueryField::MarkupBody);
-            for value in values {
-                if !body_field {
-                    indexed.add_text(
-                        self.fields.exact_values,
-                        keys::exact_term(&field_key, value, fold_case),
-                    );
-                }
-                indexed.add_text(self.fields.exact_values, keys::presence_term(&field_key));
-                for trigram in keys::distinct_trigrams(value, fold_case) {
-                    let trigram: String = trigram.iter().copied().collect();
-                    indexed.add_text(
-                        self.fields.trigrams,
-                        keys::trigram_term(&field_key, &trigram),
-                    );
-                }
-            }
-        }
-        let content_key = keys::field_key(&QueryField::Content);
-        indexed.add_text(self.fields.exact_values, keys::presence_term(&content_key));
-        for value in indexed_content_values(&document.facts) {
-            for trigram in keys::distinct_trigrams(value, true) {
-                let trigram: String = trigram.iter().copied().collect();
-                indexed.add_text(
-                    self.fields.trigrams,
-                    keys::trigram_term(&content_key, &trigram),
-                );
-            }
-        }
-        indexed.add_text(
-            self.fields.exact_values,
-            keys::exact_term(
-                &keys::field_key(&QueryField::HasAttachments),
-                &(document.facts.attachment_count > 0).to_string(),
-                keys::folds_ascii_case(&QueryField::HasAttachments),
-            ),
-        );
-        Ok(indexed)
-    }
-
-    /// Build a branch query that safely narrows endpoint authorization candidates.
-    fn authorization_query(&self, clause: &EndpointQuery) -> Box<dyn Query> {
-        Box::new(BooleanQuery::new(vec![
-            (Occur::Must, self.endpoint_query(clause.endpoint_identifier)),
-            (
-                Occur::Must,
-                candidate_query(&clause.expression, self.fields),
-            ),
-        ]))
-    }
-
-    /// Match documents assigned to one endpoint identifier.
-    fn endpoint_query(&self, endpoint_identifier: EndpointIdentifier) -> Box<dyn Query> {
-        Box::new(TermQuery::new(
-            Term::from_field_text(self.fields.endpoint, &endpoint_identifier.to_string()),
-            IndexRecordOption::Basic,
-        ))
-    }
-
-    /// Match the requested document kind through the private marker field.
-    fn marker_query(&self, marker: &str) -> Box<dyn Query> {
-        Box::new(TermQuery::new(
-            Term::from_field_text(self.fields.marker, marker),
-            IndexRecordOption::Basic,
-        ))
-    }
-}
-
-/// Return every queryable stored string with its DSL field, without copying message strings.
-fn indexed_string_values(facts: &MessageFacts) -> Vec<(QueryField, Vec<&str>)> {
-    let mut values = vec![
-        (
-            QueryField::EnvelopeFromAddress,
-            facts
-                .envelope_from
-                .iter()
-                .map(|mailbox| mailbox.address.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::EnvelopeFromDomain,
-            facts
-                .envelope_from
-                .iter()
-                .map(|mailbox| mailbox.domain.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::EnvelopeToAddress,
-            facts
-                .envelope_to
-                .iter()
-                .map(|mailbox| mailbox.address.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::EnvelopeToDomain,
-            facts
-                .envelope_to
-                .iter()
-                .map(|mailbox| mailbox.domain.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::FromAddress,
-            facts
-                .from
-                .iter()
-                .map(|mailbox| mailbox.address.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::FromDomain,
-            facts
-                .from
-                .iter()
-                .map(|mailbox| mailbox.domain.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::ToAddress,
-            facts
-                .to
-                .iter()
-                .map(|mailbox| mailbox.address.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::ToDomain,
-            facts
-                .to
-                .iter()
-                .map(|mailbox| mailbox.domain.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::CarbonCopyAddress,
-            facts
-                .carbon_copy
-                .iter()
-                .map(|mailbox| mailbox.address.as_str())
-                .collect(),
-        ),
-        (
-            QueryField::CarbonCopyDomain,
-            facts
-                .carbon_copy
-                .iter()
-                .map(|mailbox| mailbox.domain.as_str())
-                .collect(),
-        ),
-        (QueryField::Subject, vec![facts.subject.as_str()]),
-        (QueryField::Text, vec![facts.text.as_str()]),
-        (QueryField::MarkupBody, vec![facts.markup_body.as_str()]),
-    ];
-    if let Some(identifier) = &facts.message_identifier {
-        values.push((QueryField::MessageIdentifier, vec![identifier]));
-    }
-    for (name, strings) in &facts.headers {
-        values.push((
-            QueryField::Header(name.clone()),
-            strings.iter().map(String::as_str).collect(),
-        ));
-    }
-    values
-}
-
-/// Return every literal-search value, including header names, without copying message strings.
-fn indexed_content_values(facts: &MessageFacts) -> Vec<&str> {
-    let mut values = vec![
-        facts.subject.as_str(),
-        facts.text.as_str(),
-        facts.markup_body.as_str(),
-    ];
-    values.extend(
-        facts
-            .envelope_from
-            .iter()
-            .map(|mailbox| mailbox.address.as_str()),
-    );
-    values.extend(
-        facts
-            .envelope_to
-            .iter()
-            .map(|mailbox| mailbox.address.as_str()),
-    );
-    values.extend(facts.from.iter().map(|mailbox| mailbox.address.as_str()));
-    values.extend(facts.to.iter().map(|mailbox| mailbox.address.as_str()));
-    values.extend(
-        facts
-            .carbon_copy
-            .iter()
-            .map(|mailbox| mailbox.address.as_str()),
-    );
-    values.extend(facts.message_identifier.iter().map(String::as_str));
-    for (name, header_values) in &facts.headers {
-        values.push(name);
-        values.extend(header_values.iter().map(String::as_str));
-    }
-    values
 }

@@ -1,11 +1,14 @@
-//! Embedded Tantivy search with exact verification through the canonical DSL evaluator.
 
+mod document;
 mod index;
 mod keys;
 mod query;
+mod schema;
+mod search;
 
-pub use index::{IndexedDocument, SearchError, SearchIndex};
-pub use query::{EndpointQuery, MAXIMUM_SEARCH_BATCH_SIZE, MessageQuery};
+pub use document::IndexedDocument;
+pub use index::{SearchError, SearchIndex};
+pub use query::{MAXIMUM_SEARCH_BATCH_SIZE, MessageQuery};
 
 #[cfg(test)]
 mod tests;
