@@ -1,8 +1,7 @@
 //! Naming changes must preserve persisted JSON and public identifier representations.
 use sandpost_core::{
-    EndpointIdentifier, EndpointMembership, EndpointRole, GlobalRole, Inbox, InboxIdentifier,
-    MailAccess, Message, MessageFacts, MessageIdentifier, Scope, ScopeIdentifier, User,
-    UserIdentifier, default_endpoint_identifier,
+    GlobalRole, Inbox, InboxIdentifier, MailAccess, Message, MessageFacts, MessageIdentifier,
+    Scope, ScopeIdentifier, User, UserIdentifier,
 };
 use serde_json::json;
 
@@ -41,7 +40,6 @@ fn domain_models_preserve_identifiers_and_role_representation() {
     let scope_identifier = ScopeIdentifier::new();
     let user_identifier = UserIdentifier::new();
     let inbox_identifier = InboxIdentifier::new();
-    let endpoint_identifier = EndpointIdentifier::new();
 
     let message = Message {
         identifier: message_identifier,
@@ -59,7 +57,6 @@ fn domain_models_preserve_identifiers_and_role_representation() {
 
     let scope = Scope {
         identifier: scope_identifier,
-        endpoint_identifier: default_endpoint_identifier(),
         parent: None,
         name: "Scope".into(),
         description: None,
@@ -78,6 +75,7 @@ fn domain_models_preserve_identifiers_and_role_representation() {
         email: "user@example.test".into(),
         password_hash: "hash".into(),
         global_role: GlobalRole::Admin,
+        mail_access: MailAccess::Scoped,
         personal_filter: None,
         created_at: 1,
         updated_at: 2,
@@ -85,6 +83,7 @@ fn domain_models_preserve_identifiers_and_role_representation() {
     let serialized_user = serde_json::to_value(&user).unwrap();
     assert_eq!(serialized_user["identifier"], user_identifier.to_string());
     assert_eq!(serialized_user["global_role"], "admin");
+    assert_eq!(serialized_user["mail_access"], "scoped");
 
     let inbox = Inbox {
         identifier: inbox_identifier,
@@ -96,24 +95,9 @@ fn domain_models_preserve_identifiers_and_role_representation() {
     assert_eq!(serialized_inbox["id"], inbox_identifier.to_string());
     assert_eq!(serialized_inbox["user_id"], user_identifier.to_string());
 
-    let membership = EndpointMembership {
-        user_identifier,
-        endpoint_identifier,
-        role: EndpointRole::Admin,
-        mail_access: MailAccess::Scoped,
-    };
     assert_eq!(
-        serde_json::to_value(membership).unwrap(),
-        json!({
-            "user_identifier": user_identifier.to_string(),
-            "endpoint_identifier": endpoint_identifier.to_string(),
-            "role": "admin",
-            "mail_access": "scoped"
-        })
-    );
-    assert_eq!(
-        serde_json::from_value::<EndpointRole>(json!("viewer")).unwrap(),
-        EndpointRole::Viewer
+        serde_json::from_value::<GlobalRole>(json!("viewer")).unwrap(),
+        GlobalRole::Viewer
     );
     assert_eq!(
         serde_json::from_value::<GlobalRole>(json!("owner")).unwrap(),

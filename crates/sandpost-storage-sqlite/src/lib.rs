@@ -1,21 +1,21 @@
 #![doc = include_str!("../README.md")]
 
 mod connection;
-mod endpoints;
 mod error;
 mod filter;
-mod mail_parts;
+mod imap;
 mod messages;
 mod migrations;
 mod records;
 mod schema;
 mod scopes;
 mod search_sync;
+mod smtp_server;
 mod users;
 mod views;
 
 pub use connection::SqliteStorage;
 pub use sandpost_storage::{
-    EndpointStorage, MessageStorage, ScopeStorage, SearchSynchronizationStorage, Storage,
-    StorageError, StorageHealth, UserStorage, ViewStorage,
+    ImapStorage, MessageStorage, ScopeStorage, SearchSynchronizationStorage, SmtpServerStorage,
+    Storage, StorageError, StorageHealth, UserStorage, ViewStorage,
 };

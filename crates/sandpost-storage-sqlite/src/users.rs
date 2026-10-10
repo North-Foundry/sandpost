@@ -4,11 +4,10 @@ use crate::error::StorageResult;
 use crate::records::invalid_column;
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use sandpost_core::{GlobalRole, User, UserIdentifier};
+use sandpost_core::{GlobalRole, MailAccess, User, UserIdentifier};
 use sandpost_storage::{NewUser, StorageError, UpdateUser, UserStorage};
 
-const USER_COLUMNS: &str =
-    "identifier,name,email,password_hash,global_role,personal_filter,created_at,updated_at";
+const USER_COLUMNS: &str = "identifier,name,email,password_hash,global_role,personal_filter,created_at,updated_at,mail_access";
 
 /// Return the stored text for a global role.
 pub(crate) fn global_role_text(role: GlobalRole) -> &'static str {
@@ -16,6 +15,24 @@ pub(crate) fn global_role_text(role: GlobalRole) -> &'static str {
         GlobalRole::Owner => "owner",
         GlobalRole::Admin => "admin",
         GlobalRole::Member => "member",
+        GlobalRole::Viewer => "viewer",
+    }
+}
+
+/// Return the stored text for a mail access mode.
+fn mail_access_text(access: MailAccess) -> &'static str {
+    match access {
+        MailAccess::All => "all",
+        MailAccess::Scoped => "scoped",
+    }
+}
+
+/// Parse a stored mail access mode, rejecting unknown values.
+fn parse_mail_access(value: &str) -> Option<MailAccess> {
+    match value {
+        "all" => Some(MailAccess::All),
+        "scoped" => Some(MailAccess::Scoped),
+        _ => None,
     }
 }
 
@@ -25,6 +42,7 @@ fn parse_global_role(value: &str) -> Option<GlobalRole> {
         "owner" => Some(GlobalRole::Owner),
         "admin" => Some(GlobalRole::Admin),
         "member" => Some(GlobalRole::Member),
+        "viewer" => Some(GlobalRole::Viewer),
         _ => None,
     }
 }
@@ -41,6 +59,7 @@ fn now_unix() -> i64 {
 fn decode_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
     let identifier: String = row.get(0)?;
     let role: String = row.get(4)?;
+    let access: String = row.get(8)?;
     Ok(User {
         identifier: identifier
             .parse()
@@ -49,6 +68,7 @@ fn decode_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         email: row.get(2)?,
         password_hash: row.get(3)?,
         global_role: parse_global_role(&role).ok_or_else(|| invalid_column(4, "global_role"))?,
+        mail_access: parse_mail_access(&access).ok_or_else(|| invalid_column(8, "mail_access"))?,
         personal_filter: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
@@ -82,7 +102,7 @@ fn insert_user(connection: &Connection, user: &NewUser) -> Result<User, StorageE
     let now = now_unix();
     connection
         .execute(
-            "INSERT INTO users(identifier,name,email,password_hash,global_role,personal_filter,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO users(identifier,name,email,password_hash,global_role,personal_filter,created_at,updated_at,mail_access) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![
                 identifier.to_string(),
                 user.name,
@@ -92,6 +112,7 @@ fn insert_user(connection: &Connection, user: &NewUser) -> Result<User, StorageE
                 user.personal_filter,
                 now,
                 now,
+                mail_access_text(user.mail_access),
             ],
         )
         .storage()?;
@@ -101,6 +122,7 @@ fn insert_user(connection: &Connection, user: &NewUser) -> Result<User, StorageE
         email: user.email.clone(),
         password_hash: user.password_hash.clone(),
         global_role: user.global_role,
+        mail_access: user.mail_access,
         personal_filter: user.personal_filter.clone(),
         created_at: now,
         updated_at: now,
@@ -118,6 +140,7 @@ fn owner_count(connection: &Connection) -> Result<i64, StorageError> {
         .storage()
 }
 
+/// Create a user with transactional protection against duplicate email addresses.
 fn create_user_blocking(connection: &mut Connection, user: &NewUser) -> Result<User, StorageError> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -137,6 +160,7 @@ fn create_user_blocking(connection: &mut Connection, user: &NewUser) -> Result<U
     Ok(created)
 }
 
+/// Create the first user as an Owner with All mail access, refusing repeated setup.
 fn create_first_owner_blocking(
     connection: &mut Connection,
     owner: &NewUser,
@@ -152,6 +176,7 @@ fn create_first_owner_blocking(
     }
     let owner = NewUser {
         global_role: GlobalRole::Owner,
+        mail_access: MailAccess::All,
         ..owner.clone()
     };
     let created = insert_user(&transaction, &owner)?;
@@ -159,6 +184,7 @@ fn create_first_owner_blocking(
     Ok(created)
 }
 
+/// Update a user atomically while preserving email uniqueness and the final Owner.
 fn update_user_blocking(
     connection: &mut Connection,
     identifier: UserIdentifier,
@@ -188,7 +214,7 @@ fn update_user_blocking(
     }
     transaction
         .execute(
-            "UPDATE users SET name=?2,email=?3,password_hash=?4,global_role=?5,personal_filter=?6,updated_at=?7 WHERE identifier=?1",
+            "UPDATE users SET name=?2,email=?3,password_hash=?4,global_role=?5,personal_filter=?6,updated_at=?7,mail_access=?8 WHERE identifier=?1",
             params![
                 identifier.to_string(),
                 changes.name,
@@ -197,6 +223,7 @@ fn update_user_blocking(
                 global_role_text(changes.global_role),
                 changes.personal_filter,
                 now_unix(),
+                mail_access_text(changes.mail_access),
             ],
         )
         .storage()?;
@@ -205,6 +232,7 @@ fn update_user_blocking(
     Ok(updated)
 }
 
+/// Delete a user and dependent records while preserving the final Owner.
 fn delete_user_blocking(
     connection: &mut Connection,
     identifier: UserIdentifier,
@@ -231,17 +259,20 @@ fn delete_user_blocking(
 
 #[async_trait]
 impl UserStorage for SqliteStorage {
+    /// Read a canonical user by identifier.
     async fn get_user(&self, identifier: UserIdentifier) -> Result<Option<User>, StorageError> {
         self.run(move |connection| read_user(connection, "identifier", &identifier.to_string()))
             .await
     }
 
+    /// Read a canonical user by its unique email address.
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>, StorageError> {
         let email = email.to_owned();
         self.run(move |connection| read_user(connection, "email", &email))
             .await
     }
 
+    /// List canonical users in deterministic identifier order.
     async fn list_users(&self) -> Result<Vec<User>, StorageError> {
         self.run(|connection| {
             let query = format!("SELECT {USER_COLUMNS} FROM users ORDER BY identifier");
@@ -255,12 +286,14 @@ impl UserStorage for SqliteStorage {
         .await
     }
 
+    /// Create a user while preserving email uniqueness across concurrent callers.
     async fn create_user(&self, user: &NewUser) -> Result<User, StorageError> {
         let user = user.clone();
         self.run(move |connection| create_user_blocking(connection, &user))
             .await
     }
 
+    /// Update a user without allowing deletion of the last Owner authority.
     async fn update_user(
         &self,
         identifier: UserIdentifier,
@@ -271,11 +304,13 @@ impl UserStorage for SqliteStorage {
             .await
     }
 
+    /// Delete a user with cascading owned records, refusing the final Owner.
     async fn delete_user(&self, identifier: UserIdentifier) -> Result<bool, StorageError> {
         self.run(move |connection| delete_user_blocking(connection, identifier))
             .await
     }
 
+    /// Count canonical users for first-run setup and health decisions.
     async fn count_users(&self) -> Result<u64, StorageError> {
         self.run(|connection| {
             let count: i64 = connection
@@ -286,6 +321,7 @@ impl UserStorage for SqliteStorage {
         .await
     }
 
+    /// Atomically bootstrap the installation with its first Owner.
     async fn create_first_owner(&self, owner: &NewUser) -> Result<User, StorageError> {
         let owner = owner.clone();
         self.run(move |connection| create_first_owner_blocking(connection, &owner))

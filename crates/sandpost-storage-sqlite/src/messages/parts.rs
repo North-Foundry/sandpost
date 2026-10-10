@@ -7,16 +7,16 @@ use std::collections::BTreeMap;
 
 /// Mailbox addresses grouped by their original semantic role and order.
 #[derive(Default)]
-pub(crate) struct MailRecipients {
-    pub(crate) envelope_from: Option<Mailbox>,
-    pub(crate) envelope_to: Vec<Mailbox>,
-    pub(crate) from: Vec<Mailbox>,
-    pub(crate) to: Vec<Mailbox>,
-    pub(crate) carbon_copy: Vec<Mailbox>,
+pub(super) struct MailRecipients {
+    pub(super) envelope_from: Option<Mailbox>,
+    pub(super) envelope_to: Vec<Mailbox>,
+    pub(super) from: Vec<Mailbox>,
+    pub(super) to: Vec<Mailbox>,
+    pub(super) carbon_copy: Vec<Mailbox>,
 }
 
 /// Persist each ordered recipient, header value, and attachment inside the insert transaction.
-pub(crate) fn store_parts(
+pub(super) fn store_parts(
     transaction: &Transaction<'_>,
     sequence: i64,
     message: &Message,
@@ -97,7 +97,7 @@ pub(crate) fn store_parts(
 }
 
 /// Load the semantic recipient roles for a page using one bounded IN query.
-pub(crate) fn load_recipients(
+pub(super) fn load_recipients(
     connection: &Connection,
     sequences: &[i64],
 ) -> Result<BTreeMap<i64, MailRecipients>, StorageError> {
@@ -159,7 +159,7 @@ pub(crate) fn load_recipients(
 }
 
 /// Load one mail's duplicate header values in their original order for each name.
-pub(crate) fn load_headers(
+pub(super) fn load_headers(
     connection: &Connection,
     sequence: i64,
 ) -> Result<BTreeMap<String, Vec<String>>, StorageError> {
@@ -180,7 +180,7 @@ pub(crate) fn load_headers(
 }
 
 /// Load one mail's attachment metadata in its original order and validate unsigned sizes.
-pub(crate) fn load_attachments(
+pub(super) fn load_attachments(
     connection: &Connection,
     sequence: i64,
 ) -> Result<Vec<Attachment>, StorageError> {

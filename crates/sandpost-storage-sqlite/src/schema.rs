@@ -1,5 +1,9 @@
-//! Validation of the SQLite physical schema against the checked-in baseline.
-use crate::{StorageError, error::StorageResult, migrations::BASELINE_MIGRATIONS};
+//! Validation of the SQLite physical schema against the checked-in migration scripts.
+use crate::{
+    StorageError,
+    error::StorageResult,
+    migrations::{ENDPOINT_LISTENER_VARIANT, SchemaLayout, batches_through},
+};
 use rusqlite::Connection;
 
 type SchemaObject = (String, String, String, String);
@@ -64,11 +68,22 @@ fn normalized_definition(definition: &str) -> String {
     tokens.join(" ")
 }
 
-/// Construct the immutable expected schema from the checked-in baseline scripts.
-fn expected_schema() -> Result<Connection, StorageError> {
+/// Construct the immutable expected schema of one version and layout from the checked-in scripts.
+///
+/// The listener layout substitutes the variant endpoints script for the canonical one.
+fn expected_schema(version: i64, layout: SchemaLayout) -> Result<Connection, StorageError> {
     let connection = Connection::open_in_memory().storage()?;
-    for (_, script) in BASELINE_MIGRATIONS {
-        connection.execute_batch(script).storage()?;
+    for (_, scripts) in batches_through(version) {
+        for (name, script) in scripts.iter() {
+            let script = if layout == SchemaLayout::EndpointListeners
+                && *name == ENDPOINT_LISTENER_VARIANT.0
+            {
+                ENDPOINT_LISTENER_VARIANT.1
+            } else {
+                script
+            };
+            connection.execute_batch(script).storage()?;
+        }
     }
     Ok(connection)
 }
@@ -78,12 +93,12 @@ pub(crate) fn schema_is_empty(connection: &Connection) -> Result<bool, StorageEr
     Ok(schema_objects(connection)?.is_empty())
 }
 
-/// Verify every table, constraint, index, view, and trigger against the current baseline.
-pub(crate) fn validate_schema(connection: &Connection) -> Result<(), StorageError> {
-    if schema_objects(connection)? != schema_objects(&expected_schema()?)? {
-        return Err(StorageError::InvalidData(
-            "database schema does not match the current baseline".into(),
-        ));
-    }
-    Ok(())
+/// Report whether every table, constraint, index, view, and trigger matches the schema of
+/// `version` in the given layout.
+pub(crate) fn matches_schema(
+    connection: &Connection,
+    version: i64,
+    layout: SchemaLayout,
+) -> Result<bool, StorageError> {
+    Ok(schema_objects(connection)? == schema_objects(&expected_schema(version, layout)?)?)
 }

@@ -102,10 +102,12 @@ fn acknowledge_search_operations_blocking(
 
 #[async_trait]
 impl SearchSynchronizationStorage for SqliteStorage {
+    /// Read the durable latest and acknowledged revision watermarks.
     async fn search_status(&self) -> Result<SearchSynchronization, StorageError> {
         self.run(|connection| read_search_status(connection)).await
     }
 
+    /// Read synchronization state and pending operations from one SQL snapshot.
     async fn search_batch(
         &self,
         after: u64,
@@ -115,6 +117,7 @@ impl SearchSynchronizationStorage for SqliteStorage {
             .await
     }
 
+    /// Read a bounded ordered batch after an exclusive synchronization cursor.
     async fn pending_search_operations(
         &self,
         after: u64,
@@ -124,6 +127,7 @@ impl SearchSynchronizationStorage for SqliteStorage {
             .await
     }
 
+    /// Advance the acknowledged watermark and prune its inclusive prefix atomically.
     async fn acknowledge_search_operations(&self, through: u64) -> Result<(), StorageError> {
         self.run(move |connection| acknowledge_search_operations_blocking(connection, through))
             .await
