@@ -86,6 +86,7 @@ fn filter_fixtures() -> Vec<Message> {
                 to: vec![mailbox("bob@example.test")],
                 subject: "Alpha report".to_owned(),
                 text: "quarterly numbers".to_owned(),
+                message_identifier: Some("<alpha@example.test>".to_owned()),
                 size: 100,
                 received_at: 1_700_100_000,
                 headers: headers(&[("x-team", &["red"])]),
@@ -141,6 +142,33 @@ fn filter_fixtures() -> Vec<Message> {
             raw_message: b"fixture four".to_vec(),
             attachments: Vec::new(),
         },
+        Message {
+            identifier: MessageIdentifier::new(),
+            facts: MessageFacts {
+                subject: "a".to_owned(),
+                ..MessageFacts::default()
+            },
+            raw_message: b"glob character class trap".to_vec(),
+            attachments: Vec::new(),
+        },
+        Message {
+            identifier: MessageIdentifier::new(),
+            facts: MessageFacts {
+                subject: "[ab]".to_owned(),
+                ..MessageFacts::default()
+            },
+            raw_message: b"literal glob brackets".to_vec(),
+            attachments: Vec::new(),
+        },
+        Message {
+            identifier: MessageIdentifier::new(),
+            facts: MessageFacts {
+                subject: "Café ☕".to_owned(),
+                ..MessageFacts::default()
+            },
+            raw_message: b"unicode suffix".to_vec(),
+            attachments: Vec::new(),
+        },
     ]
 }
 
@@ -175,6 +203,61 @@ fn representative_filters() -> Vec<Expression> {
             Field::Header("x-team".to_owned()),
             Operator::Equal,
             Value::String("blue".to_owned()),
+        ),
+        predicate(
+            Field::Subject,
+            Operator::Matches,
+            Value::String("[ab]".to_owned()),
+        ),
+        Expression::Not(Box::new(predicate(
+            Field::Subject,
+            Operator::Matches,
+            Value::String("[ab]".to_owned()),
+        ))),
+        predicate(
+            Field::MessageIdentifier,
+            Operator::Contains,
+            Value::String(String::new()),
+        ),
+        predicate(
+            Field::MessageIdentifier,
+            Operator::StartsWith,
+            Value::String(String::new()),
+        ),
+        predicate(
+            Field::MessageIdentifier,
+            Operator::EndsWith,
+            Value::String(String::new()),
+        ),
+        Expression::Not(Box::new(predicate(
+            Field::MessageIdentifier,
+            Operator::Contains,
+            Value::String(String::new()),
+        ))),
+        predicate(
+            Field::Subject,
+            Operator::EndsWith,
+            Value::String("report".to_owned()),
+        ),
+        predicate(
+            Field::Subject,
+            Operator::EndsWith,
+            Value::String("é ☕".to_owned()),
+        ),
+        predicate(
+            Field::FromAddress,
+            Operator::EndsWith,
+            Value::String("@example.test".to_owned()),
+        ),
+        predicate(
+            Field::Content,
+            Operator::EndsWith,
+            Value::String("REPORT".to_owned()),
+        ),
+        predicate(
+            Field::Header("x-team".to_owned()),
+            Operator::EndsWith,
+            Value::String("ue".to_owned()),
         ),
         predicate(
             Field::Size,
