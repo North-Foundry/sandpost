@@ -4,26 +4,24 @@ use crate::error::StorageResult;
 use crate::records::{invalid_column, parse_identifier};
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use sandpost_core::{UserIdentifier, View, ViewIdentifier, default_endpoint_identifier};
+use sandpost_core::{UserIdentifier, View, ViewIdentifier};
 use sandpost_storage::{StorageError, ViewStorage};
 
-const VIEW_COLUMNS: &str = "identifier,endpoint_identifier,owner_identifier,name,filter";
+const VIEW_COLUMNS: &str = "identifier,owner_identifier,name,filter";
 
+/// Decode a saved view row, validating its identifier and optional owner.
 fn decode_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<View> {
     let identifier: String = row.get(0)?;
-    let endpoint: String = row.get(1)?;
-    let owner: Option<String> = row.get(2)?;
+    let owner: Option<String> = row.get(1)?;
     Ok(View {
         identifier: parse_identifier(&identifier).map_err(|_| invalid_column(0, "identifier"))?,
-        endpoint_identifier: parse_identifier(&endpoint)
-            .map_err(|_| invalid_column(1, "endpoint_identifier"))?,
         owner_identifier: owner
             .map(|value| {
-                parse_identifier(&value).map_err(|_| invalid_column(2, "owner_identifier"))
+                parse_identifier(&value).map_err(|_| invalid_column(1, "owner_identifier"))
             })
             .transpose()?,
-        name: row.get(3)?,
-        filter: row.get(4)?,
+        name: row.get(2)?,
+        filter: row.get(3)?,
     })
 }
 
@@ -59,10 +57,9 @@ fn get_view_blocking(
 fn save_view_blocking(connection: &Connection, view: &View) -> Result<(), StorageError> {
     connection
         .execute(
-            "INSERT INTO views(identifier,endpoint_identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(identifier) DO UPDATE SET endpoint_identifier=excluded.endpoint_identifier,owner_identifier=excluded.owner_identifier,name=excluded.name,filter=excluded.filter",
+            "INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4) ON CONFLICT(identifier) DO UPDATE SET owner_identifier=excluded.owner_identifier,name=excluded.name,filter=excluded.filter",
             params![
                 view.identifier.to_string(),
-                view.endpoint_identifier.to_string(),
                 view.owner_identifier.map(|identifier| identifier.to_string()),
                 view.name,
                 view.filter,
@@ -102,12 +99,8 @@ fn create_recipient_view_blocking(
         .storage()?;
     let duplicate: bool = transaction
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM views WHERE owner_identifier=?1 AND endpoint_identifier=?2 AND filter=?3)",
-            params![
-                user.to_string(),
-                default_endpoint_identifier().to_string(),
-                filter
-            ],
+            "SELECT EXISTS(SELECT 1 FROM views WHERE owner_identifier=?1 AND filter=?2)",
+            params![user.to_string(), filter],
             |row| row.get(0),
         )
         .storage()?;
@@ -116,17 +109,15 @@ fn create_recipient_view_blocking(
     }
     let view = View {
         identifier: ViewIdentifier::new(),
-        endpoint_identifier: default_endpoint_identifier(),
         owner_identifier: Some(user),
         name: name.to_owned(),
         filter,
     };
     transaction
         .execute(
-            "INSERT INTO views(identifier,endpoint_identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4,?5)",
+            "INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4)",
             params![
                 view.identifier.to_string(),
-                view.endpoint_identifier.to_string(),
                 user.to_string(),
                 view.name,
                 view.filter,
@@ -155,27 +146,32 @@ pub(crate) fn valid_local_address(address: &str) -> bool {
 
 #[async_trait]
 impl ViewStorage for SqliteStorage {
+    /// List the caller-owned and shared saved views in name and identifier order.
     async fn list_views(&self, user: UserIdentifier) -> Result<Vec<View>, StorageError> {
         self.run(move |connection| list_views_blocking(connection, user))
             .await
     }
 
+    /// Read a saved view by identifier.
     async fn get_view(&self, identifier: ViewIdentifier) -> Result<Option<View>, StorageError> {
         self.run(move |connection| get_view_blocking(connection, identifier))
             .await
     }
 
+    /// Insert or update one saved view and its canonical filter.
     async fn save_view(&self, view: &View) -> Result<(), StorageError> {
         let view = view.clone();
         self.run(move |connection| save_view_blocking(connection, &view))
             .await
     }
 
+    /// Delete a saved view and its dependent IMAP configuration.
     async fn delete_view(&self, identifier: ViewIdentifier) -> Result<bool, StorageError> {
         self.run(move |connection| delete_view_blocking(connection, identifier))
             .await
     }
 
+    /// Create a personal view for a validated local address with duplicate protection.
     async fn create_recipient_view(
         &self,
         user: UserIdentifier,

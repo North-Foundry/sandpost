@@ -35,16 +35,19 @@ struct Compiler {
 }
 
 impl Compiler {
+    /// Append a bound string and return its positional SQL placeholder.
     fn bind_text(&mut self, text: &str) -> String {
         self.parameters.push(SqlValue::Text(text.to_owned()));
         "?".to_owned()
     }
 
-    fn bind_int(&mut self, value: i64) -> String {
+    /// Append a bound integer and return its positional SQL placeholder.
+    fn bind_integer(&mut self, value: i64) -> String {
         self.parameters.push(SqlValue::Integer(value));
         "?".to_owned()
     }
 
+    /// Compile a canonical expression recursively, preserving boolean composition.
     fn expression(&mut self, expression: &Expression) -> String {
         match expression {
             Expression::True => "1".to_owned(),
@@ -70,6 +73,7 @@ impl Compiler {
         }
     }
 
+    /// Dispatch a predicate to its string, numeric, or boolean representation.
     fn predicate(&mut self, predicate: &Predicate) -> String {
         match &predicate.value {
             Value::String(text) => {
@@ -84,6 +88,7 @@ impl Compiler {
         }
     }
 
+    /// Compile a scalar or ANY-collection string predicate with missing-value semantics.
     fn string_predicate(&mut self, field: &Field, operator: Operator, text: &str) -> String {
         match field {
             Field::Content => self.content_predicate(operator, text),
@@ -188,6 +193,7 @@ impl Compiler {
         format!("({})", parts.join(" OR "))
     }
 
+    /// Compile a numeric comparison, including negative literals for unsigned facts.
     fn numeric_predicate(&mut self, field: &Field, operator: Operator, number: i64) -> String {
         let value_sql = match field {
             Field::ReceivedAt => "mail.received_at",
@@ -201,16 +207,17 @@ impl Compiler {
                 _ => "1".to_owned(),
             };
         }
-        let placeholder = self.bind_int(number);
+        let placeholder = self.bind_integer(number);
         let operator = sql_operator(operator);
         self.coalesce(&format!("({value_sql}) {operator} {placeholder}"))
     }
 
+    /// Compile attachment-presence comparisons with canonical boolean semantics.
     fn boolean_predicate(&mut self, field: &Field, operator: Operator, flag: bool) -> String {
         if !matches!(field, Field::HasAttachments) {
             return "0".to_owned();
         }
-        let placeholder = self.bind_int(i64::from(flag));
+        let placeholder = self.bind_integer(i64::from(flag));
         let operator = sql_operator(operator);
         self.coalesce(&format!(
             "({}) {operator} {placeholder}",
@@ -218,17 +225,20 @@ impl Compiler {
         ))
     }
 
+    /// Test whether any child fact satisfies the compiled collection condition.
     fn exists(&self, table: &str, condition: &str) -> String {
         self.coalesce(&format!(
             "EXISTS (SELECT 1 FROM {table} child WHERE child.mail_sequence = mail.sequence AND {condition})"
         ))
     }
 
+    /// Force a SQL predicate to false when its value is missing.
     fn coalesce(&self, sql: &str) -> String {
         format!("COALESCE(({sql}), 0)")
     }
 }
 
+/// Return the SQL operator for a validated canonical comparison.
 fn sql_operator(operator: Operator) -> &'static str {
     match operator {
         Operator::Equal => "=",
@@ -241,18 +251,22 @@ fn sql_operator(operator: Operator) -> &'static str {
     }
 }
 
+/// Identify content and mailbox facts whose comparisons fold ASCII case.
 fn is_case_insensitive(field: &Field) -> bool {
     matches!(field, Field::Content) || mailbox_column(field).is_some()
 }
 
+/// Identify numeric facts that cannot represent a negative value.
 fn is_unsigned(field: &Field) -> bool {
     matches!(field, Field::Size | Field::AttachmentCount)
 }
 
+/// Return the correlated attachment-count expression for the current message.
 fn attachment_count_sql() -> &'static str {
     "(SELECT COUNT(*) FROM mail_attachments WHERE mail_sequence = mail.sequence)"
 }
 
+/// Return the correlated attachment-presence expression for the current message.
 fn attachment_presence_sql() -> String {
     format!("{} > 0", attachment_count_sql())
 }
@@ -274,6 +288,7 @@ fn mailbox_column(field: &Field) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// Select the SQL column for a scalar string fact, or NULL for an unsupported field.
 fn scalar_string_sql(field: &Field) -> String {
     match field {
         Field::Subject => "mail.subject".to_owned(),

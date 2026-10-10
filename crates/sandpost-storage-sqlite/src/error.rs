@@ -22,6 +22,7 @@ pub(crate) trait StorageResult<T> {
 }
 
 impl<T> StorageResult<T> for Result<T, rusqlite::Error> {
+    /// Translate a driver result into the backend-independent storage error contract.
     fn storage(self) -> Result<T, StorageError> {
         self.map_err(sqlite_error)
     }

@@ -1,7 +1,6 @@
 //! Shared domain fixtures for public storage API tests.
 use sandpost_core::{
     Message, MessageFacts, MessageIdentifier, MessageSequence, Scope, ScopeIdentifier,
-    default_endpoint_identifier,
 };
 use sandpost_storage::Storage;
 
@@ -22,7 +21,6 @@ pub fn message(subject: impl Into<String>) -> Message {
 pub fn scope(policy_version: u64) -> Scope {
     Scope {
         identifier: ScopeIdentifier::new(),
-        endpoint_identifier: default_endpoint_identifier(),
         parent: None,
         name: "test scope".into(),
         description: None,
@@ -32,10 +30,10 @@ pub fn scope(policy_version: u64) -> Scope {
     }
 }
 
-/// Insert a minimal test message on the default endpoint and return its sequence.
+/// Insert a minimal test message and return its sequence.
 pub async fn insert_message(storage: &dyn Storage, subject: impl Into<String>) -> MessageSequence {
     storage
-        .insert_message(&message(subject), default_endpoint_identifier())
+        .insert_message(&message(subject))
         .await
         .expect("insert test message")
 }

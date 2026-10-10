@@ -7,12 +7,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sandpost_core::{Scope, ScopeIdentifier, UserIdentifier};
 use sandpost_storage::{ScopeStorage, StorageError};
 
-const SCOPE_COLUMNS: &str = "identifier,parent_identifier,name,description,filter,position,policy_version,endpoint_identifier";
+const SCOPE_COLUMNS: &str =
+    "identifier,parent_identifier,name,description,filter,position,policy_version";
 
+/// Decode a scope row, validating identifiers and its unsigned policy version.
 fn decode_scope(row: &rusqlite::Row<'_>) -> rusqlite::Result<Scope> {
     let identifier: String = row.get(0)?;
     let parent: Option<String> = row.get(1)?;
-    let endpoint: String = row.get(7)?;
     let policy_version: i64 = row.get(6)?;
     Ok(Scope {
         identifier: parse_identifier(&identifier).map_err(|_| invalid_column(0, "identifier"))?,
@@ -27,8 +28,6 @@ fn decode_scope(row: &rusqlite::Row<'_>) -> rusqlite::Result<Scope> {
         position: row.get(5)?,
         policy_version: u64::try_from(policy_version)
             .map_err(|_| invalid_column(6, "policy_version"))?,
-        endpoint_identifier: parse_identifier(&endpoint)
-            .map_err(|_| invalid_column(7, "endpoint_identifier"))?,
     })
 }
 
@@ -59,26 +58,25 @@ fn list_scopes_blocking(connection: &Connection) -> Result<Vec<Scope>, StorageEr
 fn save_scope_blocking(connection: &mut Connection, scope: &Scope) -> Result<(), StorageError> {
     let version = i64::try_from(scope.policy_version).map_err(|_| StorageError::IntegerRange)?;
     let transaction = connection.transaction().storage()?;
-    let previous: Option<(String, Option<String>, i64, String)> = transaction
+    let previous: Option<(String, Option<String>, i64)> = transaction
         .query_row(
-            "SELECT filter, parent_identifier, policy_version, endpoint_identifier FROM scopes WHERE identifier=?1",
+            "SELECT filter, parent_identifier, policy_version FROM scopes WHERE identifier=?1",
             [scope.identifier.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .storage()?;
-    if let Some((old_filter, old_parent, old_version, old_endpoint)) = previous
+    if let Some((old_filter, old_parent, old_version)) = previous
         && (version < old_version
             || (version == old_version
                 && (scope.filter != old_filter
-                    || scope.parent.map(|identifier| identifier.to_string()) != old_parent
-                    || scope.endpoint_identifier.to_string() != old_endpoint)))
+                    || scope.parent.map(|identifier| identifier.to_string()) != old_parent)))
     {
         return Err(StorageError::PolicyVersionConflict(scope.identifier));
     }
     transaction
         .execute(
-            "INSERT INTO scopes(identifier, parent_identifier, name, description, filter, position, policy_version, endpoint_identifier) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(identifier) DO UPDATE SET parent_identifier=excluded.parent_identifier, name=excluded.name, description=excluded.description, filter=excluded.filter, position=excluded.position, policy_version=excluded.policy_version, endpoint_identifier=excluded.endpoint_identifier",
+            "INSERT INTO scopes(identifier, parent_identifier, name, description, filter, position, policy_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(identifier) DO UPDATE SET parent_identifier=excluded.parent_identifier, name=excluded.name, description=excluded.description, filter=excluded.filter, position=excluded.position, policy_version=excluded.policy_version",
             params![
                 scope.identifier.to_string(),
                 scope.parent.map(|identifier| identifier.to_string()),
@@ -87,7 +85,6 @@ fn save_scope_blocking(connection: &mut Connection, scope: &Scope) -> Result<(),
                 scope.filter,
                 scope.position,
                 version,
-                scope.endpoint_identifier.to_string(),
             ],
         )
         .storage()?;
@@ -109,33 +106,23 @@ fn delete_scope_blocking(
         > 0)
 }
 
-/// Assign a user to a scope, enforcing the endpoint-membership invariant.
+/// Assign a user to a scope: an unknown scope is NotFound and the foreign key rejects an
+/// unknown user.
 fn assign_user_to_scope_blocking(
     connection: &mut Connection,
     user: UserIdentifier,
     scope: ScopeIdentifier,
 ) -> Result<(), StorageError> {
     let transaction = connection.transaction().storage()?;
-    let endpoint: Option<String> = transaction
+    let scope_exists: bool = transaction
         .query_row(
-            "SELECT endpoint_identifier FROM scopes WHERE identifier=?1",
+            "SELECT EXISTS(SELECT 1 FROM scopes WHERE identifier=?1)",
             [scope.to_string()],
             |row| row.get(0),
         )
-        .optional()
         .storage()?;
-    let endpoint = endpoint.ok_or(StorageError::NotFound)?;
-    let has_membership: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM endpoint_memberships WHERE user_identifier=?1 AND endpoint_identifier=?2)",
-            params![user.to_string(), endpoint],
-            |row| row.get(0),
-        )
-        .storage()?;
-    if !has_membership {
-        return Err(StorageError::ConstraintViolation(
-            "a scope membership requires an endpoint membership".into(),
-        ));
+    if !scope_exists {
+        return Err(StorageError::NotFound);
     }
     transaction
         .execute(
@@ -198,27 +185,32 @@ fn list_scope_members_blocking(
 
 #[async_trait]
 impl ScopeStorage for SqliteStorage {
+    /// Read one scope by identifier.
     async fn get_scope(&self, identifier: ScopeIdentifier) -> Result<Option<Scope>, StorageError> {
         self.run(move |connection| get_scope_blocking(connection, identifier))
             .await
     }
 
+    /// List scopes by their configured position and identifier.
     async fn list_scopes(&self) -> Result<Vec<Scope>, StorageError> {
         self.run(|connection| list_scopes_blocking(connection))
             .await
     }
 
+    /// Save a scope while enforcing monotonic policy versions for filter and parent changes.
     async fn save_scope(&self, scope: &Scope) -> Result<(), StorageError> {
         let scope = scope.clone();
         self.run(move |connection| save_scope_blocking(connection, &scope))
             .await
     }
 
+    /// Delete a scope and its memberships when no child references it.
     async fn delete_scope(&self, identifier: ScopeIdentifier) -> Result<bool, StorageError> {
         self.run(move |connection| delete_scope_blocking(connection, identifier))
             .await
     }
 
+    /// Assign a user to an existing scope without duplicating its membership.
     async fn assign_user_to_scope(
         &self,
         user: UserIdentifier,
@@ -228,6 +220,7 @@ impl ScopeStorage for SqliteStorage {
             .await
     }
 
+    /// Remove one scope membership, reporting whether it existed.
     async fn remove_user_from_scope(
         &self,
         user: UserIdentifier,
@@ -237,6 +230,7 @@ impl ScopeStorage for SqliteStorage {
             .await
     }
 
+    /// List assigned scope identifiers for one user in deterministic order.
     async fn list_user_scopes(
         &self,
         user: UserIdentifier,
@@ -245,6 +239,7 @@ impl ScopeStorage for SqliteStorage {
             .await
     }
 
+    /// List user identifiers assigned to a scope in deterministic order.
     async fn list_scope_members(
         &self,
         scope: ScopeIdentifier,

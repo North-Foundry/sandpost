@@ -30,13 +30,16 @@ impl SqliteStorage {
     }
 
     /// Configure the connection, migrate its schema, and wrap it for shared access.
+    ///
+    /// Migration runs with foreign-key enforcement off (SQLite requires that for table rebuilds
+    /// and verifies references itself); enforcement is enabled for every later operation.
     fn initialize(mut connection: Connection) -> Result<Self, StorageError> {
-        connection
-            .pragma_update(None, "foreign_keys", "ON")
-            .storage()?;
         enable_write_ahead_logging(&connection)?;
         connection.busy_timeout(Duration::from_secs(5)).storage()?;
         migrate(&mut connection)?;
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .storage()?;
         Ok(Self(Arc::new(Mutex::new(connection))))
     }
 
@@ -62,6 +65,7 @@ impl SqliteStorage {
 
 #[async_trait::async_trait]
 impl StorageHealth for SqliteStorage {
+    /// Probe the shared SQLite connection through the blocking execution boundary.
     async fn health(&self) -> Result<(), StorageError> {
         self.run(|connection| {
             connection.query_row("SELECT 1", [], |_| Ok(())).storage()?;
