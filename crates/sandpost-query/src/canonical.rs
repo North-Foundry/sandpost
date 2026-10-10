@@ -17,6 +17,16 @@ impl Expression {
             other => other,
         }
     }
+
+    /// Canonicalize a composed expression and return it with its versioned v1 fingerprint.
+    ///
+    /// Callers that combine already-compiled expressions (for example an authorization clause
+    /// AND a saved filter) use this to obtain the same stable identity `compile` gives source.
+    pub fn into_canonical_with_fingerprint(self) -> (Self, String) {
+        let canonical = self.canonicalize();
+        let fingerprint = fingerprint(&canonical);
+        (canonical, fingerprint)
+    }
 }
 
 /// Flatten, simplify, sort, and deduplicate the children of an AND or OR expression.

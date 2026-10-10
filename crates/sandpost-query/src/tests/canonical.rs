@@ -116,3 +116,18 @@ fn type_errors_and_boolean_simplification() {
             .evaluate(&mixed)
     );
 }
+
+/// Composed expressions fingerprint like their compiled equivalent, independent of order.
+#[test]
+fn composed_expressions_share_compiled_fingerprints() {
+    let left = crate::compile("subject contains \"a\"")
+        .unwrap()
+        .into_expression();
+    let right = crate::compile("size > 10").unwrap().into_expression();
+    let (_, composed) =
+        Expression::And(vec![left.clone(), right.clone()]).into_canonical_with_fingerprint();
+    let (_, reordered) = Expression::And(vec![right, left]).into_canonical_with_fingerprint();
+    let compiled = crate::compile("size > 10 and subject contains \"a\"").unwrap();
+    assert_eq!(composed, reordered);
+    assert_eq!(composed, compiled.fingerprint());
+}
