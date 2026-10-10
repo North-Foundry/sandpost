@@ -3,14 +3,11 @@ use sandpost_core::{GlobalRole, View, ViewIdentifier};
 use sandpost_storage::Storage;
 
 use crate::ConformanceFailure;
-use crate::support::{
-    create_user, failure, save_endpoint, unique_email, unwrap_storage, verify, verify_equal,
-};
+use crate::support::{create_user, failure, unique_email, unwrap_storage, verify, verify_equal};
 
 /// Verify personal and shared view create, read, update, and delete behaviour.
 pub async fn view_crud(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "view_crud";
-    let endpoint = save_endpoint(storage, CHECK, "view endpoint").await?;
     let owner = create_user(
         storage,
         CHECK,
@@ -28,14 +25,12 @@ pub async fn view_crud(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
 
     let personal = View {
         identifier: ViewIdentifier::new(),
-        endpoint_identifier: endpoint,
         owner_identifier: Some(owner.identifier),
         name: "aaa personal view".to_owned(),
         filter: "subject == \"personal\"".to_owned(),
     };
     let shared = View {
         identifier: ViewIdentifier::new(),
-        endpoint_identifier: endpoint,
         owner_identifier: None,
         name: "zzz shared view".to_owned(),
         filter: "subject == \"shared\"".to_owned(),

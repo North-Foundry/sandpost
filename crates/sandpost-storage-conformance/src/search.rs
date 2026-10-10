@@ -2,7 +2,7 @@
 use sandpost_storage::Storage;
 
 use crate::ConformanceFailure;
-use crate::support::{save_endpoint, simple_message, unwrap_storage, verify, verify_equal};
+use crate::support::{simple_message, unwrap_storage, verify, verify_equal};
 
 /// Verify the durable search-outbox protocol and its monotonic watermarks.
 pub async fn search_outbox(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
@@ -29,13 +29,11 @@ pub async fn search_outbox(storage: &dyn Storage) -> Result<(), ConformanceFailu
         baseline.pending_operations,
         0,
     )?;
-
-    let endpoint = save_endpoint(storage, CHECK, "search endpoint").await?;
     let message = simple_message("search target");
     unwrap_storage(
         CHECK,
         "insert search message",
-        storage.insert_message(&message, endpoint).await,
+        storage.insert_message(&message).await,
     )?;
     let after = unwrap_storage(CHECK, "status after insert", storage.search_status().await)?;
     verify(
