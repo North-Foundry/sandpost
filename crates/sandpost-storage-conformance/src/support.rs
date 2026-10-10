@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use sandpost_core::{
-    Attachment, EndpointIdentifier, GlobalRole, Mailbox, Message, MessageFacts, MessageIdentifier,
-    Scope, ScopeIdentifier, SmtpEndpoint, User,
+    Attachment, GlobalRole, MailAccess, Mailbox, Message, MessageFacts, MessageIdentifier, Scope,
+    ScopeIdentifier, User,
 };
 use sandpost_storage::{NewUser, Storage, StorageError};
 
@@ -80,6 +80,7 @@ pub(crate) fn new_user(role: GlobalRole, email: &str) -> NewUser {
         email: email.to_owned(),
         password_hash: "conformance-hash".to_owned(),
         global_role: role,
+        mail_access: MailAccess::All,
         personal_filter: None,
     }
 }
@@ -98,34 +99,14 @@ pub(crate) async fn create_user(
     )
 }
 
-/// Save a fresh endpoint and return its identifier.
-pub(crate) async fn save_endpoint(
-    storage: &dyn Storage,
-    check: &'static str,
-    name: &str,
-) -> Result<EndpointIdentifier, ConformanceFailure> {
-    let endpoint = SmtpEndpoint {
-        identifier: EndpointIdentifier::new(),
-        name: name.to_owned(),
-    };
-    unwrap_storage(
-        check,
-        "save_endpoint",
-        storage.save_endpoint(&endpoint).await,
-    )?;
-    Ok(endpoint.identifier)
-}
-
-/// Save a fresh root scope on an endpoint and return its identifier.
+/// Save a fresh root scope and return its identifier.
 pub(crate) async fn save_scope(
     storage: &dyn Storage,
     check: &'static str,
-    endpoint: EndpointIdentifier,
     name: &str,
 ) -> Result<ScopeIdentifier, ConformanceFailure> {
     let scope = Scope {
         identifier: ScopeIdentifier::new(),
-        endpoint_identifier: endpoint,
         parent: None,
         name: name.to_owned(),
         description: None,

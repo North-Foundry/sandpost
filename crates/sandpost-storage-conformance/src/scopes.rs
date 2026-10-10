@@ -1,23 +1,18 @@
 //! Scope and scope-membership conformance checks.
-use sandpost_core::{
-    EndpointMembership, EndpointRole, GlobalRole, MailAccess, Scope, ScopeIdentifier,
-};
+use sandpost_core::{GlobalRole, Scope, ScopeIdentifier, UserIdentifier};
 use sandpost_storage::{Storage, StorageError};
 
 use crate::ConformanceFailure;
 use crate::support::{
-    create_user, failure, save_endpoint, save_scope, unique_email, unwrap_storage, verify,
-    verify_equal,
+    create_user, failure, save_scope, unique_email, unwrap_storage, verify, verify_equal,
 };
 
 /// Verify scope create, read, update, delete, and policy-version behaviour.
 pub async fn scope_crud(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "scope_crud";
-    let endpoint = save_endpoint(storage, CHECK, "scope crud endpoint").await?;
     let identifier = ScopeIdentifier::new();
     let root = Scope {
         identifier,
-        endpoint_identifier: endpoint,
         parent: None,
         name: "root scope".to_owned(),
         description: Some("root description".to_owned()),
@@ -76,7 +71,6 @@ pub async fn scope_crud(storage: &dyn Storage) -> Result<(), ConformanceFailure>
 
     let child = Scope {
         identifier: ScopeIdentifier::new(),
-        endpoint_identifier: endpoint,
         parent: Some(identifier),
         name: "child scope".to_owned(),
         description: None,
@@ -135,12 +129,6 @@ fn verify_scope(
         actual.identifier,
         expected.identifier,
     )?;
-    verify_equal(
-        check,
-        "scope endpoint",
-        actual.endpoint_identifier,
-        expected.endpoint_identifier,
-    )?;
     verify_equal(check, "scope parent", actual.parent, expected.parent)?;
     verify_equal(
         check,
@@ -170,35 +158,15 @@ fn verify_scope(
     Ok(())
 }
 
-/// Verify role-less scope memberships and their endpoint-membership invariant.
+/// Verify role-less scope memberships, their referential integrity, and user cascades.
 pub async fn scope_memberships(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "scope_memberships";
-    let endpoint = save_endpoint(storage, CHECK, "scope membership endpoint").await?;
-    let other_endpoint = save_endpoint(storage, CHECK, "scope membership other endpoint").await?;
     let scoped_user =
         create_user(storage, CHECK, GlobalRole::Member, &unique_email("scoped")).await?;
     let second_user =
         create_user(storage, CHECK, GlobalRole::Member, &unique_email("scoped")).await?;
-    let without_membership =
-        create_user(storage, CHECK, GlobalRole::Member, &unique_email("orphan")).await?;
-
-    for user in [scoped_user.identifier, second_user.identifier] {
-        unwrap_storage(
-            CHECK,
-            "set scoped endpoint membership",
-            storage
-                .set_endpoint_membership(&EndpointMembership {
-                    user_identifier: user,
-                    endpoint_identifier: endpoint,
-                    role: EndpointRole::Member,
-                    mail_access: MailAccess::Scoped,
-                })
-                .await,
-        )?;
-    }
-
-    let first_scope = save_scope(storage, CHECK, endpoint, "first scope").await?;
-    let second_scope = save_scope(storage, CHECK, endpoint, "second scope").await?;
+    let first_scope = save_scope(storage, CHECK, "first scope").await?;
+    let second_scope = save_scope(storage, CHECK, "second scope").await?;
 
     verify(
         CHECK,
@@ -330,49 +298,34 @@ pub async fn scope_memberships(storage: &dyn Storage) -> Result<(), ConformanceF
         "remove_user_from_scope must report false when absent",
     )?;
 
-    let orphan_scope = save_scope(storage, CHECK, other_endpoint, "orphan scope").await?;
     let orphan = storage
-        .assign_user_to_scope(without_membership.identifier, orphan_scope)
+        .assign_user_to_scope(UserIdentifier::new(), first_scope)
         .await;
     verify(
         CHECK,
         matches!(&orphan, Err(StorageError::ConstraintViolation(_))),
-        format!(
-            "assigning a scope without an endpoint membership must fail with ConstraintViolation, got {orphan:?}"
-        ),
+        format!("assigning an unknown user must fail with ConstraintViolation, got {orphan:?}"),
     )?;
 
     verify(
         CHECK,
         unwrap_storage(
             CHECK,
-            "remove endpoint membership",
-            storage
-                .remove_endpoint_membership(second_user.identifier, endpoint)
-                .await,
+            "delete assigned user",
+            storage.delete_user(second_user.identifier).await,
         )?,
-        "removing a member's endpoint membership must report true",
+        "deleting an assigned user must report true",
     )?;
     verify(
         CHECK,
         unwrap_storage(
             CHECK,
-            "list_user_scopes after endpoint removal",
-            storage.list_user_scopes(second_user.identifier).await,
-        )?
-        .is_empty(),
-        "removing an endpoint membership must remove dependent scope memberships",
-    )?;
-    verify(
-        CHECK,
-        unwrap_storage(
-            CHECK,
-            "list_scope_members after endpoint removal",
+            "list_scope_members after user deletion",
             storage.list_scope_members(first_scope).await,
         )?
         .iter()
         .all(|member| *member != second_user.identifier),
-        "scope members must drop a removed endpoint member",
+        "deleting a user must remove its scope memberships",
     )?;
 
     let unknown = storage
