@@ -127,7 +127,7 @@ impl Compiler {
     ) -> String {
         use Operator::*;
         if text.is_empty() && matches!(operator, Contains | StartsWith | EndsWith) {
-            return "1".to_owned();
+            return format!("{value_sql} IS NOT NULL");
         }
         let case_insensitive = match operator {
             Equal | NotEqual | Contains | StartsWith | EndsWith | Matches => {
@@ -135,7 +135,12 @@ impl Compiler {
             }
             _ => matches!(field, Field::Content),
         };
-        let placeholder = self.bind_text(text);
+        // SQLite GLOB treats brackets as character classes; the DSL treats them literally.
+        let placeholder = if matches!(operator, Matches) {
+            self.bind_text(&text.replace('[', "[[]"))
+        } else {
+            self.bind_text(text)
+        };
         let (value, pattern) = if case_insensitive {
             (
                 format!("lower({value_sql})"),
@@ -147,7 +152,15 @@ impl Compiler {
         match operator {
             Contains => format!("instr({value}, {pattern}) > 0"),
             StartsWith => format!("instr({value}, {pattern}) = 1"),
-            EndsWith => format!("substr({value}, -length({pattern})) = {pattern}"),
+            EndsWith => {
+                let suffix = self.bind_text(text);
+                let suffix = if case_insensitive {
+                    format!("lower({suffix})")
+                } else {
+                    suffix
+                };
+                format!("substr({value}, -length({pattern})) = {suffix}")
+            }
             Matches => format!("{value} GLOB {pattern}"),
             Equal | NotEqual => {
                 let operator = if matches!(operator, Equal) { "=" } else { "<>" };
