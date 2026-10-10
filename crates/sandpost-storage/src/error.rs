@@ -35,6 +35,15 @@ pub enum StorageError {
     /// A user with this email already exists.
     #[error("a user with this email already exists")]
     DuplicateUserEmail,
+    /// An SMTP access with this username already exists.
+    #[error("an SMTP access with this username already exists")]
+    DuplicateSmtpUsername,
+    /// An IMAP account with this username already exists.
+    #[error("an IMAP account with this username already exists")]
+    DuplicateImapUsername,
+    /// The IMAP account already has a local folder with this name.
+    #[error("an IMAP folder with this name already exists")]
+    DuplicateImapFolderName,
     /// A compatibility inbox already uses this address for the owner.
     #[error("inbox address already exists")]
     DuplicateInboxAddress,

@@ -9,8 +9,10 @@ selected once at the composition boundary.
 
 ## Capabilities
 
-- UserStorage: canonical users, credentials, global roles, bootstrap.
-- EndpointStorage: SMTP endpoints and per-user memberships (role plus mail access).
+- UserStorage: canonical users, credentials, global roles, mail access, bootstrap.
+- SmtpServerStorage: the global SMTP server address and hashed SMTP access credentials.
+- ImapStorage: user-owned IMAP accounts (hashed credentials), their linked Views and local folders,
+  mailbox identities with persistent UIDs, materialized membership, and IMAP flags.
 - ScopeStorage: hierarchical mail scopes and role-less memberships.
 - ViewStorage: personal and shared saved views.
 - MessageStorage: atomic ingestion, retrieval, ordering, deletion, and index projection.
@@ -26,8 +28,8 @@ Application
 Arc<dyn Storage>
     |
     v
-UserStorage + EndpointStorage + ScopeStorage + ViewStorage
-  + MessageStorage + SearchSynchronizationStorage + StorageHealth
+UserStorage + SmtpServerStorage + ImapStorage + ScopeStorage
+  + ViewStorage + MessageStorage + SearchSynchronizationStorage + StorageHealth
 ```
 
 ## Backend neutrality
@@ -39,3 +41,10 @@ UserStorage + EndpointStorage + ScopeStorage + ViewStorage
 
 See .agents/docs/storage.md and .agents/docs/backend-authoring.md for the logical model and the
 third-party backend guide.
+
+## Source organization
+
+`capabilities/` groups trait contracts by domain and keeps their blanket composition in
+`storage.rs`. `types/` groups non-IMAP requests and results by domain. `imap.rs` defines the
+IMAP contract, with its account, folder, mailbox, member, flag, and copy types in `imap/types/`.
+The small facades and crate root use explicit re-exports to keep the public import paths stable.
