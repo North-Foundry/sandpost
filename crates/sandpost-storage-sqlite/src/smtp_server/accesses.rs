@@ -1,7 +1,7 @@
 //! Hashed SMTP credentials, mechanism policy, and successful-use metadata.
 use crate::error::StorageResult;
 use crate::records::{invalid_column, parse_identifier};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sandpost_core::{SmtpAccess, SmtpAccessIdentifier, SmtpAuthenticationMechanism};
 use sandpost_storage::{NewSmtpAccess, SmtpAccessCredential, StorageError};
 
@@ -118,13 +118,16 @@ pub(super) fn get_credential_blocking(
         .storage()
 }
 
-/// Create an enabled access, rejecting a taken username inside the same transaction.
+/// Reserve the writer before checking username uniqueness across independent connections.
+/// An immediate transaction avoids upgrading a stale WAL read snapshot after another creator wins.
 pub(super) fn create_access_blocking(
     connection: &mut Connection,
     access: &NewSmtpAccess,
 ) -> Result<SmtpAccess, StorageError> {
     let (plain_allowed, login_allowed) = mechanism_flags(&access.allowed_mechanisms)?;
-    let transaction = connection.transaction().storage()?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .storage()?;
     let duplicate: bool = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM smtp_accesses WHERE username = ?1)",
