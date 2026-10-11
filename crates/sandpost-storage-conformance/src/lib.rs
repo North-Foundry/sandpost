@@ -5,7 +5,7 @@
 //! its own users, SMTP accesses, IMAP accounts, scopes, views, and messages with fresh identifiers and depends only
 //! on the storage contract, the shared domain types, the canonical query AST, and Tokio.
 //!
-//! The storage under test must be empty when run_all starts, because the first check proves
+//! The storage under test must have no users when run_all starts, because the first check proves
 //! bootstrap behaviour that is only observable before any user exists.
 mod imap;
 mod messages;
@@ -64,16 +64,16 @@ pub async fn health(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     unwrap_storage(CHECK, "health", storage.health().await)
 }
 
-/// Run every conformance check against an empty storage implementation.
+/// Run every conformance check against a storage implementation with no users.
 ///
-/// The checks run in a fixed order and stop at the first failure. The storage must be empty:
-/// this function fails with the run_all check when any user already exists.
+/// The checks run in a fixed order and stop at the first failure. This function fails with the
+/// run_all check when any user already exists.
 pub async fn run_all(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     let existing = unwrap_storage("run_all", "count_users", storage.count_users().await)?;
     verify(
         "run_all",
         existing == 0,
-        format!("the conformance suite requires an empty storage but found {existing} users"),
+        format!("the conformance suite requires no users but found {existing}"),
     )?;
     health(storage).await?;
     bootstrap(storage).await?;

@@ -271,6 +271,15 @@ fn representative_filters() -> Vec<Expression> {
             Operator::GreaterThanOrEqual,
             Value::Number(2),
         ),
+        // The storage API accepts the public AST directly, so invalid field/operator pairs must
+        // retain the evaluator's false semantics rather than reaching a backend panic path.
+        predicate(Field::ReceivedAt, Operator::Contains, Value::Number(1)),
+        predicate(Field::Size, Operator::Contains, Value::Number(-1)),
+        predicate(
+            Field::HasAttachments,
+            Operator::Contains,
+            Value::Boolean(true),
+        ),
         Expression::Not(Box::new(predicate(
             Field::Subject,
             Operator::Equal,

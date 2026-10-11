@@ -207,10 +207,20 @@ pub async fn message_ordering_and_pagination(
 pub async fn message_deletion(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "message_deletion";
     let message = simple_message("deletion target");
-    unwrap_storage(
+    let previous_high_water = unwrap_storage(
+        CHECK,
+        "max_message_sequence before delete target insert",
+        storage.max_message_sequence().await,
+    )?;
+    let sequence = unwrap_storage(
         CHECK,
         "insert deletion target",
         storage.insert_message(&message).await,
+    )?;
+    verify(
+        CHECK,
+        sequence > previous_high_water,
+        "a new message must advance the sequence high-water mark",
     )?;
     verify(
         CHECK,
@@ -230,6 +240,16 @@ pub async fn message_deletion(storage: &dyn Storage) -> Result<(), ConformanceFa
         )?
         .is_none(),
         "a deleted message must be gone",
+    )?;
+    verify_equal(
+        CHECK,
+        "sequence high-water mark after deletion",
+        unwrap_storage(
+            CHECK,
+            "max_message_sequence after delete",
+            storage.max_message_sequence().await,
+        )?,
+        sequence,
     )?;
     verify(
         CHECK,

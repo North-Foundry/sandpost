@@ -230,5 +230,41 @@ pub async fn index_messages_revisions(storage: &dyn Storage) -> Result<(), Confo
         .is_empty(),
         "hydrate_current_messages must omit a stale revision",
     )?;
+
+    verify(
+        CHECK,
+        unwrap_storage(
+            CHECK,
+            "delete before reinsertion",
+            storage.delete_message(first_message.identifier).await,
+        )?,
+        "delete/reinsert setup must remove the original message",
+    )?;
+    unwrap_storage(
+        CHECK,
+        "reinsert the same message identifier",
+        storage.insert_message(first_message).await,
+    )?;
+    let reinserted = unwrap_storage(
+        CHECK,
+        "indexed_messages after reinsertion",
+        storage.indexed_messages(&[first_message.identifier]).await,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| {
+        failure(
+            CHECK,
+            "reinserting a message did not create an index record",
+        )
+    })?;
+    verify(
+        CHECK,
+        reinserted.revision > first_record.revision,
+        format!(
+            "delete/reinsert must advance the durable revision: old {}, new {}",
+            first_record.revision, reinserted.revision
+        ),
+    )?;
     Ok(())
 }

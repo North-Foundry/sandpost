@@ -49,6 +49,7 @@ pub async fn imap_mailbox_identities(storage: &dyn Storage) -> Result<(), Confor
             .reconcile_imap_mailboxes(account.identifier, &[ImapMailboxSource::Inbox])
             .await,
     )?;
+    verify_equal(CHECK, "one reconciled mailbox", only_inbox.len(), 1)?;
     verify_equal(CHECK, "kept inbox", only_inbox[0], first[0])?;
     verify(
         CHECK,

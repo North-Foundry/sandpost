@@ -30,6 +30,43 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
             })
             .await,
     )?;
+    let other_account = create_imap_account_fixture(storage, CHECK).await?;
+    let other_inbox = reconcile_imap_mailbox(
+        storage,
+        CHECK,
+        &other_account,
+        &[ImapMailboxSource::Inbox],
+        ImapMailboxSource::Inbox,
+    )
+    .await?;
+    verify(
+        CHECK,
+        matches!(
+            storage
+                .reconcile_imap_mailboxes(
+                    other_account.identifier,
+                    &[ImapMailboxSource::LocalFolder(folder.identifier)],
+                )
+                .await,
+            Err(StorageError::NotFound)
+        ),
+        "reconciliation must reject another account's folder",
+    )?;
+    verify(
+        CHECK,
+        unwrap_storage(
+            CHECK,
+            "mailbox after refused reconciliation",
+            storage.get_imap_mailbox(other_inbox).await,
+        )?
+        .is_some(),
+        "a refused reconciliation must preserve existing mailbox identities",
+    )?;
+    unwrap_storage(
+        CHECK,
+        "delete other IMAP account",
+        storage.delete_imap_account(other_account.identifier).await,
+    )?;
     let sources = [
         ImapMailboxSource::Inbox,
         ImapMailboxSource::Trash,
@@ -142,14 +179,16 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
         unchanged.changes.is_empty(),
         "no changes after the latest cursor",
     )?;
-    let refused = storage
-        .copy_imap_members(inbox, &[2], local, Some(&only_one), false)
-        .await;
-    verify(
-        CHECK,
-        matches!(refused, Err(StorageError::ConstraintViolation(_))),
-        format!("copying a non-matching message into a dynamic mailbox must fail: {refused:?}"),
-    )?;
+    for definition in [Some(&only_one), None] {
+        let refused = storage
+            .copy_imap_members(inbox, &[2], local, definition, false)
+            .await;
+        verify(
+            CHECK,
+            matches!(refused, Err(StorageError::ConstraintViolation(_))),
+            format!("a dynamic copy requires a matching definition: {refused:?}"),
+        )?;
+    }
     verify_equal(
         CHECK,
         "destination UIDs after refused copy",
