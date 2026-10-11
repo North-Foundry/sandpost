@@ -39,7 +39,8 @@ pub trait MessageStorage: Send + Sync {
         revision: u64,
     ) -> Result<bool, StorageError>;
 
-    /// Return the highest stored mail sequence, or zero when empty.
+    /// Return the persistent message-sequence high-water mark, including deleted messages, or
+    /// zero when no message has ever been inserted.
     async fn max_message_sequence(&self) -> Result<MessageSequence, StorageError>;
 
     /// Load lightweight summaries in caller-supplied identifier order, omitting missing IDs.

@@ -23,7 +23,7 @@ pub use types::{
 pub use sandpost_core::{
     Attachment, GlobalRole, ImapAccount, ImapAccountIdentifier, ImapFolderIdentifier,
     ImapLinkedView, ImapLocalFolder, ImapMailboxIdentifier, ImapMailboxSource, ImapMessageFlags,
-    Inbox, InboxIdentifier, MailAccess, Mailbox, Message, MessageFacts, MessageIdentifier,
+    InboxIdentifier, MailAccess, Mailbox, Message, MessageFacts, MessageIdentifier,
     MessageSequence, Scope, ScopeIdentifier, ScopeMembership, ScopeTree, SmtpAccess,
     SmtpAccessIdentifier, SmtpAuthenticationMechanism, User, UserIdentifier, View, ViewIdentifier,
 };

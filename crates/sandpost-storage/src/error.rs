@@ -11,9 +11,6 @@ pub enum StorageError {
     /// The backend cannot currently serve the request (for example, a closed writer or lock).
     #[error("storage is unavailable")]
     Unavailable,
-    /// A uniqueness or membership invariant was violated by the request.
-    #[error("conflicting stored definition")]
-    Conflict,
     /// A referenced record does not exist.
     #[error("record not found")]
     NotFound,
@@ -50,9 +47,6 @@ pub enum StorageError {
     /// A compatibility inbox address is not a normalizable local address.
     #[error("inbox address is invalid")]
     InvalidInboxAddress,
-    /// A message revision no longer matches the caller's authoritative snapshot.
-    #[error("message revision is stale")]
-    StaleRevision,
     /// A scope filter or parent changed without advancing its policy version.
     #[error("scope {0} has a different policy version")]
     PolicyVersionConflict(ScopeIdentifier),

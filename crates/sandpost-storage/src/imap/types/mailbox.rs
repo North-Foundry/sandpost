@@ -10,7 +10,8 @@ pub struct ImapMailboxState {
     pub source: ImapMailboxSource,
     /// Unique for this mailbox identity; never reused by a later mailbox.
     pub uid_validity: u32,
-    /// The UID the next member will receive.
+    /// The UID the next member will receive, saturated at `u32::MAX` when exhausted.
+    /// Allocating a new UID after exhaustion fails with `StorageError::IntegerRange`.
     pub uid_next: u32,
     /// The highest UID already reported as recent to a read-write session.
     pub recent_through: u32,

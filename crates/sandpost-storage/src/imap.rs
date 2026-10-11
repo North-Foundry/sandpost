@@ -125,6 +125,7 @@ pub trait ImapStorage: Send + Sync {
 
     /// Ensure exactly the given sources have mailbox identities: create missing ones with a fresh
     /// UIDVALIDITY and delete those not listed. Returns the states in the order given.
+    /// Local folders must belong to the account; otherwise NotFound and nothing changes.
     async fn reconcile_imap_mailboxes(
         &self,
         account: ImapAccountIdentifier,
@@ -228,8 +229,9 @@ pub trait ImapStorage: Send + Sync {
     /// Copy members to another mailbox of the same account, removing them from the source when
     /// `remove_from_source`.
     ///
-    /// A dynamic destination accepts only messages matching `destination_definition` (otherwise
-    /// ConstraintViolation and nothing changes) and forgets earlier expunges of them. The Trash
+    /// A dynamic destination requires `destination_definition` when any source member exists and
+    /// accepts only matching messages (otherwise ConstraintViolation and nothing changes). It
+    /// forgets earlier expunges of accepted messages. The Trash
     /// accepts any member. Messages already present keep their UID.
     async fn copy_imap_members(
         &self,

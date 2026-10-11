@@ -18,8 +18,6 @@ pub trait Storage:
     + MessageStorage
     + SearchSynchronizationStorage
     + StorageHealth
-    + Send
-    + Sync
 {
 }
 
@@ -32,7 +30,5 @@ impl<T> Storage for T where
         + MessageStorage
         + SearchSynchronizationStorage
         + StorageHealth
-        + Send
-        + Sync
 {
 }
