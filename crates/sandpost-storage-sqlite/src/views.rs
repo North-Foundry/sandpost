@@ -3,89 +3,93 @@ use crate::SqliteStorage;
 use crate::error::StorageResult;
 use crate::records::{invalid_column, parse_identifier};
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sandpost_core::{UserIdentifier, View, ViewIdentifier};
 use sandpost_storage::{StorageError, ViewStorage};
+use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 
 const VIEW_COLUMNS: &str = "identifier,owner_identifier,name,filter";
 
 /// Decode a saved view row, validating its identifier and optional owner.
-fn decode_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<View> {
-    let identifier: String = row.get(0)?;
-    let owner: Option<String> = row.get(1)?;
+fn decode_view(row: SqliteRow) -> Result<View, sqlx::Error> {
+    let identifier: String = row.try_get("identifier")?;
+    let owner: Option<String> = row.try_get("owner_identifier")?;
     Ok(View {
-        identifier: parse_identifier(&identifier).map_err(|_| invalid_column(0, "identifier"))?,
+        identifier: parse_identifier(&identifier).map_err(|_| invalid_column("identifier"))?,
         owner_identifier: owner
-            .map(|value| {
-                parse_identifier(&value).map_err(|_| invalid_column(1, "owner_identifier"))
-            })
+            .map(|value| parse_identifier(&value).map_err(|_| invalid_column("owner_identifier")))
             .transpose()?,
-        name: row.get(2)?,
-        filter: row.get(3)?,
+        name: row.try_get("name")?,
+        filter: row.try_get("filter")?,
     })
 }
 
 /// List a user's personal views and all shared views by name and identifier.
-fn list_views_blocking(
-    connection: &Connection,
+async fn list_views(
+    connection: &mut SqliteConnection,
     user: UserIdentifier,
 ) -> Result<Vec<View>, StorageError> {
-    let query = format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {VIEW_COLUMNS} FROM views WHERE owner_identifier=?1 OR owner_identifier IS NULL ORDER BY name,identifier"
-    );
-    let mut statement = connection.prepare(&query).storage()?;
-    statement
-        .query_map([user.to_string()], decode_view)
-        .storage()?
-        .collect::<Result<Vec<_>, _>>()
-        .storage()
+    )))
+    .bind(user.to_string())
+    .fetch_all(connection)
+    .await
+    .storage()?
+    .into_iter()
+    .map(decode_view)
+    .collect::<Result<Vec<_>, _>>()
+    .storage()
 }
 
 /// Load one view by identifier.
-fn get_view_blocking(
-    connection: &Connection,
+async fn get_view(
+    connection: &mut SqliteConnection,
     identifier: ViewIdentifier,
 ) -> Result<Option<View>, StorageError> {
-    let query = format!("SELECT {VIEW_COLUMNS} FROM views WHERE identifier=?1");
-    connection
-        .query_row(&query, [identifier.to_string()], decode_view)
-        .optional()
-        .storage()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {VIEW_COLUMNS} FROM views WHERE identifier=?1"
+    )))
+    .bind(identifier.to_string())
+    .fetch_optional(connection)
+    .await
+    .storage()?
+    .map(decode_view)
+    .transpose()
+    .storage()
 }
 
 /// Insert or update a saved view.
-fn save_view_blocking(connection: &Connection, view: &View) -> Result<(), StorageError> {
-    connection
-        .execute(
-            "INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4) ON CONFLICT(identifier) DO UPDATE SET owner_identifier=excluded.owner_identifier,name=excluded.name,filter=excluded.filter",
-            params![
-                view.identifier.to_string(),
-                view.owner_identifier.map(|identifier| identifier.to_string()),
-                view.name,
-                view.filter,
-            ],
-        )
-        .storage()?;
+async fn save_view(storage: &SqliteStorage, view: &View) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4) ON CONFLICT(identifier) DO UPDATE SET owner_identifier=excluded.owner_identifier,name=excluded.name,filter=excluded.filter",
+    )
+    .bind(view.identifier.to_string())
+    .bind(view.owner_identifier.map(|identifier| identifier.to_string()))
+    .bind(&view.name)
+    .bind(&view.filter)
+    .execute(&storage.write_pool)
+    .await
+    .storage()?;
     Ok(())
 }
 
 /// Delete a saved view by identifier.
-fn delete_view_blocking(
-    connection: &Connection,
+async fn delete_view(
+    storage: &SqliteStorage,
     identifier: ViewIdentifier,
 ) -> Result<bool, StorageError> {
-    Ok(connection
-        .execute(
-            "DELETE FROM views WHERE identifier=?1",
-            [identifier.to_string()],
-        )
+    Ok(sqlx::query("DELETE FROM views WHERE identifier=?1")
+        .bind(identifier.to_string())
+        .execute(&storage.write_pool)
+        .await
         .storage()?
+        .rows_affected()
         > 0)
 }
 
 /// Create a caller-owned recipient view with transactional duplicate-address protection.
-fn create_recipient_view_blocking(
-    connection: &mut Connection,
+async fn create_recipient_view(
+    storage: &SqliteStorage,
     user: UserIdentifier,
     name: &str,
     address: &str,
@@ -94,16 +98,19 @@ fn create_recipient_view_blocking(
         return Err(StorageError::InvalidInboxAddress);
     }
     let filter = format!("envelope.to.address == \"{address}\"");
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+    let mut transaction = storage
+        .write_pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .storage()?;
-    let duplicate: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM views WHERE owner_identifier=?1 AND filter=?2)",
-            params![user.to_string(), filter],
-            |row| row.get(0),
-        )
-        .storage()?;
+    let duplicate: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM views WHERE owner_identifier=?1 AND filter=?2)",
+    )
+    .bind(user.to_string())
+    .bind(&filter)
+    .fetch_one(&mut *transaction)
+    .await
+    .storage()?;
     if duplicate {
         return Err(StorageError::DuplicateInboxAddress);
     }
@@ -113,18 +120,15 @@ fn create_recipient_view_blocking(
         name: name.to_owned(),
         filter,
     };
-    transaction
-        .execute(
-            "INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4)",
-            params![
-                view.identifier.to_string(),
-                user.to_string(),
-                view.name,
-                view.filter,
-            ],
-        )
+    sqlx::query("INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4)")
+        .bind(view.identifier.to_string())
+        .bind(user.to_string())
+        .bind(&view.name)
+        .bind(&view.filter)
+        .execute(&mut *transaction)
+        .await
         .storage()?;
-    transaction.commit().storage()?;
+    transaction.commit().await.storage()?;
     Ok(view)
 }
 
@@ -148,27 +152,24 @@ pub(crate) fn valid_local_address(address: &str) -> bool {
 impl ViewStorage for SqliteStorage {
     /// List the caller-owned and shared saved views in name and identifier order.
     async fn list_views(&self, user: UserIdentifier) -> Result<Vec<View>, StorageError> {
-        self.run(move |connection| list_views_blocking(connection, user))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        list_views(&mut connection, user).await
     }
 
     /// Read a saved view by identifier.
     async fn get_view(&self, identifier: ViewIdentifier) -> Result<Option<View>, StorageError> {
-        self.run(move |connection| get_view_blocking(connection, identifier))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        get_view(&mut connection, identifier).await
     }
 
     /// Insert or update one saved view and its canonical filter.
     async fn save_view(&self, view: &View) -> Result<(), StorageError> {
-        let view = view.clone();
-        self.run(move |connection| save_view_blocking(connection, &view))
-            .await
+        save_view(self, view).await
     }
 
     /// Delete a saved view and its dependent IMAP configuration.
     async fn delete_view(&self, identifier: ViewIdentifier) -> Result<bool, StorageError> {
-        self.run(move |connection| delete_view_blocking(connection, identifier))
-            .await
+        delete_view(self, identifier).await
     }
 
     /// Create a personal view for a validated local address with duplicate protection.
@@ -178,11 +179,6 @@ impl ViewStorage for SqliteStorage {
         name: &str,
         address: &str,
     ) -> Result<View, StorageError> {
-        let name = name.to_owned();
-        let address = address.to_owned();
-        self.run(move |connection| {
-            create_recipient_view_blocking(connection, user, &name, &address)
-        })
-        .await
+        create_recipient_view(self, user, name, address).await
     }
 }

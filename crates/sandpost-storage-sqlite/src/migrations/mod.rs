@@ -1,41 +1,27 @@
-//! The SQLite schema owned by this backend: the version 1 baseline and its forward migrations.
+//! The SQLite schema baseline and its ordered forward migration batches.
 //!
-//! Version 1 is a flattened baseline created directly by a fresh database. Later versions are
-//! ordered batches of forward migration scripts. A fresh database applies every batch; an existing
-//! database is validated against the exact schema of its stored version, then upgraded through the
-//! remaining batches inside the same immediate transaction. Unknown, newer, or structurally invalid
-//! databases are rejected, and the logical storage model is defined by the sandpost-storage
-//! contract rather than by this physical schema.
+//! Version 1 creates the current schema directly, one table or trigger group per script.
+//! Existing databases must match their version's schema and history exactly before any remaining
+//! batches are applied atomically. Pre-release schemas from before this baseline are unsupported.
 mod catalog;
 
 use crate::{StorageError, error::StorageResult, schema};
-use catalog::{COPY_ENDPOINT_LISTENER_ADDRESS, MIGRATION_BATCHES, MigrationScript, SCHEMA_VERSION};
-pub(crate) use catalog::{ENDPOINT_LISTENER_VARIANT, SchemaLayout, batches_through};
-use rusqlite::{Connection, TransactionBehavior};
+pub(crate) use catalog::batches_through;
+use catalog::{MIGRATION_BATCHES, MigrationScript, SCHEMA_VERSION};
+use sqlx::{Connection, Row, SqliteConnection};
 
 /// Initialize an empty database, or validate and upgrade an existing one, atomically.
-///
-/// Foreign-key enforcement is switched off for the duration of the transaction, as SQLite
-/// requires for table rebuilds, and every reference is verified with `foreign_key_check` before
-/// the transaction commits. Enforcement is restored afterwards by the caller's connection setup.
-pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
-    connection
-        .pragma_update(None, "foreign_keys", "OFF")
+pub(crate) async fn migrate(connection: &mut SqliteConnection) -> Result<(), StorageError> {
+    let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await.storage()?;
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *transaction)
+        .await
         .storage()?;
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .storage()?;
-    let version: i64 = transaction
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .storage()?;
-    let mut layout = SchemaLayout::Canonical;
-    let has_history: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'migrations')",
-            [],
-            |row| row.get(0),
-        )
-        .storage()?;
+    let has_history: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'migrations')")
+            .fetch_one(&mut *transaction)
+            .await
+            .storage()?;
     if version < 0 {
         return Err(StorageError::InvalidData(format!(
             "negative schema version {version}"
@@ -50,10 +36,14 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
                 "unsupported schema version {version} (current {SCHEMA_VERSION})"
             )));
         }
-        layout = existing_layout(&transaction, version)?;
-        validate_history(&transaction, version)?;
+        if !schema::matches_schema(&mut transaction, version).await? {
+            return Err(StorageError::InvalidData(format!(
+                "database schema does not match schema version {version}"
+            )));
+        }
+        validate_history(&mut transaction, version).await?;
     } else if version == 0 {
-        if !schema::schema_is_empty(&transaction)? {
+        if !schema::schema_is_empty(&mut transaction).await? {
             return Err(StorageError::InvalidData(
                 "unversioned database is not empty".into(),
             ));
@@ -68,77 +58,61 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
         .filter(|(batch, _)| *batch > version)
     {
         for (name, script) in scripts.iter() {
-            transaction
-                .execute_batch(script)
+            // Execute the immutable migration script through the startup transaction.
+            sqlx::Executor::execute(&mut *transaction, sqlx::raw_sql(*script))
+                .await
                 .map_err(|error| StorageError::Migration(format!("{name}: {error}")))?;
-            if *name == "0017_create_smtp_server_table.sql"
-                && layout == SchemaLayout::EndpointListeners
-            {
-                transaction
-                    .execute_batch(COPY_ENDPOINT_LISTENER_ADDRESS)
-                    .map_err(|error| StorageError::Migration(format!("{name}: {error}")))?;
-            }
         }
-        record_batch(&transaction, *batch, scripts)?;
+        record_batch(&mut transaction, *batch, scripts).await?;
     }
-    transaction
-        .pragma_update(None, "user_version", SCHEMA_VERSION)
-        .storage()?;
-    if !schema::matches_schema(&transaction, SCHEMA_VERSION, SchemaLayout::Canonical)? {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA user_version={SCHEMA_VERSION}"
+    )))
+    .execute(&mut *transaction)
+    .await
+    .storage()?;
+    if !schema::matches_schema(&mut transaction, SCHEMA_VERSION).await? {
         return Err(StorageError::Migration(
             "migrated schema does not match the current version".into(),
         ));
     }
-    validate_history(&transaction, SCHEMA_VERSION)?;
-    validate_foreign_keys(&transaction)?;
-    transaction.commit().storage()?;
+    validate_history(&mut transaction, SCHEMA_VERSION).await?;
+    validate_foreign_keys(&mut transaction).await?;
+    transaction.commit().await.storage()?;
     Ok(())
 }
 
-/// Identify the recognized layout of an existing database, rejecting any other structure.
-///
-/// Only version 1 has an alternative layout; every other version must match its scripts exactly.
-fn existing_layout(connection: &Connection, version: i64) -> Result<SchemaLayout, StorageError> {
-    if schema::matches_schema(connection, version, SchemaLayout::Canonical)? {
-        return Ok(SchemaLayout::Canonical);
-    }
-    if version == 1 && schema::matches_schema(connection, version, SchemaLayout::EndpointListeners)?
-    {
-        return Ok(SchemaLayout::EndpointListeners);
-    }
-    Err(StorageError::InvalidData(format!(
-        "database schema does not match schema version {version}"
-    )))
-}
-
 /// Record one applied batch's scripts in the migration history table.
-fn record_batch(
-    connection: &Connection,
+async fn record_batch(
+    connection: &mut SqliteConnection,
     batch: i64,
     scripts: &[MigrationScript],
 ) -> Result<(), StorageError> {
     for (name, _) in scripts {
-        connection
-            .execute(
-                "INSERT INTO migrations (migration, batch) VALUES (?1, ?2)",
-                rusqlite::params![name, batch],
-            )
+        sqlx::query("INSERT INTO migrations (migration, batch) VALUES (?1, ?2)")
+            .bind(*name)
+            .bind(batch)
+            .execute(&mut *connection)
+            .await
             .storage()?;
     }
     Ok(())
 }
 
 /// Reject incomplete or unknown migration history for the given schema version.
-fn validate_history(connection: &Connection, version: i64) -> Result<(), StorageError> {
-    let mut statement = connection
-        .prepare("SELECT migration, batch FROM migrations ORDER BY migration")
-        .storage()?;
-    let history = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+async fn validate_history(
+    connection: &mut SqliteConnection,
+    version: i64,
+) -> Result<(), StorageError> {
+    let history = sqlx::query("SELECT migration, batch FROM migrations ORDER BY migration")
+        .try_map(|row: sqlx::sqlite::SqliteRow| {
+            Ok((
+                row.try_get::<String, _>("migration")?,
+                row.try_get::<i64, _>("batch")?,
+            ))
         })
-        .storage()?
-        .collect::<Result<Vec<_>, _>>()
+        .fetch_all(connection)
+        .await
         .storage()?;
     let expected: Vec<_> = batches_through(version)
         .flat_map(|(batch, scripts)| {
@@ -156,12 +130,14 @@ fn validate_history(connection: &Connection, version: i64) -> Result<(), Storage
     }
 }
 
-/// Fail the migration when any row references a missing parent after a table rebuild.
-fn validate_foreign_keys(connection: &Connection) -> Result<(), StorageError> {
-    let mut statement = connection.prepare("PRAGMA foreign_key_check").storage()?;
-    let mut violations = statement.query([]).storage()?;
-    if let Some(violation) = violations.next().storage()? {
-        let table: String = violation.get(0).storage()?;
+/// Reject any database containing a row that references a missing parent.
+async fn validate_foreign_keys(connection: &mut SqliteConnection) -> Result<(), StorageError> {
+    if let Some(violation) = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_optional(connection)
+        .await
+        .storage()?
+    {
+        let table: String = violation.try_get("table").storage()?;
         return Err(StorageError::Migration(format!(
             "foreign key violation in table {table}"
         )));

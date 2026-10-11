@@ -1,95 +1,153 @@
-//! Shared SQLite connection, configuration, and async execution boundary.
-use crate::StorageError;
-use crate::error::StorageResult;
-use crate::migrations::migrate;
-use rusqlite::Connection;
+//! SQLite pool configuration, asynchronous initialization, and lifecycle.
+use crate::{StorageError, error::StorageResult, migrations::migrate};
 use sandpost_storage::StorageHealth;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use sqlx::{
+    SqliteConnection, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteSynchronous},
+};
+use std::{path::Path, time::Duration};
+use tokio::time::Instant;
 
-// ponytail: one connection-wide lock; split connections only if measured contention warrants it.
-/// A fully asynchronous storage backend implemented on top of rusqlite.
-///
-/// Blocking SQLite work is serialized behind one connection and executed on the Tokio blocking
-/// pool, so the public interface never blocks runtime worker threads. The internal lock never
-/// leaks: callers only ever observe the backend-neutral storage traits.
+/// Bounded default read concurrency; SQLite still permits only one active writer.
+const READ_CONNECTIONS: u32 = 4;
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// SQLite storage with concurrent WAL readers and one serialized asynchronous writer.
+/// In-memory handles share one pool and never acquire a second connection within an operation.
 #[derive(Clone)]
-pub struct SqliteStorage(Arc<Mutex<Connection>>);
+pub struct SqliteStorage {
+    pub(crate) read_pool: SqlitePool,
+    pub(crate) write_pool: SqlitePool,
+}
 
 impl SqliteStorage {
-    /// Open or create a database at the supplied path and apply pending migrations.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let connection = Connection::open(path).storage()?;
-        Self::initialize(connection)
-    }
-
-    /// Create an in-memory database and apply the current schema.
-    pub fn memory() -> Result<Self, StorageError> {
-        Self::initialize(Connection::open_in_memory().storage()?)
-    }
-
-    /// Configure the connection, migrate its schema, and wrap it for shared access.
-    ///
-    /// Migration runs with foreign-key enforcement off (SQLite requires that for table rebuilds
-    /// and verifies references itself); enforcement is enabled for every later operation.
-    fn initialize(mut connection: Connection) -> Result<Self, StorageError> {
-        enable_write_ahead_logging(&connection)?;
-        connection.busy_timeout(Duration::from_secs(5)).storage()?;
-        migrate(&mut connection)?;
-        connection
-            .pragma_update(None, "foreign_keys", "ON")
+    /// Open or create a file database, validating and migrating it before opening readers.
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let options = connection_options().filename(path).create_if_missing(true);
+        let write_pool = pool_options(1)
+            .connect_with(options.clone())
+            .await
             .storage()?;
-        Ok(Self(Arc::new(Mutex::new(connection))))
+        let initialize = async {
+            let mut connection = write_pool.acquire().await.storage()?;
+            enable_write_ahead_logging(&mut connection).await?;
+            migrate(&mut connection).await
+        }
+        .await;
+        if let Err(error) = initialize {
+            write_pool.close().await;
+            return Err(error);
+        }
+        let read_pool = match pool_options(READ_CONNECTIONS)
+            .connect_with(options.create_if_missing(false).read_only(true))
+            .await
+        {
+            Ok(pool) => pool,
+            Err(error) => {
+                write_pool.close().await;
+                return Err(crate::error::sqlite_error(error));
+            }
+        };
+        Ok(Self {
+            read_pool,
+            write_pool,
+        })
     }
 
-    /// Execute one blocking SQLite operation on the blocking pool.
-    ///
-    /// The closure runs with the connection lock held for its whole duration, preserving the
-    /// single-handle serialization the SQLite schema relies on. Work is never performed on the
-    /// async executor.
-    pub(crate) async fn run<T, Operation>(&self, operation: Operation) -> Result<T, StorageError>
-    where
-        T: Send + 'static,
-        Operation: FnOnce(&mut Connection) -> Result<T, StorageError> + Send + 'static,
-    {
-        let shared = Arc::clone(&self.0);
-        tokio::task::spawn_blocking(move || {
-            let mut connection = shared.lock().map_err(|_| StorageError::Unavailable)?;
-            operation(&mut connection)
+    /// Create an isolated memory database whose read and write handles share one connection.
+    pub async fn memory() -> Result<Self, StorageError> {
+        let pool = pool_options(1)
+            // Retain the sole connection for the lifetime of the pool. Skipping acquire checks
+            // also prevents cancellation during those checks from dropping the memory database.
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .test_before_acquire(false)
+            .connect_with(connection_options().in_memory(true))
+            .await
+            .storage()?;
+        let initialize = async {
+            let mut connection = pool.acquire().await.storage()?;
+            migrate(&mut connection).await
+        }
+        .await;
+        if let Err(error) = initialize {
+            pool.close().await;
+            return Err(error);
+        }
+        Ok(Self {
+            read_pool: pool.clone(),
+            write_pool: pool,
         })
-        .await
-        .map_err(|error| StorageError::Backend(Box::new(error)))?
     }
+
+    /// Close both pools, waking waiting callers and waiting for checked-out operations to finish.
+    /// Closing any cloned storage handle closes the shared pools for every handle.
+    pub async fn close(&self) {
+        tokio::join!(self.read_pool.close(), self.write_pool.close());
+    }
+}
+
+/// Configure every connection with foreign keys, existing durability, and bounded busy handling.
+fn connection_options() -> SqliteConnectOptions {
+    SqliteConnectOptions::new()
+        .foreign_keys(true)
+        .busy_timeout(BUSY_TIMEOUT)
+        .synchronous(SqliteSynchronous::Full)
+}
+
+/// Bound connection count and acquisition waiting without adding a custom write scheduler.
+fn pool_options(connections: u32) -> SqlitePoolOptions {
+    SqlitePoolOptions::new()
+        .max_connections(connections)
+        .acquire_timeout(BUSY_TIMEOUT)
 }
 
 #[async_trait::async_trait]
 impl StorageHealth for SqliteStorage {
-    /// Probe the shared SQLite connection through the blocking execution boundary.
+    /// Probe the read pool without serializing against the writer.
     async fn health(&self) -> Result<(), StorageError> {
-        self.run(|connection| {
-            connection.query_row("SELECT 1", [], |_| Ok(())).storage()?;
-            Ok(())
-        })
-        .await
+        sqlx::query("SELECT 1")
+            .execute(&self.read_pool)
+            .await
+            .storage()?;
+        Ok(())
     }
 }
 
-/// Retry WAL setup for at most five seconds when concurrent openers contend.
-/// SQLite can skip its busy handler when upgrading journal-mode locks; retry
-/// outside any transaction so each failed attempt releases its read lock.
-fn enable_write_ahead_logging(connection: &Connection) -> Result<(), StorageError> {
-    connection.busy_timeout(Duration::ZERO).storage()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match connection.pragma_update(None, "journal_mode", "WAL") {
+/// Initialize WAL once before exposing readers, retrying journal lock upgrades for five seconds.
+async fn enable_write_ahead_logging(connection: &mut SqliteConnection) -> Result<(), StorageError> {
+    sqlx::query("PRAGMA busy_timeout=0")
+        .execute(&mut *connection)
+        .await
+        .storage()?;
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    let result = loop {
+        match sqlx::query_scalar::<_, String>("PRAGMA journal_mode=WAL")
+            .fetch_one(&mut *connection)
+            .await
+        {
+            Ok(mode) if mode.eq_ignore_ascii_case("wal") => break Ok(()),
+            Ok(_) => break Err(StorageError::Unavailable),
             Err(error)
-                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
+                if error
+                    .as_database_error()
+                    .and_then(|database| database.code())
+                    .and_then(|code| code.parse::<i32>().ok())
+                    .is_some_and(|code| code & 255 == 5)
                     && Instant::now() < deadline =>
             {
-                std::thread::sleep(Duration::from_millis(10));
+                tokio::time::sleep(Duration::from_millis(10)).await
             }
-            result => return result.storage(),
+            Err(error) => break Err(crate::error::sqlite_error(error)),
         }
-    }
+    };
+    sqlx::query("PRAGMA busy_timeout=5000")
+        .execute(connection)
+        .await
+        .storage()?;
+    result
 }
+
+#[cfg(test)]
+#[path = "connection_tests.rs"]
+mod tests;

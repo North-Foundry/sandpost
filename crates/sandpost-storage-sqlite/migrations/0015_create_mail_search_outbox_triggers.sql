@@ -15,7 +15,7 @@ END;
 
 -- Revision-only updates do not recurse or enqueue a second operation.
 CREATE TRIGGER mail_search_outbox_update AFTER UPDATE OF
-    subject, text_body, markup_body, message_identifier, raw_message, received_at, size, endpoint_identifier
+    subject, text_body, markup_body, message_identifier, raw_message, received_at, size
 ON mail BEGIN
     UPDATE search_outbox_state SET latest_sequence = latest_sequence + 1 WHERE singleton = 1;
     INSERT INTO search_outbox(sequence, message_identifier)

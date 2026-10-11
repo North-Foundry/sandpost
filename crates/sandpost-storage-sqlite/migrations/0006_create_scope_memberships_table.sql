@@ -1,4 +1,4 @@
--- Role-less assignment of a user to a mail subset within one endpoint.
+-- Role-less assignment of a user to a mail subset over the mail pool.
 CREATE TABLE scope_memberships (
     user_identifier TEXT NOT NULL REFERENCES users(identifier) ON DELETE CASCADE,
     scope_identifier TEXT NOT NULL REFERENCES scopes(identifier) ON DELETE CASCADE,

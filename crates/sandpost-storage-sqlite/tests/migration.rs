@@ -1,32 +1,39 @@
-//! Schema creation, forward migration, and version-guard tests for the SQLite backend.
+//! Fresh schema initialization, validation, reopening, and version guard tests.
 //!
-//! A fresh database applies the version 1 baseline and every later batch; version 1, 2, 3, and 4
-//! databases are upgraded in place without losing data; any other stored schema version is
-//! rejected.
-use rusqlite::Connection;
+//! Version 1 is the only supported schema baseline. Older pre-release databases are deliberately
+//! rejected because the flattened baseline was prepared before the first deployment.
+#[allow(dead_code)]
+mod common;
+
+use common::connection as open_connection;
 use sandpost_core::{
-    GlobalRole, MailAccess, Message, MessageFacts, MessageIdentifier, SmtpAuthenticationMechanism,
+    GlobalRole, MailAccess, Message, MessageFacts, MessageIdentifier, ScopeIdentifier,
     UserIdentifier,
 };
-use sandpost_storage::{MessageListQuery, NewUser, Storage};
+use sandpost_storage::{
+    MessageListQuery, MessageStorage, NewUser, ScopeStorage, StorageError, UserStorage,
+};
 use sandpost_storage_sqlite::SqliteStorage;
-use std::path::PathBuf;
-use std::sync::Arc;
+use sqlx::Connection;
+use std::path::{Path, PathBuf};
 
 /// Own an isolated temporary data directory for the duration of a test.
 struct TestDirectory(PathBuf);
+
 impl TestDirectory {
-    /// Create an isolated directory for schema and upgrade fixtures.
+    /// Create an isolated directory for a database fixture.
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("sandpost-schema-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }
+
     /// Return the database path inside this test's isolated directory.
     fn database(&self) -> PathBuf {
         self.0.join("sandpost.sqlite3")
     }
 }
+
 impl Drop for TestDirectory {
     /// Remove database files and WAL sidecars after the test releases its connections.
     fn drop(&mut self) {
@@ -35,519 +42,63 @@ impl Drop for TestDirectory {
 }
 
 /// Read the stored schema version from a database file.
-fn stored_version(path: &std::path::Path) -> i64 {
-    let connection = Connection::open(path).unwrap();
-    connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap()
+async fn stored_version(path: &Path) -> i64 {
+    let mut connection = open_connection(path).await;
+    let version = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    version
 }
 
-/// The checked-in version 1 baseline scripts, applied to build legacy databases in tests.
-const VERSION_ONE_SCRIPTS: [(&str, &str); 16] = [
-    (
-        "0001_create_migrations_table.sql",
-        include_str!("../migrations/0001_create_migrations_table.sql"),
-    ),
-    (
-        "0002_create_endpoints_table.sql",
-        include_str!("../migrations/0002_create_endpoints_table.sql"),
-    ),
-    (
-        "0003_create_users_table.sql",
-        include_str!("../migrations/0003_create_users_table.sql"),
-    ),
-    (
-        "0004_create_scopes_table.sql",
-        include_str!("../migrations/0004_create_scopes_table.sql"),
-    ),
-    (
-        "0005_create_scope_memberships_table.sql",
-        include_str!("../migrations/0005_create_scope_memberships_table.sql"),
-    ),
-    (
-        "0006_create_endpoint_memberships_table.sql",
-        include_str!("../migrations/0006_create_endpoint_memberships_table.sql"),
-    ),
-    (
-        "0007_create_views_table.sql",
-        include_str!("../migrations/0007_create_views_table.sql"),
-    ),
-    (
-        "0008_create_mail_table.sql",
-        include_str!("../migrations/0008_create_mail_table.sql"),
-    ),
-    (
-        "0009_create_mail_recipients_table.sql",
-        include_str!("../migrations/0009_create_mail_recipients_table.sql"),
-    ),
-    (
-        "0010_create_mail_headers_table.sql",
-        include_str!("../migrations/0010_create_mail_headers_table.sql"),
-    ),
-    (
-        "0011_create_mail_attachments_table.sql",
-        include_str!("../migrations/0011_create_mail_attachments_table.sql"),
-    ),
-    (
-        "0012_create_search_outbox_state_table.sql",
-        include_str!("../migrations/0012_create_search_outbox_state_table.sql"),
-    ),
-    (
-        "0013_create_search_outbox_table.sql",
-        include_str!("../migrations/0013_create_search_outbox_table.sql"),
-    ),
-    (
-        "0014_create_mail_immutability_triggers.sql",
-        include_str!("../migrations/0014_create_mail_immutability_triggers.sql"),
-    ),
-    (
-        "0015_create_mail_search_outbox_triggers.sql",
-        include_str!("../migrations/0015_create_mail_search_outbox_triggers.sql"),
-    ),
-    (
-        "0016_create_mail_child_fact_triggers.sql",
-        include_str!("../migrations/0016_create_mail_child_fact_triggers.sql"),
-    ),
-];
-
-/// The endpoints script of pre-release version 1 builds with per-endpoint SMTP listeners.
-const ENDPOINT_LISTENER_SCRIPT: &str =
-    include_str!("../migrations/variants/0002_create_endpoints_table_with_listeners.sql");
-
-/// Create a version 1 database exactly as an earlier build did, with its history recorded.
-///
-/// `endpoint_listeners` selects the pre-release layout whose endpoints carry SMTP listener columns.
-fn create_version_one_database(path: &std::path::Path, endpoint_listeners: bool) -> Connection {
-    let connection = Connection::open(path).unwrap();
-    connection
-        .pragma_update(None, "foreign_keys", "ON")
-        .unwrap();
-    for (name, script) in VERSION_ONE_SCRIPTS {
-        let script = if endpoint_listeners && name == "0002_create_endpoints_table.sql" {
-            ENDPOINT_LISTENER_SCRIPT
-        } else {
-            script
-        };
-        connection.execute_batch(script).unwrap();
-        connection
-            .execute(
-                "INSERT INTO migrations (migration, batch) VALUES (?1, 1)",
-                [name],
-            )
-            .unwrap();
-    }
-    connection.pragma_update(None, "user_version", 1).unwrap();
-    connection
-}
-
-/// The version 2 scripts, applied to build databases written by the previous release.
-const VERSION_TWO_SCRIPTS: [(&str, &str); 3] = [
-    (
-        "0017_create_smtp_server_table.sql",
-        include_str!("../migrations/0017_create_smtp_server_table.sql"),
-    ),
-    (
-        "0018_remove_endpoint_listener_columns.sql",
-        include_str!("../migrations/0018_remove_endpoint_listener_columns.sql"),
-    ),
-    (
-        "0019_create_smtp_accesses_table.sql",
-        include_str!("../migrations/0019_create_smtp_accesses_table.sql"),
-    ),
-];
-
-/// The version 3 scripts, applied over version 2 to build a version 3 database.
-const VERSION_THREE_SCRIPTS: [(&str, &str); 6] = [
-    (
-        "0020_rebuild_users_with_mail_access.sql",
-        include_str!("../migrations/0020_rebuild_users_with_mail_access.sql"),
-    ),
-    (
-        "0021_rebuild_scopes_without_endpoints.sql",
-        include_str!("../migrations/0021_rebuild_scopes_without_endpoints.sql"),
-    ),
-    (
-        "0022_rebuild_views_without_endpoints.sql",
-        include_str!("../migrations/0022_rebuild_views_without_endpoints.sql"),
-    ),
-    (
-        "0023_rebuild_smtp_accesses_without_endpoints.sql",
-        include_str!("../migrations/0023_rebuild_smtp_accesses_without_endpoints.sql"),
-    ),
-    (
-        "0024_rebuild_mail_without_endpoints.sql",
-        include_str!("../migrations/0024_rebuild_mail_without_endpoints.sql"),
-    ),
-    (
-        "0025_drop_endpoints.sql",
-        include_str!("../migrations/0025_drop_endpoints.sql"),
-    ),
-];
-
-/// The stable identifier of the endpoint seeded by version 1.
-const DEFAULT_ENDPOINT: &str = "00000000-0000-0000-0000-000000000002";
-
-/// Accounts and records written into a legacy database with endpoints.
-struct LegacyFixture {
-    owner: UserIdentifier,
-    /// Member with `all` mail access on only one of the two endpoints.
-    partial_member: UserIdentifier,
-    /// Member with `all` mail access on every endpoint.
-    full_member: UserIdentifier,
-    /// Member whose only endpoint role is `viewer`.
-    viewer: UserIdentifier,
-    /// Member administering one endpoint with scoped access and one assigned scope.
-    endpoint_admin: UserIdentifier,
-    /// Global administrator without any endpoint membership.
-    global_admin: UserIdentifier,
-    scope: String,
-}
-
-/// Populate a legacy database (version 1 or 2) with two endpoints, every kind of membership, a
-/// scope assignment, a view, and captured mail on both endpoints.
-///
-/// In the version 1 listener layout the second endpoint listens on 127.0.0.1:2600.
-fn populate_legacy_database(connection: &Connection, endpoint_listeners: bool) -> LegacyFixture {
-    let staging = uuid::Uuid::new_v4().to_string();
-    let insert_endpoint = if endpoint_listeners {
-        "INSERT INTO endpoints(identifier, name, smtp_host, smtp_port) VALUES (?1, 'Staging', '127.0.0.1', 2600)"
-    } else {
-        "INSERT INTO endpoints(identifier, name) VALUES (?1, 'Staging')"
-    };
-    connection.execute(insert_endpoint, [&staging]).unwrap();
-    let insert_user = |role: &str| {
-        let identifier = UserIdentifier::new();
-        connection
-            .execute(
-                "INSERT INTO users(identifier,name,email,password_hash,global_role,created_at,updated_at) VALUES (?1,'Legacy',?1 || '@example.test','hash',?2,1,1)",
-                [identifier.to_string(), role.to_owned()],
-            )
-            .unwrap();
-        identifier
-    };
-    let membership = |user: UserIdentifier, endpoint: &str, role: &str, access: &str| {
-        connection
-            .execute(
-                "INSERT INTO endpoint_memberships(user_identifier,endpoint_identifier,role,mail_access) VALUES (?1,?2,?3,?4)",
-                [user.to_string(), endpoint.to_owned(), role.to_owned(), access.to_owned()],
-            )
-            .unwrap();
-    };
-    let fixture = LegacyFixture {
-        owner: insert_user("owner"),
-        partial_member: insert_user("member"),
-        full_member: insert_user("member"),
-        viewer: insert_user("member"),
-        endpoint_admin: insert_user("member"),
-        global_admin: insert_user("admin"),
-        scope: uuid::Uuid::new_v4().to_string(),
-    };
-    membership(fixture.partial_member, &staging, "member", "all");
-    membership(fixture.full_member, &staging, "member", "all");
-    membership(fixture.full_member, DEFAULT_ENDPOINT, "member", "all");
-    membership(fixture.viewer, DEFAULT_ENDPOINT, "viewer", "all");
-    membership(fixture.viewer, &staging, "viewer", "all");
-    membership(fixture.endpoint_admin, &staging, "admin", "scoped");
-    connection
-        .execute(
-            "INSERT INTO scopes(identifier,parent_identifier,name,description,filter,position,policy_version,endpoint_identifier) VALUES (?1,NULL,'Invoices',NULL,'subject contains \"invoice\"',0,1,?2)",
-            [&fixture.scope, &staging],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO scope_memberships(user_identifier,scope_identifier) VALUES (?1,?2)",
-            [fixture.endpoint_admin.to_string(), fixture.scope.clone()],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO views(identifier,endpoint_identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,'Receipts','subject contains \"receipt\"')",
-            [
-                uuid::Uuid::new_v4().to_string(),
-                staging.clone(),
-                fixture.partial_member.to_string(),
-            ],
-        )
-        .unwrap();
-    for (subject, endpoint) in [
-        ("Staging invoice", staging.as_str()),
-        ("Default receipt", DEFAULT_ENDPOINT),
-        ("Deleted newest", DEFAULT_ENDPOINT),
-    ] {
-        connection
-            .execute(
-                "INSERT INTO mail(identifier,subject,text_body,markup_body,raw_message,received_at,size,endpoint_identifier) VALUES (?1,?2,'','',X'41',1,1,?3)",
-                [uuid::Uuid::new_v4().to_string(), subject.to_owned(), endpoint.to_owned()],
-            )
-            .unwrap();
-    }
-    // Deleting the newest mail leaves an AUTOINCREMENT high-water mark the upgrade must keep.
-    connection
-        .execute("DELETE FROM mail WHERE subject = 'Deleted newest'", [])
-        .unwrap();
-    fixture
-}
-
-/// Upgrade a populated legacy database and verify data and the converted permissions.
-async fn upgrade_and_verify(path: &std::path::Path, fixture: &LegacyFixture) -> Arc<dyn Storage> {
-    let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::open(path).unwrap());
-    assert_eq!(stored_version(path), 5);
-    for (user, role, access) in [
-        (fixture.owner, GlobalRole::Owner, MailAccess::All),
-        (
-            fixture.partial_member,
-            GlobalRole::Member,
-            MailAccess::Scoped,
-        ),
-        (fixture.full_member, GlobalRole::Member, MailAccess::All),
-        (fixture.viewer, GlobalRole::Viewer, MailAccess::All),
-        (
-            fixture.endpoint_admin,
-            GlobalRole::Member,
-            MailAccess::Scoped,
-        ),
-        (fixture.global_admin, GlobalRole::Admin, MailAccess::Scoped),
-    ] {
-        let account = storage.get_user(user).await.unwrap().unwrap();
-        assert_eq!((account.global_role, account.mail_access), (role, access));
-    }
-    assert_eq!(
-        storage
-            .list_user_scopes(fixture.endpoint_admin)
-            .await
-            .unwrap()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        vec![fixture.scope.clone()],
-        "scope assignments survive the upgrade"
-    );
-    assert_eq!(storage.list_scopes().await.unwrap().len(), 1);
-    let views = storage.list_views(fixture.partial_member).await.unwrap();
-    assert_eq!(views.len(), 1);
-    assert_eq!(views[0].name, "Receipts");
-    let mut subjects: Vec<String> = storage
-        .list_messages(MessageListQuery {
-            filter: None,
-            before: None,
-            limit: 10,
-        })
+/// Read migration records in insertion order to check baseline script ordering.
+async fn migration_history(connection: &mut sqlx::SqliteConnection) -> Vec<(String, i64)> {
+    sqlx::query_as("SELECT migration, batch FROM migrations ORDER BY rowid")
+        .fetch_all(connection)
         .await
         .unwrap()
-        .into_iter()
-        .map(|summary| summary.subject)
+}
+
+/// A fresh database applies each checked-in SQL operation once as schema version 1.
+#[tokio::test]
+async fn a_fresh_database_applies_the_ordered_baseline() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    drop(SqliteStorage::open(&path).await.unwrap());
+
+    let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut expected: Vec<String> = std::fs::read_dir(migration_directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    subjects.sort();
-    assert_eq!(subjects, ["Default receipt", "Staging invoice"]);
-    let connection = Connection::open(path).unwrap();
-    for table in ["endpoints", "endpoint_memberships"] {
-        let exists: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
-                [table],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(!exists, "{table} must be dropped");
-    }
-    let sequence = storage
-        .insert_message(&Message {
-            identifier: MessageIdentifier::new(),
-            facts: MessageFacts {
-                subject: "After upgrade".into(),
-                ..MessageFacts::default()
-            },
-            raw_message: Vec::new(),
-            attachments: Vec::new(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(sequence.0, 4, "deleted mail sequences are never reused");
-    assert!(
-        storage
-            .assign_user_to_scope(UserIdentifier::new(), fixture.scope.parse().unwrap())
-            .await
-            .is_err(),
-        "foreign keys are enforced again after the upgrade"
-    );
-    storage
-}
+    expected.sort();
 
-/// A canonical version 1 database is upgraded through every batch, keeping its data, converting
-/// endpoint memberships, and using the default SMTP address version 1 had.
-#[tokio::test]
-async fn a_version_one_database_is_upgraded_without_losing_data() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    let fixture = {
-        let connection = create_version_one_database(&path, false);
-        populate_legacy_database(&connection, false)
-    };
-    let storage = upgrade_and_verify(&path, &fixture).await;
+    let mut connection = open_connection(&path).await;
+    let actual = migration_history(&mut connection).await;
+    assert_eq!(actual.len(), 25);
     assert_eq!(
-        storage.smtp_listen_address().await.unwrap(),
-        Some("127.0.0.1:1025".parse().unwrap())
+        actual
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>(),
+        expected
     );
-    drop(storage);
-    drop(SqliteStorage::open(&path).expect("an upgraded database reopens"));
+    assert!(actual.iter().all(|(_, batch)| *batch == 1));
+    assert_eq!(stored_version(&path).await, 1);
+    connection.close().await.unwrap();
 }
 
-/// A version 1 database with per-endpoint listeners keeps its data and its primary listener
-/// becomes the global server address.
-#[tokio::test]
-async fn a_version_one_database_with_endpoint_listeners_is_upgraded() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    let fixture = {
-        let connection = create_version_one_database(&path, true);
-        connection
-            .execute(
-                "UPDATE endpoints SET smtp_host = '0.0.0.0', smtp_port = 2525 WHERE identifier = ?1",
-                [DEFAULT_ENDPOINT],
-            )
-            .unwrap();
-        populate_legacy_database(&connection, true)
-    };
-    let storage = upgrade_and_verify(&path, &fixture).await;
-    assert_eq!(
-        storage.smtp_listen_address().await.unwrap(),
-        Some("0.0.0.0:2525".parse().unwrap()),
-        "the default endpoint's listener becomes the global server"
-    );
-}
-
-/// A version 2 database, with endpoints and SMTP accesses that target them, is upgraded to the
-/// single mail pool without losing accesses or mail.
-#[tokio::test]
-async fn a_version_two_database_is_upgraded_without_losing_data() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    let fixture = {
-        let connection = create_version_one_database(&path, false);
-        for (name, script) in VERSION_TWO_SCRIPTS {
-            connection.execute_batch(script).unwrap();
-            connection
-                .execute(
-                    "INSERT INTO migrations (migration, batch) VALUES (?1, 2)",
-                    [name],
-                )
-                .unwrap();
-        }
-        connection.pragma_update(None, "user_version", 2).unwrap();
-        let fixture = populate_legacy_database(&connection, false);
-        connection
-            .execute(
-                "INSERT INTO smtp_accesses(identifier,name,username,password_hash,endpoint_identifier,enabled,created_at,updated_at) VALUES (?1,'Laravel','laravel-1','$argon2id$hash',?2,1,5,5)",
-                [uuid::Uuid::new_v4().to_string(), DEFAULT_ENDPOINT.to_owned()],
-            )
-            .unwrap();
-        fixture
-    };
-    let storage = upgrade_and_verify(&path, &fixture).await;
-    let accesses = storage.list_smtp_accesses().await.unwrap();
-    assert_eq!(accesses.len(), 1);
-    assert_eq!(accesses[0].username, "laravel-1");
-    assert_eq!(
-        storage
-            .get_smtp_access_credential_by_username("laravel-1")
-            .await
-            .unwrap()
-            .map(|credential| credential.password_hash),
-        Some("$argon2id$hash".to_owned())
-    );
-}
-
-/// A version 3 database keeps its SMTP accesses, which accept PLAIN and LOGIN on any connection.
-#[tokio::test]
-async fn a_version_three_database_keeps_smtp_accesses_with_permissive_rules() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    {
-        let connection = create_version_one_database(&path, false);
-        for (batch, scripts) in [
-            (2, &VERSION_TWO_SCRIPTS[..]),
-            (3, &VERSION_THREE_SCRIPTS[..]),
-        ] {
-            for (name, script) in scripts {
-                connection.execute_batch(script).unwrap();
-                connection
-                    .execute(
-                        "INSERT INTO migrations (migration, batch) VALUES (?1, ?2)",
-                        rusqlite::params![name, batch],
-                    )
-                    .unwrap();
-            }
-        }
-        connection.pragma_update(None, "user_version", 3).unwrap();
-        connection
-            .execute(
-                "INSERT INTO smtp_accesses(identifier,name,username,password_hash,enabled,created_at,updated_at) VALUES (?1,'Laravel','laravel-3','$argon2id$hash',1,5,5)",
-                [uuid::Uuid::new_v4().to_string()],
-            )
-            .unwrap();
-    }
-    let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::open(&path).unwrap());
-    assert_eq!(stored_version(&path), 5);
-    let accesses = storage.list_smtp_accesses().await.unwrap();
-    assert_eq!(accesses.len(), 1);
-    assert_eq!(accesses[0].username, "laravel-3");
-    assert!(!accesses[0].requires_encryption);
-    assert_eq!(
-        accesses[0].allowed_mechanisms,
-        SmtpAuthenticationMechanism::ALL.to_vec()
-    );
-}
-
-/// Without a default listener, the first remaining endpoint listener becomes the global server,
-/// and without any listener the server stays disabled.
-#[tokio::test]
-async fn listener_upgrade_falls_back_to_another_listener_or_none() {
-    for (clear_staging, expected) in [(false, Some("127.0.0.1:2600")), (true, None)] {
-        let directory = TestDirectory::new();
-        let path = directory.database();
-        {
-            let connection = create_version_one_database(&path, true);
-            populate_legacy_database(&connection, true);
-            connection
-                .execute(
-                    "UPDATE endpoints SET smtp_host = NULL, smtp_port = NULL WHERE identifier = ?1 OR ?2",
-                    rusqlite::params![DEFAULT_ENDPOINT, clear_staging],
-                )
-                .unwrap();
-        }
-        let storage = SqliteStorage::open(&path).unwrap();
-        assert_eq!(
-            sandpost_storage::SmtpServerStorage::smtp_listen_address(&storage)
-                .await
-                .unwrap(),
-            expected.map(|address| address.parse().unwrap())
-        );
-    }
-}
-
-/// A version 1 database whose schema was tampered with is rejected instead of upgraded.
-#[test]
-fn a_tampered_version_one_database_is_not_upgraded() {
-    for endpoint_listeners in [false, true] {
-        let directory = TestDirectory::new();
-        let path = directory.database();
-        create_version_one_database(&path, endpoint_listeners)
-            .execute_batch("DROP INDEX views_owner_name;")
-            .unwrap();
-        assert!(SqliteStorage::open(&path).is_err());
-        assert_eq!(stored_version(&path), 1, "the failed upgrade rolled back");
-    }
-}
-
-/// Reopening an existing baseline validates the schema and preserves committed data.
+/// Reopening a baseline preserves user and raw message data committed before shutdown.
 #[tokio::test]
 async fn reopening_an_existing_baseline_preserves_data() {
     let directory = TestDirectory::new();
     let path = directory.database();
-    let identifier = {
-        let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::open(&path).unwrap());
-        let user = storage
+    let owner = {
+        let storage = SqliteStorage::open(&path).await.unwrap();
+        let owner = storage
             .create_first_owner(&NewUser {
                 name: "Owner".into(),
                 email: "owner@example.test".into(),
@@ -558,146 +109,260 @@ async fn reopening_an_existing_baseline_preserves_data() {
             })
             .await
             .unwrap();
-        user.identifier
+        let message = Message {
+            identifier: MessageIdentifier::new(),
+            facts: MessageFacts {
+                subject: "Persisted message".into(),
+                ..MessageFacts::default()
+            },
+            raw_message: vec![0x52, 0x00, 0xff],
+            attachments: Vec::new(),
+        };
+        storage.insert_message(&message).await.unwrap();
+        owner.identifier
     };
-    let reopened: Arc<dyn Storage> = Arc::new(SqliteStorage::open(&path).unwrap());
-    let user = reopened.get_user(identifier).await.unwrap().unwrap();
-    assert_eq!(user.global_role, GlobalRole::Owner);
+
+    let reopened = SqliteStorage::open(&path).await.unwrap();
+    let stored_owner = reopened.get_user(owner).await.unwrap().unwrap();
+    assert_eq!(stored_owner.global_role, GlobalRole::Owner);
     assert_eq!(reopened.count_users().await.unwrap(), 1);
+    let summaries = reopened
+        .list_messages(MessageListQuery {
+            filter: None,
+            before: None,
+            limit: 10,
+        })
+        .await
+        .unwrap();
+    assert_eq!(summaries.len(), 1);
+    let stored_message = reopened
+        .get_message(summaries[0].identifier)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_message.raw_message, [0x52, 0x00, 0xff]);
 }
 
-/// A fresh database has no mail sequence row until its first insert, like a table created
-/// directly, even though the migrations rebuild the mail table.
-#[test]
-fn a_fresh_database_records_no_mail_sequence() {
+/// A fresh database has no mail sequence row until its first insert.
+#[tokio::test]
+async fn a_fresh_database_records_no_mail_sequence() {
     let directory = TestDirectory::new();
     let path = directory.database();
-    drop(SqliteStorage::open(&path).unwrap());
-    let connection = Connection::open(&path).unwrap();
-    let rows: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM sqlite_sequence WHERE name = 'mail'",
-            [],
-            |row| row.get(0),
-        )
+    drop(SqliteStorage::open(&path).await.unwrap());
+    let mut connection = open_connection(&path).await;
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_sequence WHERE name = 'mail'")
+        .fetch_one(&mut connection)
+        .await
         .unwrap();
     assert_eq!(rows, 0);
+    connection.close().await.unwrap();
 }
 
-/// The version 4 schema script, applied to build version 4 databases in tests.
-const VERSION_FOUR_SCRIPTS: [(&str, &str); 1] = [(
-    "0026_add_smtp_access_authentication_rules.sql",
-    include_str!("../migrations/0026_add_smtp_access_authentication_rules.sql"),
-)];
-
-/// A version 4 database gains the IMAP tables at version 5 and keeps its SMTP accesses.
+/// An unrelated unversioned database is rejected without adding schema objects.
 #[tokio::test]
-async fn a_version_four_database_gains_imap_tables() {
+async fn a_nonempty_unversioned_database_is_rejected_unchanged() {
     let directory = TestDirectory::new();
     let path = directory.database();
-    {
-        let connection = create_version_one_database(&path, false);
-        for (batch, scripts) in [
-            (2, &VERSION_TWO_SCRIPTS[..]),
-            (3, &VERSION_THREE_SCRIPTS[..]),
-            (4, &VERSION_FOUR_SCRIPTS[..]),
-        ] {
-            for (name, script) in scripts {
-                connection.execute_batch(script).unwrap();
-                connection
-                    .execute(
-                        "INSERT INTO migrations (migration, batch) VALUES (?1, ?2)",
-                        rusqlite::params![name, batch],
-                    )
-                    .unwrap();
-            }
-        }
-        connection.pragma_update(None, "user_version", 4).unwrap();
-        connection
-            .execute(
-                "INSERT INTO smtp_accesses(identifier,name,username,password_hash,enabled,created_at,updated_at) VALUES (?1,'Laravel','laravel-4','$argon2id$hash',1,5,5)",
-                [uuid::Uuid::new_v4().to_string()],
-            )
-            .unwrap();
-    }
-    let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::open(&path).unwrap());
-    assert_eq!(stored_version(&path), 5);
-    assert_eq!(storage.list_smtp_accesses().await.unwrap().len(), 1);
-    let owner = storage
-        .create_user(&NewUser {
-            name: "Owner".into(),
-            email: "owner@example.test".into(),
-            password_hash: "hash".into(),
-            global_role: GlobalRole::Owner,
-            mail_access: MailAccess::All,
-            personal_filter: None,
-        })
+    let mut connection = open_connection(&path).await;
+    sqlx::raw_sql("CREATE TABLE unrelated (value TEXT);")
+        .execute(&mut connection)
         .await
         .unwrap();
-    let account = storage
-        .create_imap_account(&sandpost_storage::NewImapAccount {
-            owner_identifier: owner.identifier,
-            name: "Debug".into(),
-            username: "debug".into(),
-            password_hash: "hash".into(),
-            mirror_views: true,
-            created_at: 1,
-        })
-        .await
-        .unwrap();
-    let mailboxes = storage
-        .reconcile_imap_mailboxes(
-            account.identifier,
-            &[sandpost_core::ImapMailboxSource::Inbox],
-        )
-        .await
-        .unwrap();
-    assert_eq!(mailboxes.len(), 1);
-    drop(storage);
-    let reopened = SqliteStorage::open(&path).unwrap();
-    assert!(
-        sandpost_storage::ImapStorage::get_imap_account(&reopened, account.identifier)
+    connection.close().await.unwrap();
+
+    assert!(SqliteStorage::open(&path).await.is_err());
+    assert_eq!(stored_version(&path).await, 0);
+    let mut connection = open_connection(&path).await;
+    let objects: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(objects, ["unrelated"]);
+    connection.close().await.unwrap();
+}
+
+/// Newer schema versions return their precise unsupported-version error.
+#[tokio::test]
+async fn a_newer_schema_version_is_rejected() {
+    for version in [2, 5] {
+        let directory = TestDirectory::new();
+        let path = directory.database();
+        drop(SqliteStorage::open(&path).await.unwrap());
+        let mut connection = open_connection(&path).await;
+        let history_before = migration_history(&mut connection).await;
+        let version_statement = match version {
+            2 => "PRAGMA user_version = 2",
+            5 => "PRAGMA user_version = 5",
+            _ => unreachable!("test version is selected from the explicit cases above"),
+        };
+        sqlx::query(version_statement)
+            .execute(&mut connection)
             .await
-            .unwrap()
-            .is_some(),
-        "IMAP state persists across restarts"
+            .unwrap();
+        connection.close().await.unwrap();
+
+        assert!(matches!(
+            SqliteStorage::open(&path).await,
+            Err(StorageError::NewerSchema(found)) if found == version
+        ));
+        assert_eq!(stored_version(&path).await, version);
+        let mut connection = open_connection(&path).await;
+        assert_eq!(migration_history(&mut connection).await, history_before);
+        connection.close().await.unwrap();
+    }
+}
+
+/// A negative stored schema version is rejected and left unchanged.
+#[tokio::test]
+async fn a_negative_schema_version_is_rejected() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    drop(SqliteStorage::open(&path).await.unwrap());
+    let mut connection = open_connection(&path).await;
+    sqlx::query("PRAGMA user_version = -1")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+
+    assert!(SqliteStorage::open(&path).await.is_err());
+    assert_eq!(stored_version(&path).await, -1);
+}
+
+/// A version 0 database with migration history is rejected as unsupported.
+#[tokio::test]
+async fn version_zero_with_history_is_rejected() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    drop(SqliteStorage::open(&path).await.unwrap());
+    let mut connection = open_connection(&path).await;
+    sqlx::query("PRAGMA user_version = 0")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+
+    assert!(SqliteStorage::open(&path).await.is_err());
+    assert_eq!(stored_version(&path).await, 0);
+}
+
+/// A version 1 database without its migration history table is rejected.
+#[tokio::test]
+async fn version_one_missing_history_is_rejected() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    drop(SqliteStorage::open(&path).await.unwrap());
+    let mut connection = open_connection(&path).await;
+    sqlx::raw_sql("DROP TABLE migrations;")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+
+    assert!(SqliteStorage::open(&path).await.is_err());
+    assert_eq!(stored_version(&path).await, 1);
+}
+
+/// Migration history must match the complete baseline before a database can be reopened.
+#[tokio::test]
+async fn incomplete_migration_history_is_rejected_without_repair() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    drop(SqliteStorage::open(&path).await.unwrap());
+    let mut connection = open_connection(&path).await;
+    sqlx::query("DELETE FROM migrations WHERE migration = (SELECT migration FROM migrations ORDER BY migration LIMIT 1)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let history_before = migration_history(&mut connection).await;
+    connection.close().await.unwrap();
+
+    assert!(SqliteStorage::open(&path).await.is_err());
+    let mut connection = open_connection(&path).await;
+    assert_eq!(migration_history(&mut connection).await, history_before);
+    assert_eq!(stored_version(&path).await, 1);
+    connection.close().await.unwrap();
+}
+
+/// Same-version schema mismatches in an index or trigger are rejected.
+#[tokio::test]
+async fn same_version_index_and_trigger_mismatches_are_rejected() {
+    for (object, drop_statement) in [
+        ("views_owner_name index", "DROP INDEX views_owner_name;"),
+        (
+            "mail_identifier_immutable trigger",
+            "DROP TRIGGER mail_identifier_immutable;",
+        ),
+    ] {
+        let directory = TestDirectory::new();
+        let path = directory.database();
+        drop(SqliteStorage::open(&path).await.unwrap());
+        let mut connection = open_connection(&path).await;
+        sqlx::raw_sql(drop_statement)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+
+        assert!(SqliteStorage::open(&path).await.is_err(), "{object}");
+        assert_eq!(stored_version(&path).await, 1);
+    }
+}
+
+/// Foreign keys remain enabled after startup and reject references to missing records.
+#[tokio::test]
+async fn foreign_keys_are_enforced_after_initialization() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    let storage = SqliteStorage::open(&path).await.unwrap();
+    assert!(
+        storage
+            .assign_user_to_scope(UserIdentifier::new(), ScopeIdentifier::new())
+            .await
+            .is_err(),
+        "storage connections reject missing foreign-key parents"
     );
+    let mut connection = open_connection(&path).await;
+    let enabled: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(enabled, 1);
+    assert!(
+        sqlx::query(
+            "INSERT INTO scope_memberships(user_identifier, scope_identifier) VALUES (?1, ?2)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(uuid::Uuid::new_v4().to_string())
+        .execute(&mut connection)
+        .await
+        .is_err()
+    );
+    connection.close().await.unwrap();
+    drop(storage);
 }
 
-/// A newer stored schema version is rejected rather than migrated.
-#[test]
-fn a_newer_schema_version_is_rejected() {
+/// Startup rejects an existing orphan row detected by SQLite's foreign-key checker.
+#[tokio::test]
+async fn a_foreign_key_violation_is_rejected_on_open() {
     let directory = TestDirectory::new();
     let path = directory.database();
-    drop(SqliteStorage::open(&path).unwrap());
-    Connection::open(&path)
-        .unwrap()
-        .pragma_update(None, "user_version", 6)
+    drop(SqliteStorage::open(&path).await.unwrap());
+    let mut connection = open_connection(&path).await;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut connection)
+        .await
         .unwrap();
-    assert!(SqliteStorage::open(&path).is_err());
-}
+    sqlx::query("INSERT INTO scope_memberships(user_identifier, scope_identifier) VALUES (?1, ?2)")
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(uuid::Uuid::new_v4().to_string())
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
 
-/// An unversioned database with unrelated objects is rejected instead of being treated as fresh.
-#[test]
-fn an_unversioned_non_empty_database_is_rejected() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    Connection::open(&path)
-        .unwrap()
-        .execute_batch("CREATE TABLE unrelated (value TEXT);")
-        .unwrap();
-    assert!(SqliteStorage::open(&path).is_err());
-}
-
-/// A tampered baseline schema is detected and refused on the next open.
-#[test]
-fn a_tampered_schema_is_rejected() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    drop(SqliteStorage::open(&path).unwrap());
-    Connection::open(&path)
-        .unwrap()
-        .execute_batch("DROP TABLE views;")
-        .unwrap();
-    assert!(SqliteStorage::open(&path).is_err());
+    assert!(SqliteStorage::open(&path).await.is_err());
+    assert_eq!(stored_version(&path).await, 1);
 }

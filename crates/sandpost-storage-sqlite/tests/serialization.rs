@@ -1,7 +1,7 @@
 //! Naming changes must preserve persisted JSON and public identifier representations.
 use sandpost_core::{
-    GlobalRole, Inbox, InboxIdentifier, MailAccess, Message, MessageFacts, MessageIdentifier,
-    Scope, ScopeIdentifier, User, UserIdentifier,
+    GlobalRole, MailAccess, Message, MessageFacts, MessageIdentifier, Scope, ScopeIdentifier, User,
+    UserIdentifier, View, ViewIdentifier,
 };
 use serde_json::json;
 
@@ -39,7 +39,7 @@ fn domain_models_preserve_identifiers_and_role_representation() {
     let message_identifier = MessageIdentifier::new();
     let scope_identifier = ScopeIdentifier::new();
     let user_identifier = UserIdentifier::new();
-    let inbox_identifier = InboxIdentifier::new();
+    let view_identifier = ViewIdentifier::new();
 
     let message = Message {
         identifier: message_identifier,
@@ -85,15 +85,26 @@ fn domain_models_preserve_identifiers_and_role_representation() {
     assert_eq!(serialized_user["global_role"], "admin");
     assert_eq!(serialized_user["mail_access"], "scoped");
 
-    let inbox = Inbox {
-        identifier: inbox_identifier,
-        user_identifier,
-        name: "Inbox".into(),
+    let view = View {
+        identifier: view_identifier,
+        owner_identifier: Some(user_identifier),
+        name: "View".into(),
         filter: String::new(),
     };
-    let serialized_inbox = serde_json::to_value(inbox).unwrap();
-    assert_eq!(serialized_inbox["id"], inbox_identifier.to_string());
-    assert_eq!(serialized_inbox["user_id"], user_identifier.to_string());
+    let serialized_view = serde_json::to_value(&view).unwrap();
+    assert_eq!(
+        serialized_view,
+        json!({
+            "identifier": view_identifier.to_string(),
+            "owner_identifier": user_identifier.to_string(),
+            "name": "View",
+            "filter": ""
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<View>(serialized_view).unwrap(),
+        view
+    );
 
     assert_eq!(
         serde_json::from_value::<GlobalRole>(json!("viewer")).unwrap(),

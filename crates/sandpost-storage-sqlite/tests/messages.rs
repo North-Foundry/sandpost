@@ -3,18 +3,22 @@
 mod common;
 
 use common::message;
-use rusqlite::Connection;
 use sandpost_core::{Attachment, Mailbox, MessageIdentifier, MessageSequence};
 use sandpost_query::{Expression, Field, Operator, Predicate, Value};
 use sandpost_storage::{MessageListQuery, MessageStorage, Storage, StorageError};
 use sandpost_storage_sqlite::SqliteStorage;
+use sqlx::{Connection, Row};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Open an in-memory SQLite backend as the backend-neutral contract object.
-fn open_storage() -> Arc<dyn Storage> {
-    Arc::new(SqliteStorage::memory().expect("create in-memory storage"))
+async fn open_storage() -> Arc<dyn Storage> {
+    Arc::new(
+        SqliteStorage::memory()
+            .await
+            .expect("create in-memory storage"),
+    )
 }
 
 /// Build a message listing request.
@@ -49,7 +53,9 @@ fn remove_temporary_database(path: &std::path::Path) {
 #[tokio::test]
 async fn message_parts_roundtrip_and_external_updates_enqueue_revisions() {
     let path = temporary_database_path();
-    let storage = SqliteStorage::open(&path).expect("open temporary database");
+    let storage = SqliteStorage::open(&path)
+        .await
+        .expect("open temporary database");
     let mut fixture = message("complete message fixture");
     fixture.facts.envelope_from = Some(Mailbox {
         address: "sender@example.test".into(),
@@ -95,34 +101,39 @@ async fn message_parts_roundtrip_and_external_updates_enqueue_revisions() {
     assert_eq!(stored.attachments, fixture.attachments);
     assert_eq!(stored.raw_message, fixture.raw_message);
 
-    let external_connection = Connection::open(&path).expect("open external SQLite connection");
-    let (stored_sequence, initial_revision, initial_outbox_count): (i64, i64, i64) =
-        external_connection
-            .query_row(
-                "SELECT mail.sequence, mail.search_revision, (SELECT COUNT(*) FROM search_outbox) FROM mail WHERE mail.identifier=?1",
-                [identifier.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("read initial mail revision and outbox");
+    let mut external_connection = common::connection(&path).await;
+    let initial_row = sqlx::query(
+        "SELECT mail.sequence, mail.search_revision, (SELECT COUNT(*) FROM search_outbox) FROM mail WHERE mail.identifier=?1",
+    )
+    .bind(identifier.to_string())
+    .fetch_one(&mut external_connection)
+    .await
+    .expect("read initial mail revision and outbox");
+    let stored_sequence: i64 = initial_row.try_get(0).unwrap();
+    let initial_revision: i64 = initial_row.try_get(1).unwrap();
+    let initial_outbox_count: i64 = initial_row.try_get(2).unwrap();
     assert_eq!(stored_sequence, sequence.0 as i64);
     assert_eq!((initial_revision, initial_outbox_count), (1, 1));
 
-    external_connection
-        .execute(
-            "UPDATE mail_headers SET value='externally changed' WHERE mail_sequence=?1 AND name='x-regression' AND ordinal=0",
-            [stored_sequence],
-        )
-        .expect("update child row through external connection");
-    let (updated_revision, updated_outbox_count): (i64, i64) = external_connection
-        .query_row(
-            "SELECT mail.search_revision, (SELECT COUNT(*) FROM search_outbox) FROM mail WHERE mail.sequence=?1",
-            [stored_sequence],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("read revision after external child update");
+    sqlx::query(
+        "UPDATE mail_headers SET value='externally changed' WHERE mail_sequence=?1 AND name='x-regression' AND ordinal=0",
+    )
+    .bind(stored_sequence)
+    .execute(&mut external_connection)
+    .await
+    .expect("update child row through external connection");
+    let updated_row = sqlx::query(
+        "SELECT mail.search_revision, (SELECT COUNT(*) FROM search_outbox) FROM mail WHERE mail.sequence=?1",
+    )
+    .bind(stored_sequence)
+    .fetch_one(&mut external_connection)
+    .await
+    .expect("read revision after external child update");
+    let updated_revision: i64 = updated_row.try_get(0).unwrap();
+    let updated_outbox_count: i64 = updated_row.try_get(1).unwrap();
     assert_eq!((updated_revision, updated_outbox_count), (2, 2));
 
-    drop(external_connection);
+    external_connection.close().await.unwrap();
     drop(storage);
     remove_temporary_database(&path);
 }
@@ -131,7 +142,9 @@ async fn message_parts_roundtrip_and_external_updates_enqueue_revisions() {
 #[tokio::test]
 async fn failed_message_writes_leave_no_partial_rows_or_outbox_operations() {
     let path = temporary_database_path();
-    let storage = SqliteStorage::open(&path).expect("open temporary database");
+    let storage = SqliteStorage::open(&path)
+        .await
+        .expect("open temporary database");
     let mut fixture = message("transaction fixture");
     fixture.facts.envelope_to.push(Mailbox {
         address: "recipient@example.test".into(),
@@ -177,14 +190,20 @@ async fn failed_message_writes_leave_no_partial_rows_or_outbox_operations() {
         Err(StorageError::IntegerRange)
     ));
 
-    let external_connection = Connection::open(&path).expect("open external SQLite connection");
-    let stored_counts: (i64, i64, i64, i64, i64) = external_connection
-        .query_row(
-            "SELECT (SELECT COUNT(*) FROM mail), (SELECT COUNT(*) FROM mail_recipients), (SELECT COUNT(*) FROM mail_headers), (SELECT COUNT(*) FROM mail_attachments), (SELECT COUNT(*) FROM search_outbox)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-        )
-        .expect("count rows after rolled-back inserts");
+    let mut external_connection = common::connection(&path).await;
+    let counts_row = sqlx::query(
+        "SELECT (SELECT COUNT(*) FROM mail), (SELECT COUNT(*) FROM mail_recipients), (SELECT COUNT(*) FROM mail_headers), (SELECT COUNT(*) FROM mail_attachments), (SELECT COUNT(*) FROM search_outbox)",
+    )
+    .fetch_one(&mut external_connection)
+    .await
+    .expect("count rows after rolled-back inserts");
+    let stored_counts = (
+        counts_row.try_get::<i64, _>(0).unwrap(),
+        counts_row.try_get::<i64, _>(1).unwrap(),
+        counts_row.try_get::<i64, _>(2).unwrap(),
+        counts_row.try_get::<i64, _>(3).unwrap(),
+        counts_row.try_get::<i64, _>(4).unwrap(),
+    );
     assert_eq!(stored_counts, (1, 1, 1, 1, 1));
     assert!(
         storage
@@ -200,7 +219,7 @@ async fn failed_message_writes_leave_no_partial_rows_or_outbox_operations() {
         .expect("foreign keys remain enabled after failed transactions");
     assert_eq!(successful_sequence, MessageSequence(2));
 
-    drop(external_connection);
+    external_connection.close().await.unwrap();
     drop(storage);
     remove_temporary_database(&path);
 }
@@ -209,8 +228,16 @@ async fn failed_message_writes_leave_no_partial_rows_or_outbox_operations() {
 #[tokio::test]
 async fn independent_connections_reserve_distinct_non_reusable_sequences() {
     let path = temporary_database_path();
-    let first_storage = Arc::new(SqliteStorage::open(&path).expect("open first connection"));
-    let second_storage = Arc::new(SqliteStorage::open(&path).expect("open second connection"));
+    let first_storage = Arc::new(
+        SqliteStorage::open(&path)
+            .await
+            .expect("open first connection"),
+    );
+    let second_storage = Arc::new(
+        SqliteStorage::open(&path)
+            .await
+            .expect("open second connection"),
+    );
     let first_message = message("first concurrent message");
     let second_message = message("second concurrent message");
 
@@ -247,7 +274,7 @@ async fn independent_connections_reserve_distinct_non_reusable_sequences() {
 /// Reject a mail size outside SQLite's integer range without storing a mail row.
 #[tokio::test]
 async fn oversized_mail_size_leaves_no_message() {
-    let storage = open_storage();
+    let storage = open_storage().await;
     let mut invalid_message = message("oversized mail size");
     invalid_message.facts.size = u64::MAX;
     let identifier = invalid_message.identifier;
@@ -268,7 +295,7 @@ async fn oversized_mail_size_leaves_no_message() {
 /// Roll back a mail row and earlier children when an attachment size exceeds SQLite's range.
 #[tokio::test]
 async fn oversized_attachment_size_rolls_back_mail_and_children() {
-    let storage = open_storage();
+    let storage = open_storage().await;
     let mut invalid_message = message("oversized attachment size");
     invalid_message.attachments.push(Attachment {
         filename: Some("too-large.bin".into()),
@@ -294,7 +321,7 @@ async fn oversized_attachment_size_rolls_back_mail_and_children() {
 /// Enforce newest-first cursors, empty zero-sized pages, and the maximum page size.
 #[tokio::test]
 async fn message_pages_obey_cursor_and_limit_bounds() {
-    let storage = open_storage();
+    let storage = open_storage().await;
     for index in 0..105 {
         common::insert_message(storage.as_ref(), format!("message {index}")).await;
     }
@@ -336,7 +363,7 @@ async fn message_pages_obey_cursor_and_limit_bounds() {
 /// Return none for unknown identifiers in both public message lookup methods.
 #[tokio::test]
 async fn missing_message_lookups_return_none() {
-    let storage = open_storage();
+    let storage = open_storage().await;
     let missing_identifier = MessageIdentifier::new();
 
     assert!(
@@ -358,7 +385,7 @@ async fn missing_message_lookups_return_none() {
 /// Re-express the removed inbox listing through a filtered message query.
 #[tokio::test]
 async fn recipient_listing_uses_a_message_filter() {
-    let storage = open_storage();
+    let storage = open_storage().await;
 
     let mut matching = message("recipient match");
     matching.facts.envelope_to = vec![Mailbox {

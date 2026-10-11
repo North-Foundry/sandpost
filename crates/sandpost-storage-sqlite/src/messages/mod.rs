@@ -1,32 +1,33 @@
-//! SQLite adapter for atomic mail writes, snapshot reads, summaries, and index projections.
+//! SQLx implementation of atomic mail writes, snapshot reads, summaries, and index projections.
 mod indexing;
 mod parts;
 mod reads;
 mod summaries;
 mod writes;
 
+#[cfg(test)]
+mod concurrency_tests;
+
 use crate::SqliteStorage;
+use crate::error::StorageResult;
 use async_trait::async_trait;
-use indexing::{index_messages_blocking, indexed_messages_blocking, max_message_sequence_blocking};
-use reads::{get_message_blocking, get_message_metadata_blocking};
 use sandpost_core::{Attachment, Message, MessageFacts, MessageIdentifier, MessageSequence};
 use sandpost_storage::{
     IndexedMessage, MessageListQuery, MessageStorage, MessageSummary, StorageError,
-};
-use summaries::{
-    hydrate_current_messages_blocking, hydrate_messages_blocking, list_messages_blocking,
-};
-use writes::{
-    delete_message_at_revision_blocking, delete_message_blocking, insert_message_blocking,
 };
 
 #[async_trait]
 impl MessageStorage for SqliteStorage {
     /// Persist mail and child facts atomically with one search revision.
     async fn insert_message(&self, message: &Message) -> Result<MessageSequence, StorageError> {
-        let message = message.clone();
-        self.run(move |connection| insert_message_blocking(connection, &message))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let sequence = writes::insert_message(&mut transaction, message).await?;
+        transaction.commit().await.storage()?;
+        Ok(sequence)
     }
 
     /// Read mail facts, attachments, and raw bytes from one SQL snapshot.
@@ -34,8 +35,10 @@ impl MessageStorage for SqliteStorage {
         &self,
         identifier: MessageIdentifier,
     ) -> Result<Option<Message>, StorageError> {
-        self.run(move |connection| get_message_blocking(connection, identifier))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let message = reads::get_message(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(message)
     }
 
     /// Read normalized facts and attachments without fetching raw bytes.
@@ -43,8 +46,10 @@ impl MessageStorage for SqliteStorage {
         &self,
         identifier: MessageIdentifier,
     ) -> Result<Option<(MessageFacts, Vec<Attachment>)>, StorageError> {
-        self.run(move |connection| get_message_metadata_blocking(connection, identifier))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let metadata = reads::get_message_metadata(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(metadata)
     }
 
     /// List bounded summaries newest first with canonical filters and a keyset cursor.
@@ -52,14 +57,22 @@ impl MessageStorage for SqliteStorage {
         &self,
         query: MessageListQuery,
     ) -> Result<Vec<MessageSummary>, StorageError> {
-        self.run(move |connection| list_messages_blocking(connection, query))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let summaries = summaries::list_messages(&mut transaction, query).await?;
+        transaction.commit().await.storage()?;
+        Ok(summaries)
     }
 
     /// Delete mail and dependent facts atomically with the search operation.
     async fn delete_message(&self, identifier: MessageIdentifier) -> Result<bool, StorageError> {
-        self.run(move |connection| delete_message_blocking(connection, identifier))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let deleted = writes::delete_message(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(deleted)
     }
 
     /// Delete only the requested current revision, returning false for stale or missing mail.
@@ -68,16 +81,23 @@ impl MessageStorage for SqliteStorage {
         identifier: MessageIdentifier,
         revision: u64,
     ) -> Result<bool, StorageError> {
-        self.run(move |connection| {
-            delete_message_at_revision_blocking(connection, identifier, revision)
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let deleted =
+            writes::delete_message_at_revision(&mut transaction, identifier, revision).await?;
+        transaction.commit().await.storage()?;
+        Ok(deleted)
     }
 
     /// Read the insertion high-water mark, including previously deleted mail.
     async fn max_message_sequence(&self) -> Result<MessageSequence, StorageError> {
-        self.run(|connection| max_message_sequence_blocking(connection))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let sequence = indexing::max_message_sequence(&mut transaction).await?;
+        transaction.commit().await.storage()?;
+        Ok(sequence)
     }
 
     /// Load summaries in request order, omitting missing identifiers.
@@ -85,9 +105,10 @@ impl MessageStorage for SqliteStorage {
         &self,
         identifiers: &[MessageIdentifier],
     ) -> Result<Vec<MessageSummary>, StorageError> {
-        let identifiers = identifiers.to_vec();
-        self.run(move |connection| hydrate_messages_blocking(connection, &identifiers))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let summaries = summaries::hydrate_messages(&mut transaction, identifiers).await?;
+        transaction.commit().await.storage()?;
+        Ok(summaries)
     }
 
     /// Load summaries only for current revisions, omitting stale or deleted hits.
@@ -95,9 +116,10 @@ impl MessageStorage for SqliteStorage {
         &self,
         requested: &[(MessageIdentifier, u64)],
     ) -> Result<Vec<MessageSummary>, StorageError> {
-        let requested = requested.to_vec();
-        self.run(move |connection| hydrate_current_messages_blocking(connection, &requested))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let summaries = summaries::hydrate_current_messages(&mut transaction, requested).await?;
+        transaction.commit().await.storage()?;
+        Ok(summaries)
     }
 
     /// Read a bounded ascending sequence range of current index facts and revisions.
@@ -107,8 +129,10 @@ impl MessageStorage for SqliteStorage {
         through: Option<MessageSequence>,
         limit: usize,
     ) -> Result<Vec<IndexedMessage>, StorageError> {
-        self.run(move |connection| index_messages_blocking(connection, after, through, limit))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let messages = indexing::index_messages(&mut transaction, after, through, limit).await?;
+        transaction.commit().await.storage()?;
+        Ok(messages)
     }
 
     /// Read a bounded set of index facts and revisions in identifier request order.
@@ -116,8 +140,9 @@ impl MessageStorage for SqliteStorage {
         &self,
         identifiers: &[MessageIdentifier],
     ) -> Result<Vec<IndexedMessage>, StorageError> {
-        let identifiers = identifiers.to_vec();
-        self.run(move |connection| indexed_messages_blocking(connection, &identifiers))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let messages = indexing::indexed_messages(&mut transaction, identifiers).await?;
+        transaction.commit().await.storage()?;
+        Ok(messages)
     }
 }

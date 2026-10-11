@@ -7,7 +7,10 @@ use std::sync::Arc;
 #[tokio::test]
 async fn sqlite_satisfies_the_storage_conformance_suite()
 -> Result<(), sandpost_storage_conformance::ConformanceFailure> {
-    let storage: Arc<dyn Storage> =
-        Arc::new(SqliteStorage::memory().expect("create in-memory storage"));
+    let storage: Arc<dyn Storage> = Arc::new(
+        SqliteStorage::memory()
+            .await
+            .expect("create in-memory storage"),
+    );
     sandpost_storage_conformance::run_all(storage.as_ref()).await
 }

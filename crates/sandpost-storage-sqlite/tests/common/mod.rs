@@ -3,6 +3,19 @@ use sandpost_core::{
     Message, MessageFacts, MessageIdentifier, MessageSequence, Scope, ScopeIdentifier,
 };
 use sandpost_storage::Storage;
+use sqlx::{ConnectOptions, SqliteConnection, sqlite::SqliteConnectOptions};
+use std::path::Path;
+
+/// Connect to an isolated SQLite file with foreign-key enforcement enabled.
+pub async fn connection(path: &Path) -> SqliteConnection {
+    SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .connect()
+        .await
+        .expect("connect to test SQLite database")
+}
 
 /// Build a minimal message with a stable subject for summary assertions.
 pub fn message(subject: impl Into<String>) -> Message {

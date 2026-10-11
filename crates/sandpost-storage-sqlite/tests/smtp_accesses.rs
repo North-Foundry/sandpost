@@ -1,8 +1,12 @@
 //! SMTP credential creation under contention between independent SQLite connections.
-use rusqlite::{Connection, TransactionBehavior};
+#[allow(dead_code)]
+mod common;
+
+use common::connection;
 use sandpost_core::SmtpAuthenticationMechanism;
 use sandpost_storage::{NewSmtpAccess, SmtpServerStorage, StorageError};
 use sandpost_storage_sqlite::SqliteStorage;
+use sqlx::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,11 +53,16 @@ fn new_access(username: &str) -> NewSmtpAccess {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn independent_smtp_creators_wait_and_report_duplicate_usernames() {
     let database = TestDatabase::new();
-    let first = SqliteStorage::open(&database.0).expect("open first storage connection");
-    let second = SqliteStorage::open(&database.0).expect("open second storage connection");
-    let mut writer = Connection::open(&database.0).expect("open contending writer");
+    let first = SqliteStorage::open(&database.0)
+        .await
+        .expect("open first storage connection");
+    let second = SqliteStorage::open(&database.0)
+        .await
+        .expect("open second storage connection");
+    let mut writer = connection(&database.0).await;
     let transaction = writer
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .expect("reserve writer");
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
     let mut creators = Vec::new();
@@ -70,7 +79,11 @@ async fn independent_smtp_creators_wait_and_report_duplicate_usernames() {
     // Deferred read-then-write transactions fail immediately against this held writer;
     // immediate transactions wait and inspect current state after the writer is released.
     tokio::time::sleep(Duration::from_millis(100)).await;
-    transaction.commit().expect("release contending writer");
+    transaction
+        .commit()
+        .await
+        .expect("release contending writer");
+    writer.close().await.unwrap();
     let mut created = 0;
     let mut duplicates = 0;
     for creator in creators {

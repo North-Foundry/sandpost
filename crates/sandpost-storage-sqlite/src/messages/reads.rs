@@ -1,9 +1,9 @@
 //! Full-message and metadata reads from authoritative SQL snapshots.
 use super::parts::{load_attachments, load_headers, load_recipients};
 use crate::error::StorageResult;
-use rusqlite::{Connection, OptionalExtension};
 use sandpost_core::{Attachment, Message, MessageFacts, MessageIdentifier};
 use sandpost_storage::StorageError;
+use sqlx::{Row, SqliteConnection};
 
 /// Scalar mail metadata shared by full-message and metadata-only reads.
 struct StoredMail {
@@ -16,29 +16,30 @@ struct StoredMail {
     size: i64,
 }
 
-/// Decode the scalar mail columns in their shared selection order.
-fn mail_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMail> {
+/// Decode scalar mail columns by their explicit result names.
+fn mail_row(row: &sqlx::sqlite::SqliteRow) -> Result<StoredMail, sqlx::Error> {
     Ok(StoredMail {
-        sequence: row.get(0)?,
-        subject: row.get(1)?,
-        text_body: row.get(2)?,
-        markup_body: row.get(3)?,
-        message_identifier: row.get(4)?,
-        received_at: row.get(5)?,
-        size: row.get(6)?,
+        sequence: row.try_get("sequence")?,
+        subject: row.try_get("subject")?,
+        text_body: row.try_get("text_body")?,
+        markup_body: row.try_get("markup_body")?,
+        message_identifier: row.try_get("message_identifier")?,
+        received_at: row.try_get("received_at")?,
+        size: row.try_get("size")?,
     })
 }
 
-/// Rebuild normalized facts and ordered attachments from one consistent read snapshot.
-fn load_message_parts(
-    connection: &Connection,
+/// Rebuild normalized facts and ordered attachments from one read transaction.
+async fn load_message_parts(
+    connection: &mut SqliteConnection,
     mail: StoredMail,
 ) -> Result<(MessageFacts, Vec<Attachment>), StorageError> {
-    let recipients = load_recipients(connection, &[mail.sequence])?
+    let recipients = load_recipients(connection, &[mail.sequence])
+        .await?
         .remove(&mail.sequence)
         .unwrap_or_default();
-    let headers = load_headers(connection, mail.sequence)?;
-    let attachments = load_attachments(connection, mail.sequence)?;
+    let headers = load_headers(connection, mail.sequence).await?;
+    let attachments = load_attachments(connection, mail.sequence).await?;
     let attachment_count =
         u64::try_from(attachments.len()).map_err(|_| StorageError::IntegerRange)?;
     Ok((
@@ -61,52 +62,50 @@ fn load_message_parts(
     ))
 }
 
-/// Load normalized facts, attachments, and raw bytes in one read transaction.
-pub(super) fn get_message_blocking(
-    connection: &mut Connection,
+/// Load normalized facts, attachments, and raw bytes from one caller-owned read snapshot.
+pub(super) async fn get_message(
+    connection: &mut SqliteConnection,
     identifier: MessageIdentifier,
 ) -> Result<Option<Message>, StorageError> {
-    let transaction = connection.transaction().storage()?;
-    let stored = transaction
-        .query_row(
-            "SELECT sequence, subject, text_body, markup_body, message_identifier, received_at, size, raw_message FROM mail WHERE identifier = ?1",
-            [identifier.to_string()],
-            |row| Ok((mail_row(row)?, row.get::<_, Vec<u8>>(7)?)),
-        )
-        .optional()
-        .storage()?;
-    let result = stored
-        .map(|(mail, raw_message)| -> Result<_, StorageError> {
-            let (facts, attachments) = load_message_parts(&transaction, mail)?;
-            Ok(Message {
+    let stored = sqlx::query(
+        "SELECT sequence, subject, text_body, markup_body, message_identifier, received_at, size, raw_message FROM mail WHERE identifier = ?",
+    )
+    .bind(identifier.to_string())
+    .fetch_optional(&mut *connection)
+    .await
+    .storage()?;
+    match stored {
+        Some(row) => {
+            let mail = mail_row(&row).storage()?;
+            let raw_message = row.try_get("raw_message").storage()?;
+            let (facts, attachments) = load_message_parts(connection, mail).await?;
+            Ok(Some(Message {
                 identifier,
                 facts,
                 raw_message,
                 attachments,
-            })
-        })
-        .transpose()?;
-    transaction.commit().storage()?;
-    Ok(result)
+            }))
+        }
+        None => Ok(None),
+    }
 }
 
-/// Load normalized facts and attachments without raw bytes.
-pub(super) fn get_message_metadata_blocking(
-    connection: &mut Connection,
+/// Load normalized facts and attachments without selecting raw bytes.
+pub(super) async fn get_message_metadata(
+    connection: &mut SqliteConnection,
     identifier: MessageIdentifier,
 ) -> Result<Option<(MessageFacts, Vec<Attachment>)>, StorageError> {
-    let transaction = connection.transaction().storage()?;
-    let stored = transaction
-        .query_row(
-            "SELECT sequence, subject, text_body, markup_body, message_identifier, received_at, size FROM mail WHERE identifier = ?1",
-            [identifier.to_string()],
-            mail_row,
-        )
-        .optional()
-        .storage()?;
-    let result = stored
-        .map(|mail| load_message_parts(&transaction, mail))
-        .transpose()?;
-    transaction.commit().storage()?;
-    Ok(result)
+    let stored = sqlx::query(
+        "SELECT sequence, subject, text_body, markup_body, message_identifier, received_at, size FROM mail WHERE identifier = ?",
+    )
+    .bind(identifier.to_string())
+    .fetch_optional(&mut *connection)
+    .await
+    .storage()?;
+    match stored {
+        Some(row) => Ok(Some(
+            load_message_parts(connection, mail_row(&row).storage()?).await?,
+        )),
+        None => Ok(None),
+    }
 }

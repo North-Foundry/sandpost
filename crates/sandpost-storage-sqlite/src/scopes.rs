@@ -3,69 +3,87 @@ use crate::SqliteStorage;
 use crate::error::StorageResult;
 use crate::records::{invalid_column, parse_identifier};
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, params};
 use sandpost_core::{Scope, ScopeIdentifier, UserIdentifier};
 use sandpost_storage::{ScopeStorage, StorageError};
+use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 
 const SCOPE_COLUMNS: &str =
     "identifier,parent_identifier,name,description,filter,position,policy_version";
 
 /// Decode a scope row, validating identifiers and its unsigned policy version.
-fn decode_scope(row: &rusqlite::Row<'_>) -> rusqlite::Result<Scope> {
-    let identifier: String = row.get(0)?;
-    let parent: Option<String> = row.get(1)?;
-    let policy_version: i64 = row.get(6)?;
+fn decode_scope(row: SqliteRow) -> Result<Scope, sqlx::Error> {
+    let identifier: String = row.try_get("identifier")?;
+    let parent: Option<String> = row.try_get("parent_identifier")?;
+    let policy_version: i64 = row.try_get("policy_version")?;
     Ok(Scope {
-        identifier: parse_identifier(&identifier).map_err(|_| invalid_column(0, "identifier"))?,
+        identifier: parse_identifier(&identifier).map_err(|_| invalid_column("identifier"))?,
         parent: parent
-            .map(|value| {
-                parse_identifier(&value).map_err(|_| invalid_column(1, "parent_identifier"))
-            })
+            .map(|value| parse_identifier(&value).map_err(|_| invalid_column("parent_identifier")))
             .transpose()?,
-        name: row.get(2)?,
-        description: row.get(3)?,
-        filter: row.get(4)?,
-        position: row.get(5)?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        filter: row.try_get("filter")?,
+        position: row.try_get("position")?,
         policy_version: u64::try_from(policy_version)
-            .map_err(|_| invalid_column(6, "policy_version"))?,
+            .map_err(|_| invalid_column("policy_version"))?,
     })
 }
 
 /// Load one scope by identifier.
-fn get_scope_blocking(
-    connection: &Connection,
+async fn get_scope(
+    connection: &mut SqliteConnection,
     identifier: ScopeIdentifier,
 ) -> Result<Option<Scope>, StorageError> {
-    let query = format!("SELECT {SCOPE_COLUMNS} FROM scopes WHERE identifier=?1");
-    connection
-        .query_row(&query, [identifier.to_string()], decode_scope)
-        .optional()
-        .storage()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {SCOPE_COLUMNS} FROM scopes WHERE identifier=?1"
+    )))
+    .bind(identifier.to_string())
+    .fetch_optional(connection)
+    .await
+    .storage()?
+    .map(decode_scope)
+    .transpose()
+    .storage()
 }
 
 /// Load scopes ordered by their configured position and identifier.
-fn list_scopes_blocking(connection: &Connection) -> Result<Vec<Scope>, StorageError> {
-    let query = format!("SELECT {SCOPE_COLUMNS} FROM scopes ORDER BY position, identifier");
-    let mut statement = connection.prepare(&query).storage()?;
-    statement
-        .query_map([], decode_scope)
-        .storage()?
-        .collect::<Result<Vec<_>, _>>()
-        .storage()
+async fn list_scopes(connection: &mut SqliteConnection) -> Result<Vec<Scope>, StorageError> {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {SCOPE_COLUMNS} FROM scopes ORDER BY position, identifier"
+    )))
+    .fetch_all(connection)
+    .await
+    .storage()?
+    .into_iter()
+    .map(decode_scope)
+    .collect::<Result<Vec<_>, _>>()
+    .storage()
 }
 
 /// Save a scope while enforcing policy-version changes for filter or parent updates.
-fn save_scope_blocking(connection: &mut Connection, scope: &Scope) -> Result<(), StorageError> {
+async fn save_scope(storage: &SqliteStorage, scope: &Scope) -> Result<(), StorageError> {
     let version = i64::try_from(scope.policy_version).map_err(|_| StorageError::IntegerRange)?;
-    let transaction = connection.transaction().storage()?;
-    let previous: Option<(String, Option<String>, i64)> = transaction
-        .query_row(
-            "SELECT filter, parent_identifier, policy_version FROM scopes WHERE identifier=?1",
-            [scope.identifier.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()
+    let mut transaction = storage
+        .write_pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .storage()?;
+    let previous: Option<(String, Option<String>, i64)> = sqlx::query(
+        "SELECT filter, parent_identifier, policy_version FROM scopes WHERE identifier=?1",
+    )
+    .bind(scope.identifier.to_string())
+    .fetch_optional(&mut *transaction)
+    .await
+    .storage()?
+    .map(|row| {
+        Ok((
+            row.try_get("filter")?,
+            row.try_get("parent_identifier")?,
+            row.try_get("policy_version")?,
+        ))
+    })
+    .transpose()
+    .storage()?;
     if let Some((old_filter, old_parent, old_version)) = previous
         && (version < old_version
             || (version == old_version
@@ -74,112 +92,120 @@ fn save_scope_blocking(connection: &mut Connection, scope: &Scope) -> Result<(),
     {
         return Err(StorageError::PolicyVersionConflict(scope.identifier));
     }
-    transaction
-        .execute(
-            "INSERT INTO scopes(identifier, parent_identifier, name, description, filter, position, policy_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(identifier) DO UPDATE SET parent_identifier=excluded.parent_identifier, name=excluded.name, description=excluded.description, filter=excluded.filter, position=excluded.position, policy_version=excluded.policy_version",
-            params![
-                scope.identifier.to_string(),
-                scope.parent.map(|identifier| identifier.to_string()),
-                scope.name,
-                scope.description,
-                scope.filter,
-                scope.position,
-                version,
-            ],
-        )
-        .storage()?;
-    transaction.commit().storage()?;
+    sqlx::query(
+        "INSERT INTO scopes(identifier, parent_identifier, name, description, filter, position, policy_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(identifier) DO UPDATE SET parent_identifier=excluded.parent_identifier, name=excluded.name, description=excluded.description, filter=excluded.filter, position=excluded.position, policy_version=excluded.policy_version",
+    )
+    .bind(scope.identifier.to_string())
+    .bind(scope.parent.map(|identifier| identifier.to_string()))
+    .bind(&scope.name)
+    .bind(&scope.description)
+    .bind(&scope.filter)
+    .bind(scope.position)
+    .bind(version)
+    .execute(&mut *transaction)
+    .await
+    .storage()?;
+    transaction.commit().await.storage()?;
     Ok(())
 }
 
 /// Delete a scope when no child scope references it.
-fn delete_scope_blocking(
-    connection: &Connection,
+async fn delete_scope(
+    connection: &mut SqliteConnection,
     identifier: ScopeIdentifier,
 ) -> Result<bool, StorageError> {
-    Ok(connection
-        .execute(
-            "DELETE FROM scopes WHERE identifier=?1",
-            [identifier.to_string()],
-        )
+    Ok(sqlx::query("DELETE FROM scopes WHERE identifier=?1")
+        .bind(identifier.to_string())
+        .execute(connection)
+        .await
         .storage()?
+        .rows_affected()
         > 0)
 }
 
-/// Assign a user to a scope: an unknown scope is NotFound and the foreign key rejects an
-/// unknown user.
-fn assign_user_to_scope_blocking(
-    connection: &mut Connection,
+/// Assign a user to a scope: an unknown scope is NotFound and the foreign key rejects an unknown user.
+async fn assign_user_to_scope(
+    storage: &SqliteStorage,
     user: UserIdentifier,
     scope: ScopeIdentifier,
 ) -> Result<(), StorageError> {
-    let transaction = connection.transaction().storage()?;
-    let scope_exists: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM scopes WHERE identifier=?1)",
-            [scope.to_string()],
-            |row| row.get(0),
-        )
+    let mut transaction = storage
+        .write_pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .storage()?;
+    let scope_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM scopes WHERE identifier=?1)")
+            .bind(scope.to_string())
+            .fetch_one(&mut *transaction)
+            .await
+            .storage()?;
     if !scope_exists {
         return Err(StorageError::NotFound);
     }
-    transaction
-        .execute(
-            "INSERT INTO scope_memberships(user_identifier,scope_identifier) VALUES (?1,?2) ON CONFLICT(user_identifier,scope_identifier) DO NOTHING",
-            params![user.to_string(), scope.to_string()],
-        )
-        .storage()?;
-    transaction.commit().storage()?;
+    sqlx::query(
+        "INSERT INTO scope_memberships(user_identifier,scope_identifier) VALUES (?1,?2) ON CONFLICT(user_identifier,scope_identifier) DO NOTHING",
+    )
+    .bind(user.to_string())
+    .bind(scope.to_string())
+    .execute(&mut *transaction)
+    .await
+    .storage()?;
+    transaction.commit().await.storage()?;
     Ok(())
 }
 
 /// Remove one user's assignment to a scope.
-fn remove_user_from_scope_blocking(
-    connection: &Connection,
+async fn remove_user_from_scope(
+    connection: &mut SqliteConnection,
     user: UserIdentifier,
     scope: ScopeIdentifier,
 ) -> Result<bool, StorageError> {
-    Ok(connection
-        .execute(
-            "DELETE FROM scope_memberships WHERE user_identifier=?1 AND scope_identifier=?2",
-            params![user.to_string(), scope.to_string()],
-        )
-        .storage()?
+    Ok(sqlx::query(
+        "DELETE FROM scope_memberships WHERE user_identifier=?1 AND scope_identifier=?2",
+    )
+    .bind(user.to_string())
+    .bind(scope.to_string())
+    .execute(connection)
+    .await
+    .storage()?
+    .rows_affected()
         > 0)
 }
 
 /// List all scope identifiers assigned to a user in deterministic order.
-fn list_user_scopes_blocking(
-    connection: &Connection,
+async fn list_user_scopes(
+    connection: &mut SqliteConnection,
     user: UserIdentifier,
 ) -> Result<Vec<ScopeIdentifier>, StorageError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT scope_identifier FROM scope_memberships WHERE user_identifier=?1 ORDER BY scope_identifier",
-        )
-        .storage()?;
-    statement
-        .query_map([user.to_string()], |row| row.get::<_, String>(0))
+    sqlx::query("SELECT scope_identifier FROM scope_memberships WHERE user_identifier=?1 ORDER BY scope_identifier")
+        .bind(user.to_string())
+        .fetch_all(connection)
+        .await
         .storage()?
-        .map(|row| parse_identifier(&row.storage()?))
+        .into_iter()
+        .map(|row| {
+            let value: String = row.try_get("scope_identifier").storage()?;
+            parse_identifier(&value).map_err(|_| invalid_column("scope_identifier")).storage()
+        })
         .collect()
 }
 
 /// List users assigned to one scope in deterministic order.
-fn list_scope_members_blocking(
-    connection: &Connection,
+async fn list_scope_members(
+    connection: &mut SqliteConnection,
     scope: ScopeIdentifier,
 ) -> Result<Vec<UserIdentifier>, StorageError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT user_identifier FROM scope_memberships WHERE scope_identifier=?1 ORDER BY user_identifier",
-        )
-        .storage()?;
-    statement
-        .query_map([scope.to_string()], |row| row.get::<_, String>(0))
+    sqlx::query("SELECT user_identifier FROM scope_memberships WHERE scope_identifier=?1 ORDER BY user_identifier")
+        .bind(scope.to_string())
+        .fetch_all(connection)
+        .await
         .storage()?
-        .map(|row| parse_identifier(&row.storage()?))
+        .into_iter()
+        .map(|row| {
+            let value: String = row.try_get("user_identifier").storage()?;
+            parse_identifier(&value).map_err(|_| invalid_column("user_identifier")).storage()
+        })
         .collect()
 }
 
@@ -187,27 +213,25 @@ fn list_scope_members_blocking(
 impl ScopeStorage for SqliteStorage {
     /// Read one scope by identifier.
     async fn get_scope(&self, identifier: ScopeIdentifier) -> Result<Option<Scope>, StorageError> {
-        self.run(move |connection| get_scope_blocking(connection, identifier))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        get_scope(&mut connection, identifier).await
     }
 
     /// List scopes by their configured position and identifier.
     async fn list_scopes(&self) -> Result<Vec<Scope>, StorageError> {
-        self.run(|connection| list_scopes_blocking(connection))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        list_scopes(&mut connection).await
     }
 
     /// Save a scope while enforcing monotonic policy versions for filter and parent changes.
     async fn save_scope(&self, scope: &Scope) -> Result<(), StorageError> {
-        let scope = scope.clone();
-        self.run(move |connection| save_scope_blocking(connection, &scope))
-            .await
+        save_scope(self, scope).await
     }
 
     /// Delete a scope and its memberships when no child references it.
     async fn delete_scope(&self, identifier: ScopeIdentifier) -> Result<bool, StorageError> {
-        self.run(move |connection| delete_scope_blocking(connection, identifier))
-            .await
+        let mut connection = self.write_pool.acquire().await.storage()?;
+        delete_scope(&mut connection, identifier).await
     }
 
     /// Assign a user to an existing scope without duplicating its membership.
@@ -216,8 +240,7 @@ impl ScopeStorage for SqliteStorage {
         user: UserIdentifier,
         scope: ScopeIdentifier,
     ) -> Result<(), StorageError> {
-        self.run(move |connection| assign_user_to_scope_blocking(connection, user, scope))
-            .await
+        assign_user_to_scope(self, user, scope).await
     }
 
     /// Remove one scope membership, reporting whether it existed.
@@ -226,8 +249,8 @@ impl ScopeStorage for SqliteStorage {
         user: UserIdentifier,
         scope: ScopeIdentifier,
     ) -> Result<bool, StorageError> {
-        self.run(move |connection| remove_user_from_scope_blocking(connection, user, scope))
-            .await
+        let mut connection = self.write_pool.acquire().await.storage()?;
+        remove_user_from_scope(&mut connection, user, scope).await
     }
 
     /// List assigned scope identifiers for one user in deterministic order.
@@ -235,8 +258,8 @@ impl ScopeStorage for SqliteStorage {
         &self,
         user: UserIdentifier,
     ) -> Result<Vec<ScopeIdentifier>, StorageError> {
-        self.run(move |connection| list_user_scopes_blocking(connection, user))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        list_user_scopes(&mut connection, user).await
     }
 
     /// List user identifiers assigned to a scope in deterministic order.
@@ -244,7 +267,7 @@ impl ScopeStorage for SqliteStorage {
         &self,
         scope: ScopeIdentifier,
     ) -> Result<Vec<UserIdentifier>, StorageError> {
-        self.run(move |connection| list_scope_members_blocking(connection, scope))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        list_scope_members(&mut connection, scope).await
     }
 }

@@ -2,10 +2,11 @@
 use super::parts::load_recipients;
 use crate::error::StorageResult;
 use crate::records::parse_identifier;
-use rusqlite::{Connection, params, params_from_iter};
 use sandpost_core::{MessageFacts, MessageIdentifier, MessageSequence};
 use sandpost_storage::{IndexedMessage, StorageError};
+use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
+/// Maximum number of messages in one index projection batch.
 const MAXIMUM_INDEX_BATCH_SIZE: usize = 64;
 
 /// Scalar index input selected together with its durable revision.
@@ -21,68 +22,66 @@ struct StoredIndexedMessage {
     revision: i64,
 }
 
-/// Decode scalar index columns in their shared selection order.
-fn indexed_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIndexedMessage> {
+/// Decode scalar index columns by their explicit result names.
+fn indexed_message_row(row: &sqlx::sqlite::SqliteRow) -> Result<StoredIndexedMessage, sqlx::Error> {
     Ok(StoredIndexedMessage {
-        sequence: row.get(0)?,
-        identifier: row.get(1)?,
-        subject: row.get(2)?,
-        text_body: row.get(3)?,
-        markup_body: row.get(4)?,
-        message_identifier: row.get(5)?,
-        received_at: row.get(6)?,
-        size: row.get(7)?,
-        revision: row.get(8)?,
+        sequence: row.try_get("sequence")?,
+        identifier: row.try_get("identifier")?,
+        subject: row.try_get("subject")?,
+        text_body: row.try_get("text_body")?,
+        markup_body: row.try_get("markup_body")?,
+        message_identifier: row.try_get("message_identifier")?,
+        received_at: row.try_get("received_at")?,
+        size: row.try_get("size")?,
+        revision: row.try_get("search_revision")?,
     })
 }
 
 /// Return the highest stored mail sequence, or zero when the database is empty.
-pub(super) fn max_message_sequence_blocking(
-    connection: &Connection,
+pub(super) async fn max_message_sequence(
+    connection: &mut SqliteConnection,
 ) -> Result<MessageSequence, StorageError> {
-    let value: i64 = connection
-        .query_row(
-            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='mail'),0)",
-            [],
-            |row| row.get(0),
-        )
-        .storage()?;
+    let value: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='mail'),0)",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .storage()?;
     Ok(MessageSequence(
         u64::try_from(value).map_err(|_| StorageError::IntegerRange)?,
     ))
 }
 
 /// Read normalized index records and revisions after an exclusive sequence, bounded by limit.
-pub(super) fn index_messages_blocking(
-    connection: &mut Connection,
+pub(super) async fn index_messages(
+    connection: &mut SqliteConnection,
     after: MessageSequence,
     through: Option<MessageSequence>,
     limit: usize,
 ) -> Result<Vec<IndexedMessage>, StorageError> {
-    let transaction = connection.transaction().storage()?;
     let after = i64::try_from(after.0).map_err(|_| StorageError::IntegerRange)?;
     let through = through
         .map(|value| i64::try_from(value.0).map_err(|_| StorageError::IntegerRange))
         .transpose()?;
     let limit = i64::try_from(limit.min(MAXIMUM_INDEX_BATCH_SIZE))
         .map_err(|_| StorageError::IntegerRange)?;
-    let mut statement = transaction
-        .prepare("SELECT sequence,identifier,subject,text_body,markup_body,message_identifier,received_at,size,search_revision FROM mail WHERE sequence>?1 AND (?2 IS NULL OR sequence<=?2) ORDER BY sequence LIMIT ?3")
-        .storage()?;
-    let rows = statement
-        .query_map(params![after, through, limit], indexed_message_row)
-        .storage()?
-        .collect::<Result<Vec<_>, _>>()
-        .storage()?;
-    drop(statement);
-    let indexed = load_indexed_rows(&transaction, rows)?;
-    transaction.commit().storage()?;
-    Ok(indexed)
+    let rows = sqlx::query(
+        "SELECT sequence,identifier,subject,text_body,markup_body,message_identifier,received_at,size,search_revision FROM mail WHERE sequence>? AND (? IS NULL OR sequence<=?) ORDER BY sequence LIMIT ?",
+    )
+    .bind(after)
+    .bind(through)
+    .bind(through)
+    .bind(limit)
+    .try_map(|row| indexed_message_row(&row))
+    .fetch_all(&mut *connection)
+    .await
+    .storage()?;
+    load_indexed_rows(connection, rows).await
 }
 
-/// Load up to the backend batch maximum of normalized index records by identifier.
-pub(super) fn indexed_messages_blocking(
-    connection: &mut Connection,
+/// Load index records by identifier while preserving caller order and enforcing the batch bound.
+pub(super) async fn indexed_messages(
+    connection: &mut SqliteConnection,
     identifiers: &[MessageIdentifier],
 ) -> Result<Vec<IndexedMessage>, StorageError> {
     if identifiers.is_empty() {
@@ -97,24 +96,24 @@ pub(super) fn indexed_messages_blocking(
     if identifiers.len() > MAXIMUM_INDEX_BATCH_SIZE {
         return Err(StorageError::BatchLimitExceeded(MAXIMUM_INDEX_BATCH_SIZE));
     }
-    let transaction = connection.transaction().storage()?;
-    let values: Vec<String> = identifiers.iter().map(ToString::to_string).collect();
-    let placeholders = (1..=values.len())
-        .map(|index| format!("?{index}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT sequence,identifier,subject,text_body,markup_body,message_identifier,received_at,size,search_revision FROM mail WHERE identifier IN ({placeholders})"
+    let values: Vec<_> = identifiers.iter().map(ToString::to_string).collect();
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT sequence,identifier,subject,text_body,markup_body,message_identifier,received_at,size,search_revision FROM mail WHERE identifier IN (",
     );
-    let mut statement = transaction.prepare(&sql).storage()?;
-    let rows = statement
-        .query_map(params_from_iter(values.iter()), indexed_message_row)
-        .storage()?
-        .collect::<Result<Vec<_>, _>>()
+    for (index, value) in values.iter().enumerate() {
+        if index != 0 {
+            query.push(",");
+        }
+        query.push_bind(value);
+    }
+    query.push(")");
+    let rows = query
+        .build()
+        .try_map(|row| indexed_message_row(&row))
+        .fetch_all(&mut *connection)
+        .await
         .storage()?;
-    drop(statement);
-    let indexed = load_indexed_rows(&transaction, rows)?;
-    transaction.commit().storage()?;
+    let indexed = load_indexed_rows(connection, rows).await?;
     let by_identifier: std::collections::HashMap<_, _> = indexed
         .into_iter()
         .map(|record| (record.identifier, record))
@@ -125,100 +124,92 @@ pub(super) fn indexed_messages_blocking(
         .collect())
 }
 
-/// Batch-load recipient roles, headers, and attachment counts for selected mail rows.
-fn load_indexed_rows(
-    connection: &Connection,
+/// Batch-load recipients, headers, and attachment counts for the selected mail rows.
+async fn load_indexed_rows(
+    connection: &mut SqliteConnection,
     rows: Vec<StoredIndexedMessage>,
 ) -> Result<Vec<IndexedMessage>, StorageError> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
     let sequences: Vec<i64> = rows.iter().map(|row| row.sequence).collect();
-    let recipients = load_recipients(connection, &sequences)?;
-    let placeholders = (1..=sequences.len())
-        .map(|index| format!("?{index}"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut recipients = load_recipients(connection, &sequences).await?;
     let mut headers_by_sequence =
         std::collections::HashMap::<i64, std::collections::BTreeMap<String, Vec<String>>>::new();
-    let query = format!(
-        "SELECT mail_sequence,name,value FROM mail_headers WHERE mail_sequence IN ({placeholders}) ORDER BY mail_sequence,name,ordinal"
+    let mut header_query = QueryBuilder::<Sqlite>::new(
+        "SELECT mail_sequence,name,value FROM mail_headers WHERE mail_sequence IN (",
     );
-    {
-        let mut statement = connection.prepare(&query).storage()?;
-        let mut result = statement
-            .query(params_from_iter(sequences.iter()))
-            .storage()?;
-        while let Some(row) = result.next().storage()? {
-            headers_by_sequence
-                .entry(row.get(0).storage()?)
-                .or_default()
-                .entry(row.get(1).storage()?)
-                .or_default()
-                .push(row.get(2).storage()?);
+    for (index, sequence) in sequences.iter().enumerate() {
+        if index != 0 {
+            header_query.push(",");
         }
+        header_query.push_bind(sequence);
     }
-    let mut attachment_counts_by_sequence = std::collections::HashMap::<i64, i64>::new();
-    let query = format!(
-        "SELECT mail_sequence,COUNT(*) FROM mail_attachments WHERE mail_sequence IN ({placeholders}) GROUP BY mail_sequence"
-    );
+    header_query.push(") ORDER BY mail_sequence,name,ordinal");
+    for row in header_query
+        .build()
+        .fetch_all(&mut *connection)
+        .await
+        .storage()?
     {
-        let mut statement = connection.prepare(&query).storage()?;
-        let mut result = statement
-            .query(params_from_iter(sequences.iter()))
-            .storage()?;
-        while let Some(row) = result.next().storage()? {
-            let sequence: i64 = row.get(0).storage()?;
-            attachment_counts_by_sequence.insert(sequence, row.get(1).storage()?);
+        headers_by_sequence
+            .entry(row.try_get("mail_sequence").storage()?)
+            .or_default()
+            .entry(row.try_get("name").storage()?)
+            .or_default()
+            .push(row.try_get("value").storage()?);
+    }
+    let mut counts_by_sequence = std::collections::HashMap::<i64, i64>::new();
+    let mut count_query = QueryBuilder::<Sqlite>::new(
+        "SELECT mail_sequence,COUNT(*) AS attachment_count FROM mail_attachments WHERE mail_sequence IN (",
+    );
+    for (index, sequence) in sequences.iter().enumerate() {
+        if index != 0 {
+            count_query.push(",");
         }
+        count_query.push_bind(sequence);
+    }
+    count_query.push(") GROUP BY mail_sequence");
+    for row in count_query
+        .build()
+        .fetch_all(&mut *connection)
+        .await
+        .storage()?
+    {
+        counts_by_sequence.insert(
+            row.try_get("mail_sequence").storage()?,
+            row.try_get("attachment_count").storage()?,
+        );
     }
     rows.into_iter()
-        .map(
-            |StoredIndexedMessage {
-                 sequence,
-                 identifier,
-                 subject,
-                 text_body,
-                 markup_body,
-                 message_identifier,
-                 received_at,
-                 size,
-                 revision,
-             }| {
-                let mailbox = recipients.get(&sequence);
-                let facts = MessageFacts {
-                    envelope_from: mailbox.and_then(|value| value.envelope_from.clone()),
-                    envelope_to: mailbox
-                        .map(|value| value.envelope_to.clone())
-                        .unwrap_or_default(),
-                    from: mailbox.map(|value| value.from.clone()).unwrap_or_default(),
-                    to: mailbox.map(|value| value.to.clone()).unwrap_or_default(),
-                    carbon_copy: mailbox
-                        .map(|value| value.carbon_copy.clone())
-                        .unwrap_or_default(),
-                    subject,
-                    text: text_body,
-                    markup_body,
-                    message_identifier,
-                    received_at,
-                    size: u64::try_from(size).map_err(|_| StorageError::IntegerRange)?,
-                    attachment_count: u64::try_from(
-                        attachment_counts_by_sequence
-                            .remove(&sequence)
-                            .unwrap_or_default(),
-                    )
+        .map(|row| {
+            let sequence = row.sequence;
+            let mailboxes = recipients.remove(&sequence).unwrap_or_default();
+            let attachment_count = counts_by_sequence.remove(&sequence).unwrap_or_default();
+            let facts = MessageFacts {
+                envelope_from: mailboxes.envelope_from,
+                envelope_to: mailboxes.envelope_to,
+                from: mailboxes.from,
+                to: mailboxes.to,
+                carbon_copy: mailboxes.carbon_copy,
+                subject: row.subject,
+                text: row.text_body,
+                markup_body: row.markup_body,
+                message_identifier: row.message_identifier,
+                received_at: row.received_at,
+                size: u64::try_from(row.size).map_err(|_| StorageError::IntegerRange)?,
+                attachment_count: u64::try_from(attachment_count)
                     .map_err(|_| StorageError::IntegerRange)?,
-                    headers: headers_by_sequence.remove(&sequence).unwrap_or_default(),
-                };
-                Ok(IndexedMessage {
-                    revision: u64::try_from(revision).map_err(|_| StorageError::IntegerRange)?,
-                    identifier: parse_identifier(&identifier)?,
-                    sequence: MessageSequence(
-                        u64::try_from(sequence).map_err(|_| StorageError::IntegerRange)?,
-                    ),
-                    facts,
-                })
-            },
-        )
+                headers: headers_by_sequence.remove(&sequence).unwrap_or_default(),
+            };
+            Ok(IndexedMessage {
+                revision: u64::try_from(row.revision).map_err(|_| StorageError::IntegerRange)?,
+                identifier: parse_identifier(&row.identifier)?,
+                sequence: MessageSequence(
+                    u64::try_from(sequence).map_err(|_| StorageError::IntegerRange)?,
+                ),
+                facts,
+            })
+        })
         .collect()
 }

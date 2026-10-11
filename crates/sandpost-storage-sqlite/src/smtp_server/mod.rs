@@ -3,12 +3,9 @@ mod accesses;
 mod listener;
 
 use crate::SqliteStorage;
-use accesses::{
-    create_access_blocking, get_access_blocking, get_credential_blocking, list_accesses_blocking,
-    mechanism_flags, update_access_blocking,
-};
+use crate::error::StorageResult;
+use accesses::{AccessUpdateValue, mechanism_flags};
 use async_trait::async_trait;
-use listener::{listen_address_blocking, save_listen_address_blocking};
 use sandpost_core::{SmtpAccess, SmtpAccessIdentifier, SmtpAuthenticationMechanism};
 use sandpost_storage::{NewSmtpAccess, SmtpAccessCredential, SmtpServerStorage, StorageError};
 use std::net::SocketAddr;
@@ -17,8 +14,7 @@ use std::net::SocketAddr;
 impl SmtpServerStorage for SqliteStorage {
     /// Read the global SMTP listener address, or None when disabled.
     async fn smtp_listen_address(&self) -> Result<Option<SocketAddr>, StorageError> {
-        self.run(|connection| listen_address_blocking(connection))
-            .await
+        listener::listen_address(self).await
     }
 
     /// Replace or disable the global SMTP listener address.
@@ -26,14 +22,12 @@ impl SmtpServerStorage for SqliteStorage {
         &self,
         address: Option<SocketAddr>,
     ) -> Result<(), StorageError> {
-        self.run(move |connection| save_listen_address_blocking(connection, address))
-            .await
+        listener::save_listen_address(self, address).await
     }
 
     /// List SMTP accesses without exposing password hashes.
     async fn list_smtp_accesses(&self) -> Result<Vec<SmtpAccess>, StorageError> {
-        self.run(|connection| list_accesses_blocking(connection))
-            .await
+        accesses::list_accesses(self).await
     }
 
     /// Read one SMTP access without its password hash.
@@ -41,8 +35,7 @@ impl SmtpServerStorage for SqliteStorage {
         &self,
         identifier: SmtpAccessIdentifier,
     ) -> Result<Option<SmtpAccess>, StorageError> {
-        self.run(move |connection| get_access_blocking(connection, identifier))
-            .await
+        accesses::get_access(self, identifier).await
     }
 
     /// Read the credential hash and public access record by identifier.
@@ -50,10 +43,8 @@ impl SmtpServerStorage for SqliteStorage {
         &self,
         identifier: SmtpAccessIdentifier,
     ) -> Result<Option<SmtpAccessCredential>, StorageError> {
-        self.run(move |connection| {
-            get_credential_blocking(connection, "identifier", &identifier.to_string())
-        })
-        .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        accesses::get_credential(&mut connection, "identifier", &identifier.to_string()).await
     }
 
     /// Read the credential hash and public access record by username.
@@ -61,16 +52,13 @@ impl SmtpServerStorage for SqliteStorage {
         &self,
         username: &str,
     ) -> Result<Option<SmtpAccessCredential>, StorageError> {
-        let username = username.to_owned();
-        self.run(move |connection| get_credential_blocking(connection, "username", &username))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        accesses::get_credential(&mut connection, "username", username).await
     }
 
     /// Create an enabled SMTP credential with a unique username and validated mechanism policy.
     async fn create_smtp_access(&self, access: &NewSmtpAccess) -> Result<SmtpAccess, StorageError> {
-        let access = access.clone();
-        self.run(move |connection| create_access_blocking(connection, &access))
-            .await
+        accesses::create_access(self, access).await
     }
 
     /// Replace the credential hash and return the updated public record.
@@ -79,15 +67,12 @@ impl SmtpServerStorage for SqliteStorage {
         identifier: SmtpAccessIdentifier,
         password_hash: &str,
     ) -> Result<Option<SmtpAccess>, StorageError> {
-        let password_hash = password_hash.to_owned();
-        self.run(move |connection| {
-            update_access_blocking(
-                connection,
-                identifier,
-                "UPDATE smtp_accesses SET password_hash = ?2, updated_at = ?3 WHERE identifier = ?1",
-                &password_hash,
-            )
-        })
+        accesses::update_access(
+            self,
+            identifier,
+            "UPDATE smtp_accesses SET password_hash = ?2, updated_at = ?3 WHERE identifier = ?1",
+            AccessUpdateValue::Password(password_hash),
+        )
         .await
     }
 
@@ -97,14 +82,12 @@ impl SmtpServerStorage for SqliteStorage {
         identifier: SmtpAccessIdentifier,
         enabled: bool,
     ) -> Result<Option<SmtpAccess>, StorageError> {
-        self.run(move |connection| {
-            update_access_blocking(
-                connection,
-                identifier,
-                "UPDATE smtp_accesses SET enabled = ?2, updated_at = ?3 WHERE identifier = ?1",
-                &enabled,
-            )
-        })
+        accesses::update_access(
+            self,
+            identifier,
+            "UPDATE smtp_accesses SET enabled = ?2, updated_at = ?3 WHERE identifier = ?1",
+            AccessUpdateValue::Enabled(enabled),
+        )
         .await
     }
 
@@ -116,15 +99,13 @@ impl SmtpServerStorage for SqliteStorage {
         allowed_mechanisms: &[SmtpAuthenticationMechanism],
     ) -> Result<Option<SmtpAccess>, StorageError> {
         let (plain_allowed, login_allowed) = mechanism_flags(allowed_mechanisms)?;
-        self.run(move |connection| {
-            accesses::set_authentication_rules_blocking(
-                connection,
-                identifier,
-                requires_encryption,
-                plain_allowed,
-                login_allowed,
-            )
-        })
+        accesses::set_authentication_rules(
+            self,
+            identifier,
+            requires_encryption,
+            plain_allowed,
+            login_allowed,
+        )
         .await
     }
 
@@ -133,8 +114,7 @@ impl SmtpServerStorage for SqliteStorage {
         &self,
         identifier: SmtpAccessIdentifier,
     ) -> Result<bool, StorageError> {
-        self.run(move |connection| accesses::delete_access_blocking(connection, identifier))
-            .await
+        accesses::delete_access(self, identifier).await
     }
 
     /// Record successful authentication while limiting timestamp writes to once a minute.
@@ -143,9 +123,6 @@ impl SmtpServerStorage for SqliteStorage {
         identifier: SmtpAccessIdentifier,
         used_at: i64,
     ) -> Result<(), StorageError> {
-        self.run(move |connection| {
-            accesses::record_access_use_blocking(connection, identifier, used_at)
-        })
-        .await
+        accesses::record_access_use(self, identifier, used_at).await
     }
 }

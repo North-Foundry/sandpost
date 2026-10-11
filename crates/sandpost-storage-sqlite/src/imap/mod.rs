@@ -1,7 +1,4 @@
-//! SQLite persistence for IMAP accounts and virtual mailboxes.
-//!
-//! Each child module owns blocking SQL operations for one responsibility. This module is the
-//! single adapter from the asynchronous IMAP storage contract to those helpers.
+//! Asynchronous SQLite persistence for IMAP accounts and virtual mailboxes.
 
 mod accounts;
 mod flags;
@@ -13,6 +10,7 @@ mod shared;
 mod subscriptions;
 
 use crate::SqliteStorage;
+use crate::error::StorageResult;
 use async_trait::async_trait;
 use sandpost_core::{
     ImapAccount, ImapAccountIdentifier, ImapFolderIdentifier, ImapLinkedView, ImapLocalFolder,
@@ -32,9 +30,14 @@ impl ImapStorage for SqliteStorage {
         &self,
         account: &NewImapAccount,
     ) -> Result<ImapAccount, StorageError> {
-        let account = account.clone();
-        self.run(move |connection| accounts::create_account_blocking(connection, &account))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let result = accounts::create_account(&mut transaction, account).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Load one account without its password hash.
@@ -42,8 +45,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapAccountIdentifier,
     ) -> Result<Option<ImapAccount>, StorageError> {
-        self.run(move |connection| accounts::get_account_blocking(connection, identifier))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        accounts::get_account(&mut connection, identifier).await
     }
 
     /// List an owner's accounts by name and identifier without password hashes.
@@ -51,8 +54,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         owner: UserIdentifier,
     ) -> Result<Vec<ImapAccount>, StorageError> {
-        self.run(move |connection| accounts::list_accounts_blocking(connection, owner))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        accounts::list_accounts(&mut connection, owner).await
     }
 
     /// Load credentials by exact username for authentication.
@@ -60,11 +63,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         username: &str,
     ) -> Result<Option<ImapAccountCredential>, StorageError> {
-        let username = username.to_owned();
-        self.run(move |connection| {
-            accounts::get_credential_blocking(connection, "username", &username)
-        })
-        .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        accounts::get_credential(&mut connection, "username", username).await
     }
 
     /// Load credentials by identifier for session revalidation.
@@ -72,10 +72,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapAccountIdentifier,
     ) -> Result<Option<ImapAccountCredential>, StorageError> {
-        self.run(move |connection| {
-            accounts::get_credential_blocking(connection, "identifier", &identifier.to_string())
-        })
-        .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        accounts::get_credential(&mut connection, "identifier", &identifier.to_string()).await
     }
 
     /// Replace an account's display name and enabled or mirror settings.
@@ -84,11 +82,14 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapAccountIdentifier,
         settings: &ImapAccountSettings,
     ) -> Result<Option<ImapAccount>, StorageError> {
-        let settings = settings.clone();
-        self.run(move |connection| {
-            accounts::update_account_blocking(connection, identifier, &settings)
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = accounts::update_account(&mut transaction, identifier, settings).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Replace an account password hash and return the updated public account.
@@ -97,11 +98,15 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapAccountIdentifier,
         password_hash: &str,
     ) -> Result<Option<ImapAccount>, StorageError> {
-        let password_hash = password_hash.to_owned();
-        self.run(move |connection| {
-            accounts::replace_password_blocking(connection, identifier, &password_hash)
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result =
+            accounts::replace_password(&mut transaction, identifier, password_hash).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Delete the account and its cascading IMAP state without deleting mail.
@@ -109,8 +114,14 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapAccountIdentifier,
     ) -> Result<bool, StorageError> {
-        self.run(move |connection| accounts::delete_account_blocking(connection, identifier))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let result = accounts::delete_account(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Record successful account use, skipping writes within the timestamp resolution window.
@@ -119,10 +130,13 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapAccountIdentifier,
         used_at: i64,
     ) -> Result<(), StorageError> {
-        self.run(move |connection| {
-            accounts::record_account_use_blocking(connection, identifier, used_at)
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        accounts::record_account_use(&mut transaction, identifier, used_at).await?;
+        transaction.commit().await.storage()
     }
 
     /// Replace an account's linked View selection atomically.
@@ -131,9 +145,13 @@ impl ImapStorage for SqliteStorage {
         account: ImapAccountIdentifier,
         views: &[ImapLinkedView],
     ) -> Result<(), StorageError> {
-        let views = views.to_vec();
-        self.run(move |connection| accounts::set_linked_views_blocking(connection, account, &views))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        accounts::set_linked_views(&mut transaction, account, views).await?;
+        transaction.commit().await.storage()
     }
 
     /// List linked Views ordered by View identifier.
@@ -141,8 +159,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         account: ImapAccountIdentifier,
     ) -> Result<Vec<ImapLinkedView>, StorageError> {
-        self.run(move |connection| accounts::list_linked_views_blocking(connection, account))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        accounts::list_linked_views(&mut connection, account).await
     }
 
     /// Create a local folder after checking the account and name uniqueness.
@@ -150,9 +168,14 @@ impl ImapStorage for SqliteStorage {
         &self,
         folder: &NewImapLocalFolder,
     ) -> Result<ImapLocalFolder, StorageError> {
-        let folder = folder.clone();
-        self.run(move |connection| folders::create_folder_blocking(connection, &folder))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let result = folders::create_folder(&mut transaction, folder).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Load a local folder by identifier.
@@ -160,8 +183,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapFolderIdentifier,
     ) -> Result<Option<ImapLocalFolder>, StorageError> {
-        self.run(move |connection| folders::get_folder_blocking(connection, identifier))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        folders::get_folder(&mut connection, identifier).await
     }
 
     /// List an account's local folders by name and identifier.
@@ -169,8 +192,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         account: ImapAccountIdentifier,
     ) -> Result<Vec<ImapLocalFolder>, StorageError> {
-        self.run(move |connection| folders::list_folders_blocking(connection, account))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        folders::list_folders(&mut connection, account).await
     }
 
     /// Replace a local folder's settings and update its modification time.
@@ -179,11 +202,14 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapFolderIdentifier,
         settings: &ImapLocalFolderSettings,
     ) -> Result<Option<ImapLocalFolder>, StorageError> {
-        let settings = settings.clone();
-        self.run(move |connection| {
-            folders::update_folder_blocking(connection, identifier, &settings)
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = folders::update_folder(&mut transaction, identifier, settings).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Delete a local folder and its cascading mailbox state.
@@ -191,8 +217,14 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapFolderIdentifier,
     ) -> Result<bool, StorageError> {
-        self.run(move |connection| folders::delete_folder_blocking(connection, identifier))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let result = folders::delete_folder(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Reconcile mailbox identities to the supplied ordered source list.
@@ -201,11 +233,10 @@ impl ImapStorage for SqliteStorage {
         account: ImapAccountIdentifier,
         sources: &[ImapMailboxSource],
     ) -> Result<Vec<ImapMailboxState>, StorageError> {
-        let sources = sources.to_vec();
-        self.run(move |connection| {
-            mailboxes::reconcile_mailboxes_blocking(connection, account, &sources)
-        })
-        .await
+        let mut transaction = self.write_pool.begin().await.storage()?;
+        let result = mailboxes::reconcile_mailboxes(&mut transaction, account, sources).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Load one mailbox identity.
@@ -213,8 +244,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapMailboxIdentifier,
     ) -> Result<Option<ImapMailboxState>, StorageError> {
-        self.run(move |connection| mailboxes::get_mailbox_blocking(connection, identifier))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        mailboxes::get_mailbox(&mut connection, identifier).await
     }
 
     /// Synchronize a mailbox's materialized membership with its definition.
@@ -223,11 +254,11 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         definition: &ImapMembershipDefinition,
     ) -> Result<Option<ImapMailboxState>, StorageError> {
-        let definition = definition.clone();
-        self.run(move |connection| {
-            mailboxes::synchronize_mailbox_blocking(connection, identifier, &definition)
-        })
-        .await
+        let mut transaction = self.write_pool.begin().await.storage()?;
+        let result =
+            mailboxes::synchronize_mailbox(&mut transaction, identifier, definition).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Load members above a UID in ascending order with their current flags.
@@ -236,8 +267,8 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         after_uid: u32,
     ) -> Result<Vec<ImapMember>, StorageError> {
-        self.run(move |connection| members::members_blocking(connection, identifier, after_uid))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        members::members(&mut connection, identifier, after_uid).await
     }
 
     /// Count members at or below the UID watermark.
@@ -246,10 +277,8 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         through_uid: u32,
     ) -> Result<u64, StorageError> {
-        self.run(move |connection| {
-            members::count_members_blocking(connection, identifier, through_uid)
-        })
-        .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        members::count_members(&mut connection, identifier, through_uid).await
     }
 
     /// List member UIDs at or below the watermark in ascending order.
@@ -258,10 +287,8 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         through_uid: u32,
     ) -> Result<Vec<u32>, StorageError> {
-        self.run(move |connection| {
-            members::member_uids_blocking(connection, identifier, through_uid)
-        })
-        .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        members::member_uids(&mut connection, identifier, through_uid).await
     }
 
     /// Load changed flags for members after the account modification cursor.
@@ -271,16 +298,17 @@ impl ImapStorage for SqliteStorage {
         after_cursor: u64,
         through_uid: u32,
     ) -> Result<ImapFlagChanges, StorageError> {
-        self.run(move |connection| {
-            flags::flag_changes_blocking(connection, identifier, after_cursor, through_uid)
-        })
-        .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let result =
+            flags::flag_changes(&mut transaction, identifier, after_cursor, through_uid).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Read the current flag modification cursor for an account.
     async fn imap_flag_cursor(&self, account: ImapAccountIdentifier) -> Result<u64, StorageError> {
-        self.run(move |connection| flags::flag_cursor_blocking(connection, account))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        flags::flag_cursor(&mut connection, account).await
     }
 
     /// Claim all current members as recent and return the previous watermark.
@@ -288,17 +316,25 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapMailboxIdentifier,
     ) -> Result<Option<u32>, StorageError> {
-        self.run(move |connection| members::claim_recent_blocking(connection, identifier))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let result = members::claim_recent(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
-    /// Count total, unseen, and recent mailbox members.
+    /// Count total, unseen, and recent mailbox members from one read snapshot.
     async fn imap_mailbox_counts(
         &self,
         identifier: ImapMailboxIdentifier,
     ) -> Result<Option<ImapMailboxCounts>, StorageError> {
-        self.run(move |connection| members::counts_blocking(connection, identifier))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let result = members::counts(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Load metadata for requested member UIDs, omitting UIDs that are not members.
@@ -307,9 +343,10 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         uids: &[u32],
     ) -> Result<Vec<ImapMemberMetadata>, StorageError> {
-        let uids = uids.to_vec();
-        self.run(move |connection| members::metadata_blocking(connection, identifier, &uids))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let result = members::metadata(&mut transaction, identifier, uids).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Load the stored content for one member UID.
@@ -318,8 +355,8 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         uid: u32,
     ) -> Result<Option<ImapMemberContent>, StorageError> {
-        self.run(move |connection| members::content_blocking(connection, identifier, uid))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        members::content(&mut connection, identifier, uid).await
     }
 
     /// Apply a flag change to selected members and return resulting flags.
@@ -329,12 +366,14 @@ impl ImapStorage for SqliteStorage {
         uids: &[u32],
         change: &ImapFlagChange,
     ) -> Result<Vec<(u32, ImapMessageFlags)>, StorageError> {
-        let uids = uids.to_vec();
-        let change = change.clone();
-        self.run(move |connection| {
-            flags::store_flags_blocking(connection, identifier, &uids, &change)
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = flags::store_flags(&mut transaction, identifier, uids, change).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Remove deleted members, recording exclusions for dynamic mailboxes.
@@ -343,11 +382,14 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         uids: Option<&[u32]>,
     ) -> Result<Vec<u32>, StorageError> {
-        let uids = uids.map(<[u32]>::to_vec);
-        self.run(move |connection| {
-            membership::expunge_blocking(connection, identifier, uids.as_deref())
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = membership::expunge(&mut transaction, identifier, uids).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Copy or move members between mailboxes belonging to the same account.
@@ -359,19 +401,22 @@ impl ImapStorage for SqliteStorage {
         destination_definition: Option<&ImapMembershipDefinition>,
         remove_from_source: bool,
     ) -> Result<ImapCopyResult, StorageError> {
-        let uids = uids.to_vec();
-        let definition = destination_definition.cloned();
-        self.run(move |connection| {
-            membership::copy_blocking(
-                connection,
-                source,
-                &uids,
-                destination,
-                definition.as_ref(),
-                remove_from_source,
-            )
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = membership::copy(
+            &mut transaction,
+            source,
+            uids,
+            destination,
+            destination_definition,
+            remove_from_source,
+        )
+        .await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 
     /// Set the subscription state for a mailbox name.
@@ -381,11 +426,13 @@ impl ImapStorage for SqliteStorage {
         name: &str,
         subscribed: bool,
     ) -> Result<(), StorageError> {
-        let name = name.to_owned();
-        self.run(move |connection| {
-            subscriptions::set_subscription_blocking(connection, account, &name, subscribed)
-        })
-        .await
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        subscriptions::set_subscription(&mut transaction, account, name, subscribed).await?;
+        transaction.commit().await.storage()
     }
 
     /// List mailbox names the account has unsubscribed from.
@@ -393,8 +440,8 @@ impl ImapStorage for SqliteStorage {
         &self,
         account: ImapAccountIdentifier,
     ) -> Result<Vec<String>, StorageError> {
-        self.run(move |connection| subscriptions::list_unsubscribed_blocking(connection, account))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        subscriptions::list_unsubscribed(&mut connection, account).await
     }
 
     /// Clear recorded expunges for an account and force full mailbox reconciliation.
@@ -402,7 +449,13 @@ impl ImapStorage for SqliteStorage {
         &self,
         account: ImapAccountIdentifier,
     ) -> Result<u64, StorageError> {
-        self.run(move |connection| membership::clear_exclusions_blocking(connection, account))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        let result = membership::clear_exclusions(&mut transaction, account).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
     }
 }

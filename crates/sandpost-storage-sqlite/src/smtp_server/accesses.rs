@@ -1,14 +1,13 @@
 //! Hashed SMTP credentials, mechanism policy, and successful-use metadata.
+use crate::SqliteStorage;
 use crate::error::StorageResult;
 use crate::records::{invalid_column, parse_identifier};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sandpost_core::{SmtpAccess, SmtpAccessIdentifier, SmtpAuthenticationMechanism};
 use sandpost_storage::{NewSmtpAccess, SmtpAccessCredential, StorageError};
+use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 
-/// Public access columns in their fixed selection order; the hash is selected separately.
+/// Named public access columns; the hash is selected separately.
 const ACCESS_COLUMNS: &str = "identifier,name,username,enabled,created_at,last_used_at,requires_encryption,plain_mechanism_allowed,login_mechanism_allowed";
-/// Position of the password hash column after [`ACCESS_COLUMNS`].
-const PASSWORD_HASH_COLUMN: usize = 9;
 /// Seconds within which a repeated successful authentication does not rewrite `last_used_at`.
 const LAST_USE_RESOLUTION_SECONDS: i64 = 60;
 
@@ -20,18 +19,21 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// Decode the public access columns that start a row.
-fn decode_access(row: &rusqlite::Row<'_>) -> rusqlite::Result<SmtpAccess> {
-    let identifier: String = row.get(0)?;
+/// Decode the public access columns selected for an access row.
+fn decode_access(row: &SqliteRow) -> Result<SmtpAccess, sqlx::Error> {
+    let identifier: String = row.try_get("identifier")?;
     Ok(SmtpAccess {
-        identifier: parse_identifier(&identifier).map_err(|_| invalid_column(0, "identifier"))?,
-        name: row.get(1)?,
-        username: row.get(2)?,
-        enabled: row.get(3)?,
-        created_at: row.get(4)?,
-        last_used_at: row.get(5)?,
-        requires_encryption: row.get(6)?,
-        allowed_mechanisms: allowed_mechanisms(row.get(7)?, row.get(8)?),
+        identifier: parse_identifier(&identifier).map_err(|_| invalid_column("identifier"))?,
+        name: row.try_get("name")?,
+        username: row.try_get("username")?,
+        enabled: row.try_get("enabled")?,
+        created_at: row.try_get("created_at")?,
+        last_used_at: row.try_get("last_used_at")?,
+        requires_encryption: row.try_get("requires_encryption")?,
+        allowed_mechanisms: allowed_mechanisms(
+            row.try_get("plain_mechanism_allowed")?,
+            row.try_get("login_mechanism_allowed")?,
+        ),
     })
 }
 
@@ -61,179 +63,226 @@ pub(super) fn mechanism_flags(
     ))
 }
 
-/// Decode an access followed by its password hash column.
-fn decode_credential(row: &rusqlite::Row<'_>) -> rusqlite::Result<SmtpAccessCredential> {
+/// Decode an access and its selected password hash column.
+fn decode_credential(row: &SqliteRow) -> Result<SmtpAccessCredential, sqlx::Error> {
     Ok(SmtpAccessCredential {
         access: decode_access(row)?,
-        password_hash: row.get(PASSWORD_HASH_COLUMN)?,
+        password_hash: row.try_get("password_hash")?,
     })
 }
 
 /// List every access by name and identifier without password hashes.
-pub(super) fn list_accesses_blocking(
-    connection: &Connection,
+pub(super) async fn list_accesses(
+    storage: &SqliteStorage,
 ) -> Result<Vec<SmtpAccess>, StorageError> {
-    let mut statement = connection
-        .prepare(&format!(
-            "SELECT {ACCESS_COLUMNS} FROM smtp_accesses ORDER BY name, identifier"
-        ))
-        .storage()?;
-    statement
-        .query_map([], decode_access)
-        .storage()?
-        .collect::<Result<Vec<_>, _>>()
-        .storage()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACCESS_COLUMNS} FROM smtp_accesses ORDER BY name, identifier"
+    )))
+    .fetch_all(&storage.read_pool)
+    .await
+    .storage()?
+    .iter()
+    .map(decode_access)
+    .collect::<Result<Vec<_>, _>>()
+    .storage()
 }
 
 /// Load one access by identifier without its password hash.
-pub(super) fn get_access_blocking(
-    connection: &Connection,
+pub(super) async fn get_access(
+    storage: &SqliteStorage,
     identifier: SmtpAccessIdentifier,
 ) -> Result<Option<SmtpAccess>, StorageError> {
-    connection
-        .query_row(
-            &format!("SELECT {ACCESS_COLUMNS} FROM smtp_accesses WHERE identifier = ?1"),
-            [identifier.to_string()],
-            decode_access,
-        )
-        .optional()
-        .storage()
+    let mut connection = storage.read_pool.acquire().await.storage()?;
+    get_access_from_connection(&mut connection, identifier).await
+}
+
+/// Load one access row from an existing connection.
+async fn get_access_from_connection(
+    connection: &mut SqliteConnection,
+    identifier: SmtpAccessIdentifier,
+) -> Result<Option<SmtpAccess>, StorageError> {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACCESS_COLUMNS} FROM smtp_accesses WHERE identifier = ?1"
+    )))
+    .bind(identifier.to_string())
+    .fetch_optional(connection)
+    .await
+    .storage()?
+    .as_ref()
+    .map(decode_access)
+    .transpose()
+    .storage()
 }
 
 /// Load one access and its password hash by a column that identifies at most one row.
-pub(super) fn get_credential_blocking(
-    connection: &Connection,
+pub(super) async fn get_credential(
+    connection: &mut SqliteConnection,
     column: &str,
     value: &str,
 ) -> Result<Option<SmtpAccessCredential>, StorageError> {
-    connection
-        .query_row(
-            &format!(
-                "SELECT {ACCESS_COLUMNS},password_hash FROM smtp_accesses WHERE {column} = ?1"
-            ),
-            [value],
-            decode_credential,
-        )
-        .optional()
-        .storage()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACCESS_COLUMNS},password_hash FROM smtp_accesses WHERE {column} = ?1"
+    )))
+    .bind(value)
+    .fetch_optional(connection)
+    .await
+    .storage()?
+    .as_ref()
+    .map(decode_credential)
+    .transpose()
+    .storage()
 }
 
 /// Reserve the writer before checking username uniqueness across independent connections.
 /// An immediate transaction avoids upgrading a stale WAL read snapshot after another creator wins.
-pub(super) fn create_access_blocking(
-    connection: &mut Connection,
+pub(super) async fn create_access(
+    storage: &SqliteStorage,
     access: &NewSmtpAccess,
 ) -> Result<SmtpAccess, StorageError> {
     let (plain_allowed, login_allowed) = mechanism_flags(&access.allowed_mechanisms)?;
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+    let mut transaction = storage
+        .write_pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .storage()?;
-    let duplicate: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM smtp_accesses WHERE username = ?1)",
-            [&access.username],
-            |row| row.get(0),
-        )
-        .storage()?;
+    let duplicate: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM smtp_accesses WHERE username = ?1)")
+            .bind(&access.username)
+            .fetch_one(&mut *transaction)
+            .await
+            .storage()?;
     if duplicate {
         return Err(StorageError::DuplicateSmtpUsername);
     }
     let identifier = SmtpAccessIdentifier::new();
-    transaction
-        .execute(
-            "INSERT INTO smtp_accesses(identifier,name,username,password_hash,enabled,created_at,updated_at,requires_encryption,plain_mechanism_allowed,login_mechanism_allowed) VALUES (?1,?2,?3,?4,1,?5,?6,?7,?8,?9)",
-            params![
-                identifier.to_string(),
-                access.name,
-                access.username,
-                access.password_hash,
-                access.created_at,
-                now_unix(),
-                access.requires_encryption,
-                plain_allowed,
-                login_allowed,
-            ],
-        )
-        .storage()?;
-    let created = get_access_blocking(&transaction, identifier)?.ok_or(StorageError::NotFound)?;
-    transaction.commit().storage()?;
+    sqlx::query(
+        "INSERT INTO smtp_accesses(identifier,name,username,password_hash,enabled,created_at,updated_at,requires_encryption,plain_mechanism_allowed,login_mechanism_allowed) VALUES (?1,?2,?3,?4,1,?5,?6,?7,?8,?9)",
+    )
+    .bind(identifier.to_string())
+    .bind(&access.name)
+    .bind(&access.username)
+    .bind(&access.password_hash)
+    .bind(access.created_at)
+    .bind(now_unix())
+    .bind(access.requires_encryption)
+    .bind(plain_allowed)
+    .bind(login_allowed)
+    .execute(&mut *transaction)
+    .await
+    .storage()?;
+    let created = get_access_from_connection(&mut transaction, identifier)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    transaction.commit().await.storage()?;
     Ok(created)
 }
 
+/// Value written by one SMTP access update statement.
+pub(super) enum AccessUpdateValue<'a> {
+    Password(&'a str),
+    Enabled(bool),
+}
+
 /// Run one single-row update and return the access as stored afterwards.
-pub(super) fn update_access_blocking(
-    connection: &mut Connection,
+pub(super) async fn update_access(
+    storage: &SqliteStorage,
     identifier: SmtpAccessIdentifier,
-    statement: &str,
-    value: &dyn rusqlite::ToSql,
+    statement: &'static str,
+    value: AccessUpdateValue<'_>,
 ) -> Result<Option<SmtpAccess>, StorageError> {
-    let transaction = connection.transaction().storage()?;
-    let changed = transaction
-        .execute(
-            statement,
-            params![identifier.to_string(), value, now_unix()],
-        )
+    let mut transaction = storage
+        .write_pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .storage()?;
+    let changed = match value {
+        AccessUpdateValue::Password(value) => sqlx::query(statement)
+            .bind(identifier.to_string())
+            .bind(value)
+            .bind(now_unix())
+            .execute(&mut *transaction)
+            .await
+            .storage()?,
+        AccessUpdateValue::Enabled(value) => sqlx::query(statement)
+            .bind(identifier.to_string())
+            .bind(value)
+            .bind(now_unix())
+            .execute(&mut *transaction)
+            .await
+            .storage()?,
+    }
+    .rows_affected();
     if changed == 0 {
         return Ok(None);
     }
-    let updated = get_access_blocking(&transaction, identifier)?;
-    transaction.commit().storage()?;
+    let updated = get_access_from_connection(&mut transaction, identifier).await?;
+    transaction.commit().await.storage()?;
     Ok(updated)
 }
 
 /// Replace the security rules and read the updated access in the same transaction.
-pub(super) fn set_authentication_rules_blocking(
-    connection: &mut Connection,
+pub(super) async fn set_authentication_rules(
+    storage: &SqliteStorage,
     identifier: SmtpAccessIdentifier,
     requires_encryption: bool,
     plain_allowed: bool,
     login_allowed: bool,
 ) -> Result<Option<SmtpAccess>, StorageError> {
-    let transaction = connection.transaction().storage()?;
-    let changed = transaction
-    .execute(
+    let mut transaction = storage
+        .write_pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .storage()?;
+    let changed = sqlx::query(
         "UPDATE smtp_accesses SET requires_encryption = ?2, plain_mechanism_allowed = ?3, login_mechanism_allowed = ?4, updated_at = ?5 WHERE identifier = ?1",
-        params![
-            identifier.to_string(),
-            requires_encryption,
-            plain_allowed,
-            login_allowed,
-            now_unix()
-        ],
     )
-    .storage()?;
+    .bind(identifier.to_string())
+    .bind(requires_encryption)
+    .bind(plain_allowed)
+    .bind(login_allowed)
+    .bind(now_unix())
+    .execute(&mut *transaction)
+    .await
+    .storage()?
+    .rows_affected();
     if changed == 0 {
         return Ok(None);
     }
-    let updated = get_access_blocking(&transaction, identifier)?;
-    transaction.commit().storage()?;
+    let updated = get_access_from_connection(&mut transaction, identifier).await?;
+    transaction.commit().await.storage()?;
     Ok(updated)
 }
 
 /// Delete a credential without affecting captured mail.
-pub(super) fn delete_access_blocking(
-    connection: &Connection,
+pub(super) async fn delete_access(
+    storage: &SqliteStorage,
     identifier: SmtpAccessIdentifier,
 ) -> Result<bool, StorageError> {
-    Ok(connection
-        .execute(
-            "DELETE FROM smtp_accesses WHERE identifier = ?1",
-            [identifier.to_string()],
-        )
-        .storage()?
-        > 0)
+    Ok(
+        sqlx::query("DELETE FROM smtp_accesses WHERE identifier = ?1")
+            .bind(identifier.to_string())
+            .execute(&storage.write_pool)
+            .await
+            .storage()?
+            .rows_affected()
+            > 0,
+    )
 }
 
 /// Advance the last successful use with at most one write per minute.
-pub(super) fn record_access_use_blocking(
-    connection: &Connection,
+pub(super) async fn record_access_use(
+    storage: &SqliteStorage,
     identifier: SmtpAccessIdentifier,
     used_at: i64,
 ) -> Result<(), StorageError> {
-    connection.execute(
+    sqlx::query(
         "UPDATE smtp_accesses SET last_used_at = ?2 WHERE identifier = ?1 AND (last_used_at IS NULL OR last_used_at <= ?2 - ?3)",
-        params![identifier.to_string(), used_at, LAST_USE_RESOLUTION_SECONDS],
-    ).storage()?;
+    )
+    .bind(identifier.to_string())
+    .bind(used_at)
+    .bind(LAST_USE_RESOLUTION_SECONDS)
+    .execute(&storage.write_pool)
+    .await
+    .storage()?;
     Ok(())
 }

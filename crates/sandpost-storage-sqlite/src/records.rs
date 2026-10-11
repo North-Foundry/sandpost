@@ -10,7 +10,13 @@ pub(crate) fn parse_identifier<IdentifierType: std::str::FromStr>(
         .map_err(|_| StorageError::InvalidData(value.to_owned()))
 }
 
-/// Build a rusqlite decode failure for an invalid stored column value.
-pub(crate) fn invalid_column(index: usize, name: &str) -> rusqlite::Error {
-    rusqlite::Error::InvalidColumnType(index, name.to_owned(), rusqlite::types::Type::Text)
+/// Build a driver decode failure for an invalid stored column without exposing its value.
+pub(crate) fn invalid_column(name: &str) -> sqlx::Error {
+    sqlx::Error::ColumnDecode {
+        index: name.to_owned(),
+        source: Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid {name}"),
+        )),
+    }
 }

@@ -1,4 +1,4 @@
--- Schema version 5: user-owned IMAP accounts. Each account belongs to one Sandpost user and never
+-- User-owned IMAP accounts. Each account belongs to one Sandpost user and never
 -- reads beyond that user's mail visibility. Only an Argon2id PHC hash of the password is stored.
 -- `flag_modification` is the account's flag-change counter, used as the IMAP synchronization
 -- cursor for flags shared by all of its mailboxes.

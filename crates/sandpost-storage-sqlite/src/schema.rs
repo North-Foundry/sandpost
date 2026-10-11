@@ -1,33 +1,23 @@
 //! Validation of the SQLite physical schema against the checked-in migration scripts.
-use crate::{
-    StorageError,
-    error::StorageResult,
-    migrations::{ENDPOINT_LISTENER_VARIANT, SchemaLayout, batches_through},
-};
-use rusqlite::Connection;
+use crate::{StorageError, error::StorageResult, migrations::batches_through};
+use sqlx::{ConnectOptions, Row, SqliteConnection, sqlite::SqliteConnectOptions};
 
 type SchemaObject = (String, String, String, String);
 
 /// Read all user-defined objects, preserving constraints and index definitions in their SQL.
-fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>, StorageError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name",
-        )
-        .storage()?;
-    let objects = statement
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                normalized_definition(&row.get::<_, String>(3)?),
-            ))
+async fn schema_objects(
+    connection: &mut SqliteConnection,
+) -> Result<Vec<SchemaObject>, StorageError> {
+    let objects = sqlx::query(
+        "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name",
+    ).try_map(|row: sqlx::sqlite::SqliteRow| Ok((row.try_get::<String, _>("type")?, row.try_get::<String, _>("name")?, row.try_get::<String, _>("tbl_name")?, row.try_get::<String, _>("sql")?)))
+    .fetch_all(connection).await.storage()?;
+    Ok(objects
+        .into_iter()
+        .map(|(kind, name, table, definition)| {
+            (kind, name, table, normalized_definition(&definition))
         })
-        .storage()?
-        .collect::<Result<Vec<_>, _>>()
-        .storage()?;
-    Ok(objects)
+        .collect())
 }
 
 /// Compare SQL tokens without discarding word boundaries or changing quoted values.
@@ -68,37 +58,38 @@ fn normalized_definition(definition: &str) -> String {
     tokens.join(" ")
 }
 
-/// Construct the immutable expected schema of one version and layout from the checked-in scripts.
-///
-/// The listener layout substitutes the variant endpoints script for the canonical one.
-fn expected_schema(version: i64, layout: SchemaLayout) -> Result<Connection, StorageError> {
-    let connection = Connection::open_in_memory().storage()?;
+/// Construct the immutable expected schema of one version from the checked-in scripts.
+async fn expected_schema(version: i64) -> Result<SqliteConnection, StorageError> {
+    let mut connection = SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true)
+        .connect()
+        .await
+        .storage()?;
     for (_, scripts) in batches_through(version) {
-        for (name, script) in scripts.iter() {
-            let script = if layout == SchemaLayout::EndpointListeners
-                && *name == ENDPOINT_LISTENER_VARIANT.0
-            {
-                ENDPOINT_LISTENER_VARIANT.1
-            } else {
-                script
-            };
-            connection.execute_batch(script).storage()?;
+        for (_, script) in scripts.iter() {
+            // Use the Send executor future for multi-statement scripts during startup.
+            sqlx::Executor::execute(&mut connection, sqlx::raw_sql(*script))
+                .await
+                .storage()?;
         }
     }
     Ok(connection)
 }
 
 /// Detect a fresh database without accepting unrelated application objects.
-pub(crate) fn schema_is_empty(connection: &Connection) -> Result<bool, StorageError> {
-    Ok(schema_objects(connection)?.is_empty())
+pub(crate) async fn schema_is_empty(
+    connection: &mut SqliteConnection,
+) -> Result<bool, StorageError> {
+    Ok(schema_objects(connection).await?.is_empty())
 }
 
 /// Report whether every table, constraint, index, view, and trigger matches the schema of
-/// `version` in the given layout.
-pub(crate) fn matches_schema(
-    connection: &Connection,
+/// `version`.
+pub(crate) async fn matches_schema(
+    connection: &mut SqliteConnection,
     version: i64,
-    layout: SchemaLayout,
 ) -> Result<bool, StorageError> {
-    Ok(schema_objects(connection)? == schema_objects(&expected_schema(version, layout)?)?)
+    let mut expected = expected_schema(version).await?;
+    Ok(schema_objects(connection).await? == schema_objects(&mut expected).await?)
 }

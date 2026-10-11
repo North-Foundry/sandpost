@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/North-Foundry/sandpost"
 
@@ -30,7 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
 tokio-stream = { version = "0.1", features = ["sync"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+sqlx = { version = "0.9", default-features = false, features = ["sqlite-bundled", "runtime-tokio"] }
 async-trait = "0.1"
 mail-parser = "0.11"
 sha2 = "0.11"

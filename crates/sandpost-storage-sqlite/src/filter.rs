@@ -7,7 +7,27 @@
 //! The generated fragments preserve the query language's two-valued ANY-collection semantics:
 //! every predicate is coerced with COALESCE so a missing value behaves like a false predicate
 //! rather than SQL NULL.
-use rusqlite::types::Value as SqlValue;
+use sqlx::{Sqlite, query::Query, sqlite::SqliteArguments};
+
+/// SQLite filter literals, kept separate from the backend-independent query AST.
+pub(crate) enum SqlValue {
+    Text(String),
+    Integer(i64),
+}
+
+/// Bind compiled literals in placeholder order without interpolating user values into SQL.
+pub(crate) fn bind_query<'query>(
+    mut query: Query<'query, Sqlite, SqliteArguments>,
+    parameters: &'query [SqlValue],
+) -> Query<'query, Sqlite, SqliteArguments> {
+    for parameter in parameters {
+        query = match parameter {
+            SqlValue::Text(value) => query.bind(value),
+            SqlValue::Integer(value) => query.bind(*value),
+        };
+    }
+    query
+}
 use sandpost_query::{Expression, Field, Operator, Predicate, Value};
 
 /// A compiled SQL fragment with positional placeholders and their bound values.
@@ -208,6 +228,9 @@ impl Compiler {
 
     /// Compile a numeric comparison, including negative literals for unsigned facts.
     fn numeric_predicate(&mut self, field: &Field, operator: Operator, number: i64) -> String {
+        let Some(comparison_operator) = sql_operator(operator) else {
+            return "0".to_owned();
+        };
         let value_sql = match field {
             Field::ReceivedAt => "mail.received_at",
             Field::Size => "mail.size",
@@ -221,8 +244,9 @@ impl Compiler {
             };
         }
         let placeholder = self.bind_integer(number);
-        let operator = sql_operator(operator);
-        self.coalesce(&format!("({value_sql}) {operator} {placeholder}"))
+        self.coalesce(&format!(
+            "({value_sql}) {comparison_operator} {placeholder}"
+        ))
     }
 
     /// Compile attachment-presence comparisons with canonical boolean semantics.
@@ -230,8 +254,10 @@ impl Compiler {
         if !matches!(field, Field::HasAttachments) {
             return "0".to_owned();
         }
+        let Some(operator) = sql_operator(operator) else {
+            return "0".to_owned();
+        };
         let placeholder = self.bind_integer(i64::from(flag));
-        let operator = sql_operator(operator);
         self.coalesce(&format!(
             "({}) {operator} {placeholder}",
             attachment_presence_sql()
@@ -251,17 +277,17 @@ impl Compiler {
     }
 }
 
-/// Return the SQL operator for a validated canonical comparison.
-fn sql_operator(operator: Operator) -> &'static str {
-    match operator {
+/// Return a SQL comparison operator, excluding operations that only apply to strings.
+fn sql_operator(operator: Operator) -> Option<&'static str> {
+    Some(match operator {
         Operator::Equal => "=",
         Operator::NotEqual => "<>",
         Operator::GreaterThan => ">",
         Operator::GreaterThanOrEqual => ">=",
         Operator::LessThan => "<",
         Operator::LessThanOrEqual => "<=",
-        _ => unreachable!("only comparison operators reach sql_operator"),
-    }
+        _ => return None,
+    })
 }
 
 /// Identify content and mailbox facts whose comparisons fold ASCII case.

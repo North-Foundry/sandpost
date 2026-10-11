@@ -1,30 +1,33 @@
 //! Durable search-outbox synchronization state on SQLite.
 //!
-//! Other backends must provide equivalent observable semantics: a committed message mutation and
-//! its search-outbox operation are atomic, operations are replayable, and acknowledgement prunes
-//! an inclusive prefix. SQLite satisfies that with transactional triggers.
+//! Other backends provide equivalent semantics: a committed message mutation and its outbox
+//! operation are atomic, operations are replayable, and acknowledgement prunes an inclusive prefix.
 use crate::SqliteStorage;
 use crate::error::StorageResult;
 use crate::records::parse_identifier;
 use async_trait::async_trait;
-use rusqlite::{Connection, params};
 use sandpost_storage::{
     SearchOperation, SearchSynchronization, SearchSynchronizationStorage, StorageError,
 };
+use sqlx::{Row, SqliteConnection};
 
+/// Maximum number of pending search operations returned in one batch.
 const MAXIMUM_SEARCH_OPERATION_BATCH_SIZE: usize = 64;
 
 /// Decode durable synchronization state within the caller's connection or read snapshot.
-fn read_search_status(connection: &Connection) -> Result<SearchSynchronization, StorageError> {
-    let (latest, indexed): (i64, i64) = connection
-        .query_row(
-            "SELECT latest_sequence,indexed_sequence FROM search_outbox_state WHERE singleton=1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .storage()?;
-    let latest_sequence = u64::try_from(latest).map_err(|_| StorageError::IntegerRange)?;
-    let indexed_sequence = u64::try_from(indexed).map_err(|_| StorageError::IntegerRange)?;
+async fn read_search_status(
+    connection: &mut SqliteConnection,
+) -> Result<SearchSynchronization, StorageError> {
+    let row = sqlx::query(
+        "SELECT latest_sequence, indexed_sequence FROM search_outbox_state WHERE singleton=1",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .storage()?;
+    let latest_sequence = u64::try_from(row.try_get::<i64, _>("latest_sequence").storage()?)
+        .map_err(|_| StorageError::IntegerRange)?;
+    let indexed_sequence = u64::try_from(row.try_get::<i64, _>("indexed_sequence").storage()?)
+        .map_err(|_| StorageError::IntegerRange)?;
     Ok(SearchSynchronization {
         latest_sequence,
         indexed_sequence,
@@ -35,68 +38,66 @@ fn read_search_status(connection: &Connection) -> Result<SearchSynchronization, 
     })
 }
 
-/// Decode at most 64 pending operations after an exclusive cursor in the caller's snapshot.
-fn read_search_operations(
-    connection: &Connection,
+/// Decode at most 64 pending operations after an exclusive cursor.
+async fn read_search_operations(
+    connection: &mut SqliteConnection,
     after: u64,
     limit: usize,
 ) -> Result<Vec<SearchOperation>, StorageError> {
     let after = i64::try_from(after).map_err(|_| StorageError::IntegerRange)?;
     let limit = i64::try_from(limit.min(MAXIMUM_SEARCH_OPERATION_BATCH_SIZE))
         .map_err(|_| StorageError::IntegerRange)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT sequence,message_identifier FROM search_outbox WHERE sequence>?1 ORDER BY sequence LIMIT ?2",
-        )
-        .storage()?;
-    statement
-        .query_map(params![after, limit], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .storage()?
+    let rows = sqlx::query(
+        "SELECT sequence, message_identifier FROM search_outbox WHERE sequence>? ORDER BY sequence LIMIT ?",
+    )
+    .bind(after)
+    .bind(limit)
+    .fetch_all(&mut *connection)
+    .await
+    .storage()?;
+    rows.into_iter()
         .map(|row| {
-            let (sequence, identifier) = row.storage()?;
             Ok(SearchOperation {
-                sequence: u64::try_from(sequence).map_err(|_| StorageError::IntegerRange)?,
-                message_identifier: parse_identifier(&identifier)?,
+                sequence: u64::try_from(row.try_get::<i64, _>("sequence").storage()?)
+                    .map_err(|_| StorageError::IntegerRange)?,
+                message_identifier: parse_identifier(
+                    &row.try_get::<String, _>("message_identifier").storage()?,
+                )?,
             })
         })
         .collect()
 }
 
-/// Read synchronization state and a bounded pending batch from one SQL snapshot.
-fn search_batch_blocking(
-    connection: &mut Connection,
+/// Read state and a bounded pending batch from one consistent SQL snapshot.
+async fn search_batch(
+    connection: &mut SqliteConnection,
     after: u64,
     limit: usize,
 ) -> Result<(SearchSynchronization, Vec<SearchOperation>), StorageError> {
-    let transaction = connection.transaction().storage()?;
-    let status = read_search_status(&transaction)?;
-    let operations = read_search_operations(&transaction, after, limit)?;
-    transaction.commit().storage()?;
+    let status = read_search_status(connection).await?;
+    let operations = read_search_operations(connection, after, limit).await?;
     Ok((status, operations))
 }
 
-/// Acknowledge all queued operations through an inclusive sequence in one transaction.
-fn acknowledge_search_operations_blocking(
-    connection: &mut Connection,
+/// Advance the acknowledged watermark and prune its inclusive prefix in one transaction.
+async fn acknowledge_search_operations(
+    connection: &mut SqliteConnection,
     through: u64,
 ) -> Result<(), StorageError> {
     let through = i64::try_from(through).map_err(|_| StorageError::IntegerRange)?;
-    let transaction = connection.transaction().storage()?;
-    transaction
-        .execute(
-            "UPDATE search_outbox_state SET indexed_sequence=MAX(indexed_sequence,MIN(latest_sequence,?1)) WHERE singleton=1",
-            [through],
-        )
-        .storage()?;
-    transaction
-        .execute(
-            "DELETE FROM search_outbox WHERE sequence<=(SELECT indexed_sequence FROM search_outbox_state WHERE singleton=1)",
-            [],
-        )
-        .storage()?;
-    transaction.commit().storage()?;
+    sqlx::query(
+        "UPDATE search_outbox_state SET indexed_sequence=MAX(indexed_sequence,MIN(latest_sequence,?)) WHERE singleton=1",
+    )
+    .bind(through)
+    .execute(&mut *connection)
+    .await
+    .storage()?;
+    sqlx::query(
+        "DELETE FROM search_outbox WHERE sequence<=(SELECT indexed_sequence FROM search_outbox_state WHERE singleton=1)",
+    )
+    .execute(&mut *connection)
+    .await
+    .storage()?;
     Ok(())
 }
 
@@ -104,7 +105,8 @@ fn acknowledge_search_operations_blocking(
 impl SearchSynchronizationStorage for SqliteStorage {
     /// Read the durable latest and acknowledged revision watermarks.
     async fn search_status(&self) -> Result<SearchSynchronization, StorageError> {
-        self.run(|connection| read_search_status(connection)).await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        read_search_status(&mut connection).await
     }
 
     /// Read synchronization state and pending operations from one SQL snapshot.
@@ -113,8 +115,10 @@ impl SearchSynchronizationStorage for SqliteStorage {
         after: u64,
         limit: usize,
     ) -> Result<(SearchSynchronization, Vec<SearchOperation>), StorageError> {
-        self.run(move |connection| search_batch_blocking(connection, after, limit))
-            .await
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let batch = search_batch(&mut transaction, after, limit).await?;
+        transaction.commit().await.storage()?;
+        Ok(batch)
     }
 
     /// Read a bounded ordered batch after an exclusive synchronization cursor.
@@ -123,13 +127,19 @@ impl SearchSynchronizationStorage for SqliteStorage {
         after: u64,
         limit: usize,
     ) -> Result<Vec<SearchOperation>, StorageError> {
-        self.run(move |connection| read_search_operations(connection, after, limit))
-            .await
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        read_search_operations(&mut connection, after, limit).await
     }
 
     /// Advance the acknowledged watermark and prune its inclusive prefix atomically.
     async fn acknowledge_search_operations(&self, through: u64) -> Result<(), StorageError> {
-        self.run(move |connection| acknowledge_search_operations_blocking(connection, through))
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
+            .storage()?;
+        acknowledge_search_operations(&mut transaction, through).await?;
+        transaction.commit().await.storage()?;
+        Ok(())
     }
 }
