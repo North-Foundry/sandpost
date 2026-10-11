@@ -1,20 +1,23 @@
 [package]
-name = "sandpost-web"
+name = "sandpost-web-api"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+sandpost-application = { path = "../sandpost-application" }
 sandpost-core.workspace = true
-sandpost-storage.workspace = true
 axum.workspace = true
 serde.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+tower-http.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+sandpost-storage.workspace = true
+sandpost-storage-sqlite.workspace = true
 tower.workspace = true
 http-body-util.workspace = true
 serde_json.workspace = true
