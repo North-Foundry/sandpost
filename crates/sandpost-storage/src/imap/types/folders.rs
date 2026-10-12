@@ -20,3 +20,10 @@ pub struct ImapLocalFolderSettings {
     pub filter: String,
     pub include_in_inbox: bool,
 }
+
+/// Settings for a Web-managed folder's name and account exposure list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebFolderSettings {
+    pub name: String,
+    pub exposed_accounts: Vec<ImapAccountIdentifier>,
+}

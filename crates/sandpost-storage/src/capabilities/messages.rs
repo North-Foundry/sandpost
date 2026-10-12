@@ -1,7 +1,7 @@
 //! Messages storage capability.
 use crate::{
-    Attachment, IndexedMessage, Message, MessageFacts, MessageIdentifier, MessageListQuery,
-    MessageSequence, MessageSummary, StorageError,
+    Attachment, FilterExpression, IndexedMessage, Message, MessageFacts, MessageIdentifier,
+    MessageListQuery, MessageSequence, MessageSummary, StorageError, UserIdentifier,
 };
 use async_trait::async_trait;
 
@@ -23,16 +23,40 @@ pub trait MessageStorage: Send + Sync {
         identifier: MessageIdentifier,
     ) -> Result<Option<(MessageFacts, Vec<Attachment>)>, StorageError>;
 
+    /// Load a message and its original bytes unless this user has deleted it.
+    /// This checks deletion state only; callers must authorize the message separately.
+    async fn get_user_message(
+        &self,
+        user: UserIdentifier,
+        identifier: MessageIdentifier,
+    ) -> Result<Option<Message>, StorageError>;
+
+    /// Load normalized facts and attachments unless this user has deleted the message.
+    /// This checks deletion state only; callers must authorize the message separately.
+    async fn get_user_message_metadata(
+        &self,
+        user: UserIdentifier,
+        identifier: MessageIdentifier,
+    ) -> Result<Option<(MessageFacts, Vec<Attachment>)>, StorageError>;
+
     /// List message summaries newest first using filter and keyset bounds.
     async fn list_messages(
         &self,
         query: MessageListQuery,
     ) -> Result<Vec<MessageSummary>, StorageError>;
 
-    /// Delete a message and its cascading child facts in one transaction.
+    /// List summaries matching the query and excluding this user's deleted messages.
+    /// The query filter must contain the caller's fully composed authorization filter.
+    async fn list_user_messages(
+        &self,
+        user: UserIdentifier,
+        query: MessageListQuery,
+    ) -> Result<Vec<MessageSummary>, StorageError>;
+
+    /// Physically delete a message and its cascading child facts for privileged maintenance.
     async fn delete_message(&self, identifier: MessageIdentifier) -> Result<bool, StorageError>;
 
-    /// Delete only the exact authorized revision, returning false for stale or missing mail.
+    /// Physically delete the exact revision for privileged maintenance.
     async fn delete_message_at_revision(
         &self,
         identifier: MessageIdentifier,
@@ -54,6 +78,24 @@ pub trait MessageStorage: Send + Sync {
         &self,
         requested: &[(MessageIdentifier, u64)],
     ) -> Result<Vec<MessageSummary>, StorageError>;
+
+    /// Hydrate current revisions that satisfy the fully composed authorization filter and deletion state.
+    async fn hydrate_current_user_messages(
+        &self,
+        user: UserIdentifier,
+        requested: &[(MessageIdentifier, u64)],
+        filter: &FilterExpression,
+    ) -> Result<Vec<MessageSummary>, StorageError>;
+
+    /// Tombstone matching messages for one user without physically deleting shared mail.
+    /// The filter must contain the caller's fully composed authorization filter; an explicit
+    /// identifier batch is limited to 256 entries, and the return value counts new tombstones.
+    async fn delete_user_messages(
+        &self,
+        user: UserIdentifier,
+        identifiers: Option<&[MessageIdentifier]>,
+        filter: &FilterExpression,
+    ) -> Result<u64, StorageError>;
 
     /// Read normalized index records and revisions after an exclusive sequence, bounded by limit.
     async fn index_messages(

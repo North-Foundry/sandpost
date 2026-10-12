@@ -249,6 +249,90 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
         updated.name == "Password Resets" && !updated.include_in_inbox,
         format!("folder settings were not replaced: {updated:?}"),
     )?;
+    let sibling = unwrap_storage(
+        CHECK,
+        "create sibling account",
+        storage
+            .create_imap_account(&NewImapAccount {
+                owner_identifier: account.owner_identifier,
+                name: "Sibling".to_owned(),
+                username: format!("imap-{}-{}", std::process::id(), unique_token()),
+                password_hash: "hash".to_owned(),
+                mirror_views: false,
+                created_at: 2,
+            })
+            .await,
+    )?;
+    let sibling_folder = unwrap_storage(
+        CHECK,
+        "shared folder projection",
+        storage.list_imap_local_folders(sibling.identifier).await,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| failure(CHECK, "new account did not discover owner folders"))?;
+    verify(
+        CHECK,
+        sibling_folder.name == updated.name && sibling_folder.filter == updated.filter,
+        format!("new account projection differs from owner definition: {sibling_folder:?}"),
+    )?;
+    let renamed = unwrap_storage(
+        CHECK,
+        "update shared folder through sibling account",
+        storage
+            .update_imap_local_folder(
+                sibling_folder.identifier,
+                &ImapLocalFolderSettings {
+                    name: "Owner-wide Folder".to_owned(),
+                    filter: "subject contains \"owner-wide\"".to_owned(),
+                    include_in_inbox: true,
+                },
+            )
+            .await,
+    )?
+    .ok_or_else(|| failure(CHECK, "shared folder update returned nothing"))?;
+    let first_projection = unwrap_storage(
+        CHECK,
+        "read canonical folder from first account",
+        storage.list_imap_local_folders(account.identifier).await,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| failure(CHECK, "first account lost its folder projection"))?;
+    verify(
+        CHECK,
+        first_projection.name == renamed.name && first_projection.filter == renamed.filter,
+        "updates through one account synchronize every projection",
+    )?;
+    unwrap_storage(
+        CHECK,
+        "delete sibling account",
+        storage.delete_imap_account(sibling.identifier).await,
+    )?;
+    let replacement = unwrap_storage(
+        CHECK,
+        "create replacement account",
+        storage
+            .create_imap_account(&NewImapAccount {
+                owner_identifier: account.owner_identifier,
+                name: "Replacement".to_owned(),
+                username: format!("imap-{}-{}", std::process::id(), unique_token()),
+                password_hash: "hash".to_owned(),
+                mirror_views: false,
+                created_at: 3,
+            })
+            .await,
+    )?;
+    let replacement_folder = unwrap_storage(
+        CHECK,
+        "discover retained owner folder",
+        storage
+            .list_imap_local_folders(replacement.identifier)
+            .await,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| failure(CHECK, "credential deletion removed the owner definition"))?;
     verify_equal(
         CHECK,
         "listed folders",
@@ -257,14 +341,16 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
             "list_imap_local_folders",
             storage.list_imap_local_folders(account.identifier).await,
         )?,
-        vec![updated],
+        vec![first_projection],
     )?;
     verify(
         CHECK,
         unwrap_storage(
             CHECK,
             "delete_imap_local_folder",
-            storage.delete_imap_local_folder(folder.identifier).await,
+            storage
+                .delete_imap_local_folder(replacement_folder.identifier)
+                .await,
         )?,
         "deleting a folder reports success",
     )?;

@@ -10,6 +10,6 @@ mod members;
 pub use account::{ImapAccountCredential, ImapAccountSettings, NewImapAccount};
 pub use copy::ImapCopyResult;
 pub use flags::{ImapFlagChange, ImapFlagChanges, ImapFlagOperation};
-pub use folders::{ImapLocalFolderSettings, NewImapLocalFolder};
+pub use folders::{ImapLocalFolderSettings, NewImapLocalFolder, WebFolderSettings};
 pub use mailbox::{ImapMailboxState, ImapMembershipDefinition};
 pub use members::{ImapMailboxCounts, ImapMember, ImapMemberContent, ImapMemberMetadata};

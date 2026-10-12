@@ -1,4 +1,3 @@
-
 mod capabilities;
 mod error;
 mod imap;
@@ -13,7 +12,7 @@ pub use imap::{
     ImapAccountCredential, ImapAccountSettings, ImapCopyResult, ImapFlagChange, ImapFlagChanges,
     ImapFlagOperation, ImapLocalFolderSettings, ImapMailboxCounts, ImapMailboxState, ImapMember,
     ImapMemberContent, ImapMemberMetadata, ImapMembershipDefinition, ImapStorage, NewImapAccount,
-    NewImapLocalFolder,
+    NewImapLocalFolder, WebFolderSettings,
 };
 pub use types::{
     FilterExpression, IndexedMessage, MessageListQuery, MessageSummary, NewSmtpAccess, NewUser,
@@ -22,8 +21,9 @@ pub use types::{
 
 pub use sandpost_core::{
     Attachment, GlobalRole, ImapAccount, ImapAccountIdentifier, ImapFolderIdentifier,
-    ImapLinkedView, ImapLocalFolder, ImapMailboxIdentifier, ImapMailboxSource, ImapMessageFlags,
-    InboxIdentifier, MailAccess, Mailbox, Message, MessageFacts, MessageIdentifier,
-    MessageSequence, Scope, ScopeIdentifier, ScopeMembership, ScopeTree, SmtpAccess,
-    SmtpAccessIdentifier, SmtpAuthenticationMechanism, User, UserIdentifier, View, ViewIdentifier,
+    ImapFolderKind, ImapLinkedView, ImapLocalFolder, ImapMailboxIdentifier, ImapMailboxSource,
+    ImapMessageFlags, InboxIdentifier, MailAccess, Mailbox, Message, MessageFacts,
+    MessageIdentifier, MessageSequence, Scope, ScopeIdentifier, ScopeMembership, ScopeTree,
+    SmtpAccess, SmtpAccessIdentifier, SmtpAuthenticationMechanism, User, UserIdentifier, View,
+    ViewIdentifier, WebFolder,
 };

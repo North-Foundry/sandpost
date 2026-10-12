@@ -5,9 +5,12 @@ mod accounts;
 mod flags;
 #[path = "imap/mailboxes.rs"]
 mod mailboxes;
+#[path = "imap/manual.rs"]
+mod manual;
 #[path = "imap/support.rs"]
 mod support;
 
 pub use accounts::{imap_account_configuration, imap_account_credentials};
 pub use flags::imap_flags_and_expunge;
 pub use mailboxes::{imap_mailbox_identities, imap_membership_synchronization};
+pub use manual::web_manual_folders_and_placements;

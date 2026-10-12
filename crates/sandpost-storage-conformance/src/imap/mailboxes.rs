@@ -209,7 +209,7 @@ pub async fn imap_membership_synchronization(
         CHECK,
         "copy_imap_members",
         storage
-            .copy_imap_members(inbox, &[1, 4], trash, None, false)
+            .copy_imap_members(inbox, &[1, 4], trash, Some(&alpha_or_beta), false)
             .await,
     )?;
     verify(

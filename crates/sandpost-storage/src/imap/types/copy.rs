@@ -6,7 +6,7 @@ pub struct ImapCopyResult {
     pub uid_validity: u32,
     /// Copied source UIDs, positionally matching `destination_uids`.
     pub source_uids: Vec<u32>,
-    /// Destination UIDs: newly assigned, or the existing UID of a message already present.
+    /// Fresh destination UIDs, positionally matching the copied source UIDs.
     pub destination_uids: Vec<u32>,
     /// Whether every destination UID was newly assigned by this copy.
     pub all_new: bool,

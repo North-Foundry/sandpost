@@ -1,6 +1,7 @@
 //! Shared fixtures for IMAP storage contract checks.
 use sandpost_core::{
-    GlobalRole, ImapAccount, ImapMailboxIdentifier, ImapMailboxSource, MessageSequence,
+    GlobalRole, ImapAccount, ImapMailboxIdentifier, ImapMailboxSource, MessageIdentifier,
+    MessageSequence,
 };
 use sandpost_storage::{ImapMembershipDefinition, NewImapAccount, Storage};
 
@@ -56,6 +57,25 @@ pub(super) async fn insert_message_for_imap_check(
         "insert_message",
         storage.insert_message(&message).await,
     )
+}
+
+/// Insert a message and return its public identifier for placement checks.
+pub(super) async fn insert_message_identifier_for_imap_check(
+    storage: &dyn Storage,
+    check: &'static str,
+    subject: &str,
+) -> Result<MessageIdentifier, ConformanceFailure> {
+    let mut message = simple_message(subject);
+    message.raw_message = format!("Subject: {subject}\r\n\r\nbody\r\n").into_bytes();
+    message.facts.size = message.raw_message.len() as u64;
+    message.facts.received_at = 1_700_000_100;
+    let identifier = message.identifier;
+    unwrap_storage(
+        check,
+        "insert_message",
+        storage.insert_message(&message).await,
+    )?;
+    Ok(identifier)
 }
 
 /// Reconcile and return the identifier of one source's mailbox.

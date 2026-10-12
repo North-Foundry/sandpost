@@ -1,7 +1,7 @@
 //! IMAP flags, recent state, copies, expunges, and exclusions checks.
 use sandpost_core::{ImapMailboxSource, ImapMessageFlags};
 use sandpost_storage::{
-    ImapFlagChange, ImapFlagOperation, NewImapLocalFolder, Storage, StorageError,
+    ImapFlagChange, ImapFlagOperation, NewImapAccount, NewImapLocalFolder, Storage, StorageError,
 };
 
 use super::support::{
@@ -11,12 +11,40 @@ use super::support::{
 use crate::ConformanceFailure;
 use crate::support::{failure, unique_token, unwrap_storage, verify, verify_equal};
 
-/// Verify flags are shared across an account's mailboxes except \Deleted, flag change cursors,
-/// recent claims, counts, expunge exclusions and their reset, moves, and refused copies.
+/// Verify account flags, tombstones, recent claims, persistent moves, and refused smart-folder copies.
 pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "imap_flags_and_expunge";
     let token = format!("flags-{}-{}", std::process::id(), unique_token());
     let account = create_imap_account_fixture(storage, CHECK).await?;
+    let owner = unwrap_storage(
+        CHECK,
+        "load IMAP account",
+        storage.get_imap_account(account.identifier).await,
+    )?
+    .ok_or_else(|| failure(CHECK, "IMAP account missing"))?
+    .owner_identifier;
+    let second_account = unwrap_storage(
+        CHECK,
+        "create second account for owner",
+        storage
+            .create_imap_account(&NewImapAccount {
+                owner_identifier: owner,
+                name: "Second conformance IMAP".to_owned(),
+                username: format!("imap-{}-{}", std::process::id(), unique_token()),
+                password_hash: "hash-two".to_owned(),
+                mirror_views: true,
+                created_at: 1_700_000_000,
+            })
+            .await,
+    )?;
+    let second_inbox = reconcile_imap_mailbox(
+        storage,
+        CHECK,
+        &second_account,
+        &[ImapMailboxSource::Inbox],
+        ImapMailboxSource::Inbox,
+    )
+    .await?;
     let folder = unwrap_storage(
         CHECK,
         "create_imap_local_folder",
@@ -90,13 +118,23 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
     insert_message_for_imap_check(storage, CHECK, &format!("{token} two")).await?;
     let everything = membership_definition(&format!("subject contains \"{token}\""));
     let only_one = membership_definition(&format!("subject contains \"{token} one\""));
-    for (mailbox, membership) in [(inbox, &everything), (local, &only_one)] {
+    for (mailbox, membership) in [
+        (inbox, &everything),
+        (local, &only_one),
+        (second_inbox, &everything),
+    ] {
         unwrap_storage(
             CHECK,
             "synchronize",
             storage.synchronize_imap_mailbox(mailbox, membership).await,
         )?;
     }
+    verify_equal(
+        CHECK,
+        "second account starts with both messages",
+        mailbox_member_uids(storage, CHECK, second_inbox).await?,
+        vec![1, 2],
+    )?;
     let previous = unwrap_storage(
         CHECK,
         "claim_imap_recent",
@@ -201,6 +239,12 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
         storage.expunge_imap_members(inbox, Some(&[2])).await,
     )?;
     verify_equal(CHECK, "expunged UIDs", expunged, vec![2])?;
+    verify_equal(
+        CHECK,
+        "expunge removes the flagged message from every owner account",
+        mailbox_member_uids(storage, CHECK, second_inbox).await?,
+        vec![1],
+    )?;
     unwrap_storage(
         CHECK,
         "synchronize after expunge",
@@ -208,7 +252,7 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
     )?;
     verify_equal(
         CHECK,
-        "an expunged message stays out of its dynamic mailbox",
+        "a user-deleted message stays out after synchronization",
         mailbox_member_uids(storage, CHECK, inbox).await?,
         vec![1],
     )?;
@@ -216,7 +260,7 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
         CHECK,
         "move to trash",
         storage
-            .copy_imap_members(inbox, &[1], trash, None, true)
+            .copy_imap_members(inbox, &[1], trash, Some(&everything), true)
             .await,
     )?;
     verify_equal(CHECK, "moved UIDs", moved.removed_uids, vec![1])?;
@@ -226,31 +270,42 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
             && mailbox_member_uids(storage, CHECK, trash).await? == [1],
         "a move leaves the message only in the destination",
     )?;
-    let restored = unwrap_storage(
+    let cleared = unwrap_storage(
         CHECK,
         "clear_imap_exclusions",
         storage.clear_imap_exclusions(account.identifier).await,
     )?;
-    verify_equal(CHECK, "forgotten expunges", restored, 2)?;
+    verify_equal(CHECK, "forgotten mailbox exclusions", cleared, 0)?;
     unwrap_storage(
         CHECK,
-        "synchronize after restore",
+        "synchronize Inbox after clearing exclusions",
         storage.synchronize_imap_mailbox(inbox, &everything).await,
     )?;
     verify_equal(
         CHECK,
-        "restored messages return with new UIDs",
+        "a Trash MOVE remains out of Inbox after synchronization",
         mailbox_member_uids(storage, CHECK, inbox).await?,
-        vec![3, 4],
+        vec![],
+    )?;
+    unwrap_storage(
+        CHECK,
+        "synchronize Trash after clearing exclusions",
+        storage.synchronize_imap_mailbox(trash, &everything).await,
+    )?;
+    verify_equal(
+        CHECK,
+        "Trash placement remains after clearing exclusions",
+        mailbox_member_uids(storage, CHECK, trash).await?,
+        vec![1],
     )?;
     let metadata = unwrap_storage(
         CHECK,
         "imap_member_metadata",
-        storage.imap_member_metadata(inbox, &[3, 4, 5]).await,
+        storage.imap_member_metadata(trash, &[1, 2, 3]).await,
     )?;
     verify(
         CHECK,
-        metadata.len() == 2
+        metadata.len() == 1
             && metadata
                 .iter()
                 .all(|item| item.size > 0 && item.received_at == 1_700_000_100),
@@ -260,6 +315,11 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
         CHECK,
         "delete_imap_account",
         storage.delete_imap_account(account.identifier).await,
+    )?;
+    unwrap_storage(
+        CHECK,
+        "delete second IMAP account",
+        storage.delete_imap_account(second_account.identifier).await,
     )?;
     Ok(())
 }

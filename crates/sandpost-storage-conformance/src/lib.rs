@@ -18,11 +18,11 @@ mod views;
 
 pub use imap::{
     imap_account_configuration, imap_account_credentials, imap_flags_and_expunge,
-    imap_mailbox_identities, imap_membership_synchronization,
+    imap_mailbox_identities, imap_membership_synchronization, web_manual_folders_and_placements,
 };
 pub use messages::{
     index_messages_revisions, message_deletion, message_filter_equivalence,
-    message_ingestion_and_retrieval, message_ordering_and_pagination,
+    message_ingestion_and_retrieval, message_ordering_and_pagination, user_message_deletions,
 };
 pub use scopes::{scope_crud, scope_memberships};
 pub use search::search_outbox;
@@ -90,6 +90,7 @@ pub async fn run_all(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     message_ingestion_and_retrieval(storage).await?;
     message_ordering_and_pagination(storage).await?;
     message_filter_equivalence(storage).await?;
+    user_message_deletions(storage).await?;
     message_deletion(storage).await?;
     index_messages_revisions(storage).await?;
     search_outbox(storage).await?;
@@ -98,6 +99,7 @@ pub async fn run_all(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     imap_mailbox_identities(storage).await?;
     imap_membership_synchronization(storage).await?;
     imap_flags_and_expunge(storage).await?;
+    web_manual_folders_and_placements(storage).await?;
     Ok(())
 }
 

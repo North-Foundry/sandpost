@@ -7,7 +7,7 @@ use crate::support::{
     create_user, failure, new_user, unique_email, unwrap_storage, verify, verify_equal,
 };
 
-/// Verify first-run bootstrap: the first owner is created once and only once.
+/// Verify bootstrap creates one first Owner while preserving existing non-Owner users.
 pub async fn bootstrap(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "bootstrap";
     verify_equal(
@@ -15,6 +15,21 @@ pub async fn bootstrap(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
         "count_users on an empty storage",
         unwrap_storage(CHECK, "count_users", storage.count_users().await)?,
         0,
+    )?;
+    let existing_user = create_user(
+        storage,
+        CHECK,
+        GlobalRole::Member,
+        &unique_email("bootstrap-member"),
+    )
+    .await?;
+    let duplicate_email = storage
+        .create_first_owner(&new_user(GlobalRole::Owner, &existing_user.email))
+        .await;
+    verify(
+        CHECK,
+        matches!(&duplicate_email, Err(StorageError::DuplicateUserEmail)),
+        format!("first Owner must preserve email uniqueness, got {duplicate_email:?}"),
     )?;
     let email = unique_email("bootstrap-owner");
     let requested = NewUser {
@@ -50,6 +65,21 @@ pub async fn bootstrap(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
         format!(
             "a second create_first_owner must fail with InstanceAlreadyInitialized, got {repeated:?}"
         ),
+    )?;
+    verify_equal(
+        CHECK,
+        "bootstrap preserves the existing user",
+        unwrap_storage(
+            CHECK,
+            "get_user",
+            storage.get_user(existing_user.identifier).await,
+        )?,
+        Some(existing_user.clone()),
+    )?;
+    unwrap_storage(
+        CHECK,
+        "delete bootstrap member",
+        storage.delete_user(existing_user.identifier).await,
     )?;
     Ok(())
 }
