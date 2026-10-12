@@ -163,7 +163,7 @@ async fn create_user(storage: &SqliteStorage, user: &NewUser) -> Result<User, St
     Ok(created)
 }
 
-/// Create the first user as an Owner with All mail access, refusing repeated setup.
+/// Create an Owner with All mail access only when no Owner exists, preserving other users.
 async fn create_first_owner(
     storage: &SqliteStorage,
     owner: &NewUser,
@@ -173,12 +173,14 @@ async fn create_first_owner(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .storage()?;
-    let has_users: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users)")
-        .fetch_one(&mut *transaction)
-        .await
-        .storage()?;
-    if has_users {
+    if owner_count(&mut transaction).await? > 0 {
         return Err(StorageError::InstanceAlreadyInitialized);
+    }
+    if read_user(&mut transaction, "email", &owner.email)
+        .await?
+        .is_some()
+    {
+        return Err(StorageError::DuplicateUserEmail);
     }
     let owner = NewUser {
         global_role: GlobalRole::Owner,
@@ -313,7 +315,7 @@ impl UserStorage for SqliteStorage {
         delete_user(self, identifier).await
     }
 
-    /// Count canonical users for first-run setup and health decisions.
+    /// Count canonical user accounts.
     async fn count_users(&self) -> Result<u64, StorageError> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
             .fetch_one(&self.read_pool)

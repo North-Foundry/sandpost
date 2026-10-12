@@ -31,9 +31,10 @@ pub trait UserStorage: Send + Sync {
     /// are removed with it.
     async fn delete_user(&self, identifier: UserIdentifier) -> Result<bool, StorageError>;
 
-    /// Count existing users for bootstrap decisions.
+    /// Count existing user accounts.
     async fn count_users(&self) -> Result<u64, StorageError>;
 
-    /// Atomically create the first owner, refusing bootstrap if any user already exists.
+    /// Atomically create the first Owner, refusing if an Owner already exists.
+    /// Existing users with other roles are preserved; email uniqueness still applies.
     async fn create_first_owner(&self, owner: &NewUser) -> Result<User, StorageError>;
 }
