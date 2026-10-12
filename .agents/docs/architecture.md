@@ -15,7 +15,7 @@ external database server, queue, or cache is required.
 | `sandpost-mail` | SMTP capture, MIME parsing, and mail normalization | core |
 | `sandpost-storage` | Persistence, atomic mail writes, scope policies, and materialized visibility | core |
 | `sandpost-auth` | Membership visibility, personal restrictions, and inherited administrative permissions | core, query |
-| `sandpost-web` | Versioned HTTP API, validation, and events | core, storage |
+| `sandpost-web-api` | Versioned HTTP API, validation, and events | core, storage |
 | `sandpost` | Configuration, storage bootstrap, ingestion orchestration, listeners, and process lifecycle | core, match, mail, storage, web |
 
 Domain and query code are independent of HTTP and persistence. Mail parsing

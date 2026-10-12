@@ -3,7 +3,7 @@
 use crate::{configuration::Configuration, ingestion::capture_message, startup::StartupSummary};
 use sandpost_match::Matcher;
 use sandpost_storage::Storage;
-use sandpost_web::ApplicationState;
+use sandpost_web_api::ApplicationState;
 use std::{error::Error, io::Write, sync::Arc};
 use tokio::{
     net::TcpListener,
@@ -17,7 +17,7 @@ pub(crate) async fn serve(
     matcher: Arc<Matcher>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let (event_broadcast, _) = broadcast::channel(256);
-    let application_router = sandpost_web::router(ApplicationState {
+    let application_router = sandpost_web_api::router(ApplicationState {
         storage: storage.clone(),
         events: event_broadcast.clone(),
     });

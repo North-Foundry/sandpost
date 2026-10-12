@@ -29,7 +29,7 @@ pub(super) fn map_instance_error(error: InstanceError) -> HttpError {
         InstanceError::RecoveryRequired => {
             HttpError(StatusCode::SERVICE_UNAVAILABLE, "recovery_required".into())
         }
-        InstanceError::ReadMetadata(error) | InstanceError::WriteMetadata(error) => {
+        InstanceError::WriteMetadata(error) => {
             tracing::error!(%error, "instance metadata operation failed");
             HttpError(
                 StatusCode::INTERNAL_SERVER_ERROR,

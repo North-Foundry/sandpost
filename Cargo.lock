@@ -1533,7 +1533,7 @@ dependencies = [
  "sandpost-query",
  "sandpost-storage",
  "sandpost-storage-sqlite",
- "sandpost-web",
+ "sandpost-web-api",
  "serde",
  "serde_json",
  "thiserror",
@@ -1670,7 +1670,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandpost-web"
+name = "sandpost-web-api"
 version = "0.1.0"
 dependencies = [
  "axum",

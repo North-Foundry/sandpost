@@ -17,7 +17,7 @@ sandpost-storage = { path = "crates/sandpost-storage" }
 sandpost-storage-sqlite = { path = "crates/sandpost-storage-sqlite" }
 sandpost-storage-conformance = { path = "crates/sandpost-storage-conformance" }
 sandpost-auth = { path = "crates/sandpost-auth" }
-sandpost-web = { path = "crates/sandpost-web" }
+sandpost-web-api = { path = "crates/sandpost-web-api" }
 sandpost-application = { path = "crates/sandpost-application" }
 sandpost-search = { path = "crates/sandpost-search" }
 tower-http = { version = "0.6", features = ["fs"] }
