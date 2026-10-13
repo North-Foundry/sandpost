@@ -127,7 +127,7 @@ pub(super) struct RestoredMessages {
     restored: u64,
 }
 
-/// Let messages expunged in IMAP clients reappear in the account's mailboxes.
+/// Restore mailbox MOVE exclusions without clearing permanent user deletion state.
 pub(super) async fn restore_imap_hidden_messages(
     State(state): State<ApplicationState>,
     Extension(user): Extension<SessionUser>,

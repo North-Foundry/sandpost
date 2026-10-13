@@ -1,7 +1,7 @@
 use super::*;
 
-/// Fail closed across every message transport for a scoped member without assignments, while an
-/// owner's bulk deletion still removes the mail.
+/// Fail closed across every message transport for a scoped member without assignments; deletion
+/// leaves captured mail physically stored.
 #[tokio::test]
 async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
     let storage = memory_storage().await;
@@ -135,6 +135,7 @@ async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
     assert!(storage.get_message(identifier).await.unwrap().is_some());
 
     let response = owner_application
+        .clone()
         .oneshot(
             Request::builder()
                 .method("DELETE")
@@ -148,7 +149,301 @@ async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(deleted, serde_json::json!({"deleted": 1}));
-    assert!(storage.get_message(identifier).await.unwrap().is_none());
+    assert!(storage.get_message(identifier).await.unwrap().is_some());
+    let response = owner_application
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/messages")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(deleted, serde_json::json!({"deleted": 0}));
+}
+
+/// Create and sign in a test account through the same persisted account/session path as HTTP.
+async fn create_authenticated_user(
+    state: &ApplicationState,
+    owner_token: &str,
+    name: &str,
+    email: &str,
+    role: GlobalRole,
+    mail_access: sandpost_core::MailAccess,
+) -> String {
+    let owner = state.instance().session(owner_token).await.unwrap();
+    state
+        .authorized(&owner)
+        .create_user(NewAccount {
+            name: name.into(),
+            email: email.into(),
+            password: "acceptance-test-password".into(),
+            global_role: role,
+            mail_access,
+            personal_filter: None,
+        })
+        .await
+        .unwrap();
+    state
+        .instance()
+        .login(LoginRequest {
+            email: email.into(),
+            password: "acceptance-test-password".into(),
+        })
+        .await
+        .unwrap()
+        .token
+}
+
+/// Keep user tombstones isolated across HTTP reads, search, direct retrieval, and bulk deletion.
+#[tokio::test]
+async fn user_deletion_is_private_and_never_physically_removes_shared_mail() {
+    let storage = memory_storage().await;
+    let deleted_identifier = MessageIdentifier::new();
+    let bulk_identifier = MessageIdentifier::new();
+    let raw_message = b"Subject: shared note\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=part\r\n\r\n--part\r\nContent-Type: text/plain\r\n\r\nshared body\r\n--part\r\nContent-Type: text/plain; name=note.txt\r\nContent-Disposition: attachment; filename=note.txt\r\n\r\nshared attachment\r\n--part--\r\n";
+    for identifier in [deleted_identifier, bulk_identifier] {
+        storage
+            .insert_message(&Message {
+                identifier,
+                facts: MessageFacts {
+                    subject: "shared note".into(),
+                    size: raw_message.len() as u64,
+                    attachment_count: 1,
+                    ..MessageFacts::default()
+                },
+                raw_message: raw_message.to_vec(),
+                attachments: vec![sandpost_core::Attachment {
+                    filename: Some("note.txt".into()),
+                    content_type: "text/plain".into(),
+                    size: 18,
+                    content_hash: String::new(),
+                }],
+            })
+            .await
+            .unwrap();
+    }
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let (state, owner_token) = initialized_state(storage.clone(), events).await;
+    let user_a_token = create_authenticated_user(
+        &state,
+        &owner_token,
+        "User A",
+        "user-a@example.test",
+        GlobalRole::Member,
+        sandpost_core::MailAccess::All,
+    )
+    .await;
+    let user_b_token = create_authenticated_user(
+        &state,
+        &owner_token,
+        "User B",
+        "user-b@example.test",
+        GlobalRole::Member,
+        sandpost_core::MailAccess::All,
+    )
+    .await;
+    let unauthorized_token = create_authenticated_user(
+        &state,
+        &owner_token,
+        "Unassigned",
+        "unassigned-delete@example.test",
+        GlobalRole::Member,
+        sandpost_core::MailAccess::Scoped,
+    )
+    .await;
+    let user_a = with_test_auth(router(state.clone()), user_a_token);
+    let user_b = with_test_auth(router(state.clone()), user_b_token);
+    let unauthorized = with_test_auth(router(state), unauthorized_token);
+
+    let response = user_a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/messages/{deleted_identifier}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        storage
+            .get_message(deleted_identifier)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let response = user_a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/messages/{deleted_identifier}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    for uri in [
+        "/api/v1/messages".to_owned(),
+        "/api/v1/search?q=subject%20contains%20%22shared%20note%22".to_owned(),
+    ] {
+        let response = user_a
+            .clone()
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let rows: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let identifiers: Vec<_> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !identifiers.contains(&deleted_identifier.to_string().as_str()),
+            "{uri}: {rows}"
+        );
+        assert!(
+            identifiers.contains(&bulk_identifier.to_string().as_str()),
+            "{uri}: {rows}"
+        );
+    }
+    for suffix in ["", "/raw", "/attachments/0"] {
+        let response = user_a
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/messages/{deleted_identifier}{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{suffix}");
+    }
+
+    for uri in [
+        "/api/v1/messages".to_owned(),
+        "/api/v1/search?q=subject%20contains%20%22shared%20note%22".to_owned(),
+    ] {
+        let response = user_b
+            .clone()
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let rows: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let identifiers: Vec<_> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        for identifier in [deleted_identifier, bulk_identifier] {
+            assert!(
+                identifiers.contains(&identifier.to_string().as_str()),
+                "{uri}: {rows}"
+            );
+        }
+    }
+    for suffix in ["", "/raw", "/attachments/0"] {
+        let response = user_b
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/messages/{deleted_identifier}{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{suffix}");
+    }
+
+    let response = unauthorized
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/messages/{bulk_identifier}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        storage
+            .get_message(deleted_identifier)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let response = user_a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/messages")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(deleted, serde_json::json!({"deleted": 1}));
+    assert!(
+        storage
+            .get_message(bulk_identifier)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let response = user_a
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/messages")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let deleted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(deleted, serde_json::json!({"deleted": 0}));
+
+    for identifier in [deleted_identifier, bulk_identifier] {
+        assert!(storage.get_message(identifier).await.unwrap().is_some());
+        let response = user_b
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/messages/{identifier}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
 
 /// Apply the same canonical query globally and through views without leaking views.

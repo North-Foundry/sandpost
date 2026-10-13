@@ -3,7 +3,7 @@
 use crate::{
     ApplicationState, authentication,
     error::{HttpError, map_application_error},
-    events, imap, inboxes, management, messages, smtp,
+    events, imap, inboxes, mailbox, management, messages, smtp,
 };
 use axum::{
     Json, Router,
@@ -64,6 +64,22 @@ fn api_router() -> Router<ApplicationState> {
             get(messages::list_messages).delete(messages::delete_all_messages),
         )
         .route("/api/v1/search", get(messages::search_messages))
+        .route(
+            "/api/v1/folders",
+            get(mailbox::list_folders).post(mailbox::create_folder),
+        )
+        .route(
+            "/api/v1/folders/{identifier}",
+            axum::routing::put(mailbox::update_folder).delete(mailbox::delete_folder),
+        )
+        .route(
+            "/api/v1/folders/{identifier}/messages",
+            get(mailbox::folder_messages),
+        )
+        .route(
+            "/api/v1/messages/placement",
+            axum::routing::post(mailbox::move_messages),
+        )
         .route("/api/v1/search/status", get(management::search_status))
         .route(
             "/api/v1/search/rebuild",

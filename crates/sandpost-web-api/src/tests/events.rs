@@ -1,5 +1,111 @@
 use super::*;
 
+/// Resynchronize another open tab after placement, single deletion, and bulk deletion commits.
+#[tokio::test]
+async fn committed_mail_changes_resynchronize_open_streams_and_recheck_sessions() {
+    let storage = memory_storage().await;
+    let identifiers = [MessageIdentifier::new(), MessageIdentifier::new()];
+    for identifier in identifiers {
+        storage
+            .insert_message(&Message {
+                identifier,
+                facts: MessageFacts::default(),
+                raw_message: b"Subject: shared\r\n\r\nbody".to_vec(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+    }
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let (state, token) = initialized_state(storage, events).await;
+    let user = state.instance().session(&token).await.unwrap();
+    let folder = state
+        .authorized(&user)
+        .create_web_folder(sandpost_application::WebFolderRequest {
+            name: "Filed".into(),
+            exposed_accounts: vec![],
+        })
+        .await
+        .unwrap();
+    let application = with_test_auth(router(state.clone()), token.clone());
+    let response = application
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let ready = body.frame().await.unwrap().unwrap();
+    assert!(
+        std::str::from_utf8(ready.data_ref().unwrap())
+            .unwrap()
+            .contains("event: ready")
+    );
+
+    for (method, path, payload, expected_status) in [
+        (
+            "POST",
+            "/api/v1/messages/placement".to_owned(),
+            serde_json::json!({
+                "identifiers": [identifiers[0]],
+                "folderIdentifier": folder.identifier,
+            }),
+            StatusCode::OK,
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/messages/{}", identifiers[0]),
+            serde_json::Value::Null,
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            "DELETE",
+            "/api/v1/messages".to_owned(),
+            serde_json::Value::Null,
+            StatusCode::OK,
+        ),
+    ] {
+        let response = application
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected_status, "{method} {path}");
+        let frame = tokio::time::timeout(Duration::from_secs(1), body.frame())
+            .await
+            .expect("committed changes should wake the other tab")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(frame.data_ref().unwrap()).unwrap(),
+            "event: resync\ndata: {}\n\n",
+            "refresh hints must not expose message identifiers"
+        );
+    }
+
+    state.instance().logout(&token).unwrap();
+    state.notify_change(sandpost_application::ApplicationChange::Visibility);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), body.frame())
+            .await
+            .unwrap()
+            .is_none(),
+        "committed changes must revalidate the subscriber's session"
+    );
+}
+
 /// Keep unauthorized message identifiers out of SSE and stop delivery after logout.
 #[tokio::test]
 async fn events_filter_invisible_messages_and_recheck_the_session() {

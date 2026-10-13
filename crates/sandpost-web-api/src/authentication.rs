@@ -71,6 +71,8 @@ fn is_protected_api_route(path: &str) -> bool {
         | "/api/v1/logout"
         | "/api/v1/inboxes"
         | "/api/v1/messages"
+        | "/api/v1/messages/placement"
+        | "/api/v1/folders"
         | "/api/v1/search"
         | "/api/v1/search/status"
         | "/api/v1/search/rebuild"
@@ -89,6 +91,7 @@ fn is_protected_api_route(path: &str) -> bool {
                 || path.starts_with("/api/v1/users/")
                 || path.starts_with("/api/v1/smtp/accesses/")
                 || path.starts_with("/api/v1/imap/accounts/")
+                || path.starts_with("/api/v1/folders/")
             {
                 return true;
             }

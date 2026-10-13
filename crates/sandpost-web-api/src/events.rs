@@ -12,7 +12,7 @@ use sandpost_application::SessionUser;
 use std::{convert::Infallible, time::Duration};
 use tokio_stream::StreamExt;
 
-/// Stream message notifications and resynchronization events to subscribers.
+/// Stream authorized messages and committed-change resynchronization hints to valid sessions.
 pub(super) async fn events(
     State(state): State<ApplicationState>,
     Extension(user): Extension<SessionUser>,
@@ -21,7 +21,11 @@ pub(super) async fn events(
     let instance = state.instance().clone();
     let event_state = state.clone();
     let session_user_identifier = user.id;
-    let updates = tokio_stream::wrappers::BroadcastStream::new(state.subscribe())
+    let messages = tokio_stream::wrappers::BroadcastStream::new(state.subscribe()).map(Some);
+    let changes =
+        tokio_stream::wrappers::BroadcastStream::new(state.subscribe_changes()).map(|_| None);
+    let updates = messages
+        .merge(changes)
         .then(move |update| {
             let instance = instance.clone();
             let state = event_state.clone();
@@ -35,7 +39,7 @@ pub(super) async fn events(
                     return (None, true);
                 }
                 let event = match update {
-                    Ok(message) => {
+                    Some(Ok(message)) => {
                         let authorized = state.authorized(&user);
                         if !matches!(
                             authorized.is_message_visible(message.identifier).await,
@@ -67,7 +71,7 @@ pub(super) async fn events(
                             }
                         }
                     }
-                    Err(_) => Event::default().event("resync").data("{}"),
+                    Some(Err(_)) | None => Event::default().event("resync").data("{}"),
                 };
                 (Some(Ok(event)), false)
             }

@@ -56,9 +56,14 @@ pub(super) async fn list_messages(
         limit,
     };
     let authorized = state.authorized(&user);
-    let rows = if options.view_identifier.is_some() || options.query.is_some() {
+    let rows = if options.view_identifier.is_none() && options.query.is_some() {
         authorized
             .query_messages(options)
+            .await
+            .map_err(map_application_error)?
+    } else if options.view_identifier.is_some() {
+        authorized
+            .query_web_mailbox(options, None)
             .await
             .map_err(map_application_error)?
     } else {
