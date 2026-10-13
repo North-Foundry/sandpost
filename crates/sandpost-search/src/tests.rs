@@ -331,7 +331,7 @@ fn authorization_message_identifier_and_cursor_compose() {
         documents.push(IndexedDocument {
             identifier: MessageIdentifier::new(),
             sequence: MessageSequence(position),
-            revision: 0,
+            revision: position + 10,
             facts,
         });
     }
@@ -354,9 +354,28 @@ fn authorization_message_identifier_and_cursor_compose() {
         index.search(&request).expect("authorized search"),
         vec![documents[2].identifier, documents[0].identifier]
     );
+    assert_eq!(
+        index
+            .search_hits_with_sequences(&request)
+            .expect("authorized hits with cursors"),
+        vec![
+            (documents[2].identifier, 13, MessageSequence(3)),
+            (documents[0].identifier, 11, MessageSequence(1)),
+        ]
+    );
     let mut unrestricted = request.clone();
     unrestricted.authorization = None;
     assert_eq!(index.search(&unrestricted).expect("all mail").len(), 3);
+    unrestricted.limit = 2;
+    assert_eq!(
+        index
+            .search_hits_with_sequences(&unrestricted)
+            .expect("exact hits with cursors"),
+        vec![
+            (documents[2].identifier, 13, MessageSequence(3)),
+            (documents[1].identifier, 12, MessageSequence(2)),
+        ]
+    );
     let mut denied = request.clone();
     denied.authorization = Some(Expression::False);
     assert!(index.search(&denied).expect("deny all").is_empty());
@@ -376,6 +395,12 @@ fn authorization_message_identifier_and_cursor_compose() {
     assert_eq!(
         index.search(&cursor).expect("keyset page"),
         vec![documents[0].identifier]
+    );
+    assert_eq!(
+        index
+            .search_hits_with_sequences(&cursor)
+            .expect("keyset hits with cursors"),
+        vec![(documents[0].identifier, 11, MessageSequence(1))]
     );
 }
 
@@ -433,6 +458,12 @@ fn substring_false_positives_do_not_hide_later_exact_matches() {
     assert_eq!(
         index.search(&query).expect("substring query"),
         vec![exact.identifier]
+    );
+    assert_eq!(
+        index
+            .search_hits_with_sequences(&query)
+            .expect("verified hit cursor after false positives"),
+        vec![(exact.identifier, exact.revision, exact.sequence)]
     );
 }
 

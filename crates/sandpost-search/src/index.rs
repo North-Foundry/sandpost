@@ -5,7 +5,7 @@ use crate::{
     document::tantivy_document,
     schema::{SearchFields, schema},
 };
-use sandpost_core::MessageIdentifier;
+use sandpost_core::{MessageIdentifier, MessageSequence};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -231,5 +231,13 @@ impl SearchIndex {
         request: &MessageQuery,
     ) -> Result<Vec<(MessageIdentifier, u64)>, SearchError> {
         crate::search::search_hits(&self.reader, self.fields, request)
+    }
+
+    /// Retain sequence cursors so SQL filtering can refill pages past deleted or stale hits.
+    pub fn search_hits_with_sequences(
+        &self,
+        request: &MessageQuery,
+    ) -> Result<Vec<(MessageIdentifier, u64, MessageSequence)>, SearchError> {
+        crate::search::search_hits_with_sequences(&self.reader, self.fields, request)
     }
 }

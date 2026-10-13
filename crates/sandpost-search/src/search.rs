@@ -5,7 +5,7 @@ use crate::{
     query::{MAXIMUM_SEARCH_BATCH_SIZE, candidate_query, requires_verification},
     schema::SearchFields,
 };
-use sandpost_core::{MessageFacts, MessageIdentifier};
+use sandpost_core::{MessageFacts, MessageIdentifier, MessageSequence};
 use sandpost_query::Expression;
 use tantivy::{
     IndexReader, TantivyDocument, TantivyError, Term,
@@ -58,12 +58,24 @@ impl HitColumns {
     }
 }
 
-/// Execute one request against a stable reader snapshot, newest first.
+/// Return identifier/revision pairs for callers that do not need pagination progress.
 pub(super) fn search_hits(
     reader: &IndexReader,
     fields: SearchFields,
     request: &MessageQuery,
 ) -> Result<Vec<(MessageIdentifier, u64)>, SearchError> {
+    Ok(search_hits_with_sequences(reader, fields, request)?
+        .into_iter()
+        .map(|(identifier, revision, _)| (identifier, revision))
+        .collect())
+}
+
+/// Execute a stable search page, retaining indexed sequences even if SQL mail has vanished.
+pub(super) fn search_hits_with_sequences(
+    reader: &IndexReader,
+    fields: SearchFields,
+    request: &MessageQuery,
+) -> Result<Vec<(MessageIdentifier, u64, MessageSequence)>, SearchError> {
     let result_limit = request.limit.min(MAXIMUM_SEARCH_BATCH_SIZE);
     if result_limit == 0
         || matches!(request.authorization, Some(Expression::False))
@@ -131,17 +143,17 @@ pub(super) fn search_hits(
             break;
         }
         for (sequence, address) in &hits {
-            upper_sequence = Some(sequence.ok_or_else(|| missing_field("sequence"))?);
+            let sequence = sequence.ok_or_else(|| missing_field("sequence"))?;
+            upper_sequence = Some(sequence);
             if verify_facts {
                 let document: TantivyDocument = searcher.doc(*address)?;
                 if !matches_request(&document, fields, request)? {
                     continue;
                 }
             }
-            results.push(
-                columns[address.segment_ord as usize]
-                    .hit(address.doc_id, &mut identifier_buffer)?,
-            );
+            let (identifier, revision) = columns[address.segment_ord as usize]
+                .hit(address.doc_id, &mut identifier_buffer)?;
+            results.push((identifier, revision, MessageSequence(sequence)));
             if results.len() == result_limit {
                 break;
             }
