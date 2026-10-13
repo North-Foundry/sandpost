@@ -1,4 +1,3 @@
-
 mod canonical;
 mod compiler;
 mod evaluation;
