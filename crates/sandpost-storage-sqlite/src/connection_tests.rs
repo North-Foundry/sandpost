@@ -335,7 +335,8 @@ async fn concurrent_initialization_preserves_one_migration_history() {
         .fetch_one(&first.read_pool)
         .await
         .unwrap();
-    assert_eq!(history, 25);
+    let expected_history = crate::migrations::MIGRATIONS.len() as i64;
+    assert_eq!(history, expected_history);
     let mail = message(1);
     first.insert_message(&mail).await.unwrap();
     assert!(second.get_message(mail.identifier).await.unwrap().is_some());

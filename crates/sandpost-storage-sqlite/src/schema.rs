@@ -1,5 +1,5 @@
 //! Validation of the SQLite physical schema against the checked-in migration scripts.
-use crate::{StorageError, error::StorageResult, migrations::batches_through};
+use crate::{StorageError, error::StorageResult, migrations::MIGRATIONS};
 use sqlx::{ConnectOptions, Row, SqliteConnection, sqlite::SqliteConnectOptions};
 
 type SchemaObject = (String, String, String, String);
@@ -58,21 +58,19 @@ fn normalized_definition(definition: &str) -> String {
     tokens.join(" ")
 }
 
-/// Construct the immutable expected schema of one version from the checked-in scripts.
-async fn expected_schema(version: i64) -> Result<SqliteConnection, StorageError> {
+/// Construct the expected schema after the first `applied` checked-in scripts.
+async fn expected_schema(applied: usize) -> Result<SqliteConnection, StorageError> {
     let mut connection = SqliteConnectOptions::new()
         .in_memory(true)
         .foreign_keys(true)
         .connect()
         .await
         .storage()?;
-    for (_, scripts) in batches_through(version) {
-        for (_, script) in scripts.iter() {
-            // Use the Send executor future for multi-statement scripts during startup.
-            sqlx::Executor::execute(&mut connection, sqlx::raw_sql(*script))
-                .await
-                .storage()?;
-        }
+    for (_, script) in MIGRATIONS.iter().take(applied) {
+        // Use the Send executor future for multi-statement scripts during startup.
+        sqlx::Executor::execute(&mut connection, sqlx::raw_sql(*script))
+            .await
+            .storage()?;
     }
     Ok(connection)
 }
@@ -84,12 +82,11 @@ pub(crate) async fn schema_is_empty(
     Ok(schema_objects(connection).await?.is_empty())
 }
 
-/// Report whether every table, constraint, index, view, and trigger matches the schema of
-/// `version`.
+/// Report whether every schema object matches the first `applied` migration scripts.
 pub(crate) async fn matches_schema(
     connection: &mut SqliteConnection,
-    version: i64,
+    applied: usize,
 ) -> Result<bool, StorageError> {
-    let mut expected = expected_schema(version).await?;
+    let mut expected = expected_schema(applied).await?;
     Ok(schema_objects(connection).await? == schema_objects(&mut expected).await?)
 }

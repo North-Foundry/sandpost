@@ -3,9 +3,15 @@
 mod common;
 
 use common::message;
-use sandpost_core::{Attachment, Mailbox, MessageIdentifier, MessageSequence};
+use sandpost_core::{
+    Attachment, GlobalRole, ImapMailboxSource, MailAccess, Mailbox, MessageIdentifier,
+    MessageSequence,
+};
 use sandpost_query::{Expression, Field, Operator, Predicate, Value};
-use sandpost_storage::{MessageListQuery, MessageStorage, Storage, StorageError};
+use sandpost_storage::{
+    ImapMembershipDefinition, ImapStorage, MessageListQuery, MessageStorage, NewImapAccount,
+    NewUser, Storage, StorageError, UserStorage,
+};
 use sandpost_storage_sqlite::SqliteStorage;
 use sqlx::{Connection, Row};
 use std::collections::BTreeMap;
@@ -417,4 +423,225 @@ async fn recipient_listing_uses_a_message_filter() {
             .collect::<Vec<_>>(),
         vec![matching_identifier]
     );
+}
+
+/// Persist user tombstones and remove all of that user's IMAP memberships atomically.
+#[tokio::test]
+async fn user_message_deletions_persist_and_clear_owned_imap_memberships() {
+    let path = temporary_database_path();
+    let storage = SqliteStorage::open(&path)
+        .await
+        .expect("open temporary database");
+    let deleting_user = storage
+        .create_user(&NewUser {
+            name: "deleting user".into(),
+            email: "deleting-user@example.test".into(),
+            password_hash: "hash".into(),
+            global_role: GlobalRole::Member,
+            mail_access: MailAccess::All,
+            personal_filter: None,
+        })
+        .await
+        .expect("create deleting user");
+    let other_user = storage
+        .create_user(&NewUser {
+            name: "other user".into(),
+            email: "other-user@example.test".into(),
+            password_hash: "hash".into(),
+            global_role: GlobalRole::Member,
+            mail_access: MailAccess::All,
+            personal_filter: None,
+        })
+        .await
+        .expect("create other user");
+    let fixture = message("per-user deletion fixture");
+    let identifier = fixture.identifier;
+    let sequence = storage
+        .insert_message(&fixture)
+        .await
+        .expect("insert shared message");
+    let oversized_batch = (0..257)
+        .map(|_| MessageIdentifier::new())
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        storage
+            .delete_user_messages(
+                deleting_user.identifier,
+                Some(&oversized_batch),
+                &Expression::True,
+            )
+            .await,
+        Err(StorageError::BatchLimitExceeded(256))
+    ));
+    let deleting_account = storage
+        .create_imap_account(&NewImapAccount {
+            owner_identifier: deleting_user.identifier,
+            name: "deleting account".into(),
+            username: "deleting-account".into(),
+            password_hash: "hash".into(),
+            mirror_views: false,
+            created_at: 1,
+        })
+        .await
+        .expect("create deleting user's account");
+    let other_account = storage
+        .create_imap_account(&NewImapAccount {
+            owner_identifier: other_user.identifier,
+            name: "other account".into(),
+            username: "other-account".into(),
+            password_hash: "hash".into(),
+            mirror_views: false,
+            created_at: 1,
+        })
+        .await
+        .expect("create other user's account");
+    let deleting_second_account = storage
+        .create_imap_account(&NewImapAccount {
+            owner_identifier: deleting_user.identifier,
+            name: "second deleting account".into(),
+            username: "deleting-account-two".into(),
+            password_hash: "hash".into(),
+            mirror_views: false,
+            created_at: 1,
+        })
+        .await
+        .expect("create second account for deleting user");
+    let definition = ImapMembershipDefinition {
+        filter: Expression::True,
+        fingerprint: "all-mail".into(),
+    };
+    let deleting_mailbox = storage
+        .reconcile_imap_mailboxes(deleting_account.identifier, &[ImapMailboxSource::Inbox])
+        .await
+        .expect("create deleting user's mailbox")[0]
+        .identifier;
+    let other_mailbox = storage
+        .reconcile_imap_mailboxes(other_account.identifier, &[ImapMailboxSource::Inbox])
+        .await
+        .expect("create other user's mailbox")[0]
+        .identifier;
+    let deleting_second_mailbox = storage
+        .reconcile_imap_mailboxes(
+            deleting_second_account.identifier,
+            &[ImapMailboxSource::Inbox],
+        )
+        .await
+        .expect("create second mailbox for deleting user")[0]
+        .identifier;
+    storage
+        .synchronize_imap_mailbox(deleting_mailbox, &definition)
+        .await
+        .expect("synchronize deleting user's mailbox");
+    storage
+        .synchronize_imap_mailbox(other_mailbox, &definition)
+        .await
+        .expect("synchronize other user's mailbox");
+    storage
+        .synchronize_imap_mailbox(deleting_second_mailbox, &definition)
+        .await
+        .expect("synchronize second mailbox for deleting user");
+    assert_eq!(
+        storage
+            .imap_mailbox_members(deleting_mailbox, 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        storage
+            .imap_mailbox_members(other_mailbox, 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        storage
+            .imap_mailbox_members(deleting_second_mailbox, 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    assert_eq!(
+        storage
+            .delete_user_messages(
+                deleting_user.identifier,
+                Some(&[identifier]),
+                &Expression::True,
+            )
+            .await
+            .expect("tombstone shared message for one user"),
+        1
+    );
+    assert!(
+        storage
+            .imap_mailbox_members(deleting_mailbox, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        storage
+            .imap_mailbox_members(deleting_second_mailbox, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        storage
+            .imap_mailbox_members(other_mailbox, 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        storage
+            .get_user_message(deleting_user.identifier, identifier)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        storage
+            .get_user_message(other_user.identifier, identifier)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    drop(storage);
+
+    let reopened = SqliteStorage::open(&path)
+        .await
+        .expect("reopen database with tombstone");
+    assert!(
+        reopened
+            .get_user_message(deleting_user.identifier, identifier)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(reopened.get_message(identifier).await.unwrap().is_some());
+    assert!(sequence.0 > 0);
+    drop(reopened);
+    remove_temporary_database(&path);
+}
+
+/// Reject a user deletion request when its user no longer exists.
+#[tokio::test]
+async fn deleting_messages_for_an_unknown_user_returns_not_found() {
+    let storage = open_storage().await;
+    assert!(matches!(
+        storage
+            .delete_user_messages(
+                sandpost_core::UserIdentifier::new(),
+                None,
+                &Expression::True,
+            )
+            .await,
+        Err(StorageError::NotFound)
+    ));
 }

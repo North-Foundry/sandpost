@@ -1,13 +1,10 @@
-//! Ordered schema operations, grouped into immutable version batches.
-
-/// Current physical schema version, equal to the last migration batch.
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+//! Ordered schema operations, identified by their immutable script names.
 
 /// One checked-in migration script and its file name.
 pub(crate) type MigrationScript = (&'static str, &'static str);
 
-/// Version 1 creates every table and trigger group directly in its current form.
-const BASELINE_MIGRATIONS: [MigrationScript; 25] = [
+/// Apply each script once, in order; append new scripts to evolve existing databases.
+pub(crate) const MIGRATIONS: [MigrationScript; 39] = [
     (
         "0001_create_migrations_table.sql",
         include_str!("../../migrations/0001_create_migrations_table.sql"),
@@ -108,16 +105,60 @@ const BASELINE_MIGRATIONS: [MigrationScript; 25] = [
         "0025_create_imap_unsubscribed_mailboxes_table.sql",
         include_str!("../../migrations/0025_create_imap_unsubscribed_mailboxes_table.sql"),
     ),
+    (
+        "0026_create_user_message_deletions_table.sql",
+        include_str!("../../migrations/0026_create_user_message_deletions_table.sql"),
+    ),
+    (
+        "0027_create_owner_imap_folders.sql",
+        include_str!("../../migrations/0027_create_owner_imap_folders.sql"),
+    ),
+    (
+        "0028_add_imap_local_folder_kinds.sql",
+        include_str!("../../migrations/0028_add_imap_local_folder_kinds.sql"),
+    ),
+    (
+        "0029_create_web_folders_table.sql",
+        include_str!("../../migrations/0029_create_web_folders_table.sql"),
+    ),
+    (
+        "0030_create_web_folder_accounts_table.sql",
+        include_str!("../../migrations/0030_create_web_folder_accounts_table.sql"),
+    ),
+    (
+        "0031_create_user_message_placements_table.sql",
+        include_str!("../../migrations/0031_create_user_message_placements_table.sql"),
+    ),
+    (
+        "0032_create_imap_message_placements_table.sql",
+        include_str!("../../migrations/0032_create_imap_message_placements_table.sql"),
+    ),
+    (
+        "0033_create_imap_message_copies_table.sql",
+        include_str!("../../migrations/0033_create_imap_message_copies_table.sql"),
+    ),
+    (
+        "0034_backfill_imap_trash_copies.sql",
+        include_str!("../../migrations/0034_backfill_imap_trash_copies.sql"),
+    ),
+    (
+        "0035_create_imap_message_placements_triggers.sql",
+        include_str!("../../migrations/0035_create_imap_message_placements_triggers.sql"),
+    ),
+    (
+        "0036_create_imap_message_copies_triggers.sql",
+        include_str!("../../migrations/0036_create_imap_message_copies_triggers.sql"),
+    ),
+    (
+        "0037_create_user_message_placements_triggers.sql",
+        include_str!("../../migrations/0037_create_user_message_placements_triggers.sql"),
+    ),
+    (
+        "0038_create_web_folder_accounts_triggers.sql",
+        include_str!("../../migrations/0038_create_web_folder_accounts_triggers.sql"),
+    ),
+    (
+        "0039_create_imap_subscribed_mailboxes_table.sql",
+        include_str!("../../migrations/0039_create_imap_subscribed_mailboxes_table.sql"),
+    ),
 ];
-
-/// Every migration batch in version order; its number is the schema version it produces.
-pub(crate) const MIGRATION_BATCHES: [(i64, &[MigrationScript]); 1] = [(1, &BASELINE_MIGRATIONS)];
-
-/// Return the batches that produce the schema of `version`, in application order.
-pub(crate) fn batches_through(
-    version: i64,
-) -> impl Iterator<Item = &'static (i64, &'static [MigrationScript])> {
-    MIGRATION_BATCHES
-        .iter()
-        .filter(move |(batch, _)| *batch <= version)
-}

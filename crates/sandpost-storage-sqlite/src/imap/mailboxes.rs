@@ -124,36 +124,55 @@ pub(super) async fn synchronize_mailbox(
         return Ok(Some(state));
     }
     let compiled = compile(&definition.filter);
+    let placement_policy = membership_policy(connection, state).await?;
     if full {
         let sql = format!(
-            "DELETE FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND mail_sequence NOT IN (SELECT mail.sequence FROM mail WHERE ({}))",
-            compiled.sql
+            "DELETE FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND mail_sequence NOT IN (SELECT mail.sequence FROM mail JOIN imap_mailboxes AS box ON box.identifier = ? LEFT JOIN imap_local_folders AS local ON local.identifier = box.folder_identifier WHERE ({}) AND ({}))",
+            compiled.sql, placement_policy
         );
         let query = bind_query(
-            sqlx::query(sqlx::AssertSqlSafe(sql)).bind(identifier.to_string()),
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(identifier.to_string())
+                .bind(identifier.to_string()),
+            &compiled.parameters,
+        );
+        query.execute(&mut *connection).await.storage()?;
+    } else {
+        let sql = format!(
+            "DELETE FROM imap_mailbox_messages AS member WHERE member.mailbox_identifier = ? AND NOT EXISTS (SELECT 1 FROM mail JOIN imap_mailboxes AS box ON box.identifier = ? LEFT JOIN imap_local_folders AS local ON local.identifier = box.folder_identifier WHERE mail.sequence = member.mail_sequence AND ({}) AND ({}))",
+            compiled.sql, placement_policy
+        );
+        let query = bind_query(
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(identifier.to_string())
+                .bind(identifier.to_string()),
             &compiled.parameters,
         );
         query.execute(&mut *connection).await.storage()?;
     }
     let mut next_uid = uid_next;
-    if !state.source.is_explicit() {
+    {
         let start = if full { 0 } else { examined_sequence };
         if latest_sequence > start {
             let sql = format!(
                 "INSERT INTO imap_mailbox_messages(mailbox_identifier, uid, mail_sequence) \
-                 SELECT ?, ? + ROW_NUMBER() OVER (ORDER BY mail.sequence) - 1, mail.sequence FROM mail \
+                 SELECT ?, ? + ROW_NUMBER() OVER (ORDER BY mail.sequence) - 1, mail.sequence FROM mail JOIN imap_mailboxes AS box ON box.identifier = ? LEFT JOIN imap_local_folders AS local ON local.identifier = box.folder_identifier \
                  WHERE mail.sequence > ? AND mail.sequence <= ? AND ({}) \
+                 AND ({}) \
                  AND NOT EXISTS (SELECT 1 FROM imap_mailbox_messages AS member WHERE member.mailbox_identifier = ? AND member.mail_sequence = mail.sequence) \
                  AND NOT EXISTS (SELECT 1 FROM imap_mailbox_exclusions AS exclusion WHERE exclusion.mailbox_identifier = ? AND exclusion.mail_sequence = mail.sequence) \
+                 AND NOT EXISTS (SELECT 1 FROM user_message_deletions AS deletion JOIN imap_mailboxes AS box ON box.identifier = ? JOIN imap_accounts AS account ON account.identifier = box.account_identifier WHERE deletion.user_identifier = account.owner_identifier AND deletion.mail_sequence = mail.sequence) \
                  ORDER BY mail.sequence",
-                compiled.sql
+                compiled.sql, placement_policy
             );
             let query = sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(identifier.to_string())
                 .bind(uid_next)
+                .bind(identifier.to_string())
                 .bind(start)
                 .bind(latest_sequence);
             let inserted = bind_query(query, &compiled.parameters)
+                .bind(identifier.to_string())
                 .bind(identifier.to_string())
                 .bind(identifier.to_string())
                 .execute(&mut *connection)
@@ -175,6 +194,39 @@ pub(super) async fn synchronize_mailbox(
         .await
         .storage()?;
     mailbox_state(connection, identifier).await
+}
+
+/// Return SQL membership rules for account overrides, inherited Web placements, and copies.
+async fn membership_policy(
+    connection: &mut SqliteConnection,
+    state: ImapMailboxState,
+) -> Result<String, StorageError> {
+    let folder_kind: Option<String> =
+        sqlx::query_scalar("SELECT kind FROM imap_local_folders WHERE identifier = ?1")
+            .bind(match state.source {
+                ImapMailboxSource::LocalFolder(identifier) => Some(identifier.to_string()),
+                _ => None,
+            })
+            .fetch_optional(&mut *connection)
+            .await
+            .storage()?;
+    let override_exists = "EXISTS (SELECT 1 FROM imap_message_placements AS placement WHERE placement.account_identifier = box.account_identifier AND placement.mail_sequence = mail.sequence)";
+    let override_matches = "EXISTS (SELECT 1 FROM imap_message_placements AS placement WHERE placement.account_identifier = box.account_identifier AND placement.mail_sequence = mail.sequence AND placement.target_kind = box.source AND placement.folder_identifier IS box.folder_identifier)";
+    let copy_matches = "EXISTS (SELECT 1 FROM imap_message_copies AS copy WHERE copy.account_identifier = box.account_identifier AND copy.mail_sequence = mail.sequence AND copy.target_kind = box.source AND copy.folder_identifier IS box.folder_identifier)";
+    let inherited = "EXISTS (SELECT 1 FROM user_message_placements AS placement JOIN web_folder_accounts AS exposure ON exposure.folder_identifier = placement.folder_identifier JOIN imap_accounts AS account ON account.identifier = exposure.account_identifier WHERE placement.owner_identifier = account.owner_identifier AND placement.mail_sequence = mail.sequence AND exposure.account_identifier = box.account_identifier)";
+    let inherited_matches = "EXISTS (SELECT 1 FROM user_message_placements AS placement JOIN web_folder_accounts AS exposure ON exposure.folder_identifier = placement.folder_identifier JOIN imap_accounts AS account ON account.identifier = exposure.account_identifier WHERE placement.owner_identifier = account.owner_identifier AND placement.mail_sequence = mail.sequence AND exposure.account_identifier = box.account_identifier AND exposure.local_folder_identifier = box.folder_identifier)";
+    Ok(match (state.source, folder_kind.as_deref()) {
+        (ImapMailboxSource::LocalFolder(_), Some("manual")) => format!(
+            "({override_matches}) OR ({copy_matches}) OR (NOT ({override_exists}) AND ({inherited_matches}))"
+        ),
+        (ImapMailboxSource::LocalFolder(_), Some("private")) | (ImapMailboxSource::Trash, _) => {
+            format!("({override_matches}) OR ({copy_matches})")
+        }
+        (ImapMailboxSource::Inbox, _) => format!(
+            "({override_matches}) OR ({copy_matches}) OR (NOT ({override_exists}) AND NOT ({inherited}))"
+        ),
+        _ => format!("NOT ({override_exists}) AND NOT ({inherited})"),
+    })
 }
 
 /// Load one mailbox identity by identifier.

@@ -3,8 +3,9 @@ use super::parts::load_recipients;
 use crate::error::StorageResult;
 use crate::filter::{SqlValue, bind_query, compile};
 use crate::records::parse_identifier;
+use sandpost_core::{ImapFolderIdentifier, UserIdentifier};
 use sandpost_core::{MessageIdentifier, MessageSequence};
-use sandpost_storage::{MessageListQuery, MessageSummary, StorageError};
+use sandpost_storage::{FilterExpression, MessageListQuery, MessageSummary, StorageError};
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 /// Maximum page size for summary listings.
@@ -115,6 +116,95 @@ pub(super) async fn list_messages(
     decode_summaries(connection, rows).await
 }
 
+/// List filtered summaries while excluding this user's tombstoned mail in the same snapshot.
+pub(super) async fn list_user_messages(
+    connection: &mut SqliteConnection,
+    user: UserIdentifier,
+    query: MessageListQuery,
+) -> Result<Vec<MessageSummary>, StorageError> {
+    let mut parameters = Vec::new();
+    let filter_clause = match &query.filter {
+        Some(expression) => {
+            let compiled = compile(expression);
+            parameters.extend(compiled.parameters);
+            compiled.sql
+        }
+        None => "1".to_owned(),
+    };
+    parameters.push(SqlValue::Text(user.to_string()));
+    let before_clause = match query.before {
+        Some(sequence) => {
+            parameters.push(SqlValue::Integer(
+                i64::try_from(sequence.0).map_err(|_| StorageError::IntegerRange)?,
+            ));
+            "mail.sequence < ?"
+        }
+        None => "1",
+    };
+    let limit = query.limit.min(MAXIMUM_PAGE_SIZE);
+    parameters.push(SqlValue::Integer(
+        i64::try_from(limit).map_err(|_| StorageError::IntegerRange)?,
+    ));
+    let sql = format!(
+        "{SUMMARY_SELECT} WHERE ({filter_clause}) AND NOT EXISTS (SELECT 1 FROM user_message_deletions WHERE user_identifier = ? AND mail_sequence = mail.sequence) AND ({before_clause}) ORDER BY mail.sequence DESC LIMIT ?"
+    );
+    let rows = bind_query(sqlx::query(sqlx::AssertSqlSafe(sql)), &parameters)
+        .try_map(|row| summary_row(&row))
+        .fetch_all(&mut *connection)
+        .await
+        .storage()?;
+    decode_summaries(connection, rows).await
+}
+
+/// List a Web mailbox while applying query authorization and owner tombstones in the SQL read.
+pub(crate) async fn list_web_mailbox_messages(
+    connection: &mut SqliteConnection,
+    user: UserIdentifier,
+    folder: Option<ImapFolderIdentifier>,
+    query: MessageListQuery,
+) -> Result<Vec<MessageSummary>, StorageError> {
+    let Some(expression) = query.filter else {
+        return Err(StorageError::ConstraintViolation(
+            "Web mailbox listing requires an authorization filter".into(),
+        ));
+    };
+    let compiled = compile(&expression);
+    let placement = if folder.is_some() {
+        "EXISTS (SELECT 1 FROM user_message_placements AS placement WHERE placement.owner_identifier = ? AND placement.mail_sequence = mail.sequence AND placement.folder_identifier = ?)"
+    } else {
+        "NOT EXISTS (SELECT 1 FROM user_message_placements AS placement WHERE placement.owner_identifier = ? AND placement.mail_sequence = mail.sequence AND placement.folder_identifier IS NOT NULL)"
+    };
+    let mut parameters = compiled.parameters;
+    parameters.push(SqlValue::Text(user.to_string()));
+    if let Some(folder) = folder {
+        parameters.push(SqlValue::Text(folder.to_string()));
+    }
+    parameters.push(SqlValue::Text(user.to_string()));
+    let before_clause = match query.before {
+        Some(sequence) => {
+            parameters.push(SqlValue::Integer(
+                i64::try_from(sequence.0).map_err(|_| StorageError::IntegerRange)?,
+            ));
+            "mail.sequence < ?"
+        }
+        None => "1",
+    };
+    let limit = query.limit.min(MAXIMUM_PAGE_SIZE);
+    parameters.push(SqlValue::Integer(
+        i64::try_from(limit).map_err(|_| StorageError::IntegerRange)?,
+    ));
+    let sql = format!(
+        "{SUMMARY_SELECT} WHERE ({}) AND ({placement}) AND NOT EXISTS (SELECT 1 FROM user_message_deletions WHERE user_identifier = ? AND mail_sequence = mail.sequence) AND ({before_clause}) ORDER BY mail.sequence DESC LIMIT ?",
+        compiled.sql
+    );
+    let rows = bind_query(sqlx::query(sqlx::AssertSqlSafe(sql)), &parameters)
+        .try_map(|row| summary_row(&row))
+        .fetch_all(&mut *connection)
+        .await
+        .storage()?;
+    decode_summaries(connection, rows).await
+}
+
 /// Load lightweight summaries in caller-supplied identifier order, omitting missing IDs.
 pub(super) async fn hydrate_messages(
     connection: &mut SqliteConnection,
@@ -189,6 +279,63 @@ pub(super) async fn hydrate_current_messages(
         query.push(")");
         let rows = query
             .build()
+            .try_map(|row| {
+                let revision = row.try_get::<i64, _>("search_revision")?;
+                Ok((summary_row(&row)?, revision))
+            })
+            .fetch_all(&mut *connection)
+            .await
+            .storage()?;
+        let (summaries, revisions): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
+        for (summary, revision) in decode_summaries(connection, summaries)
+            .await?
+            .into_iter()
+            .zip(revisions)
+        {
+            let revision = u64::try_from(revision).map_err(|_| StorageError::IntegerRange)?;
+            by_revision.insert((summary.identifier, revision), summary);
+        }
+    }
+    Ok(requested
+        .iter()
+        .filter_map(|key| by_revision.get(key).cloned())
+        .collect())
+}
+
+/// Hydrate authorized current revisions in request order, excluding this user's tombstones.
+pub(super) async fn hydrate_current_user_messages(
+    connection: &mut SqliteConnection,
+    user: UserIdentifier,
+    requested: &[(MessageIdentifier, u64)],
+    filter: &FilterExpression,
+) -> Result<Vec<MessageSummary>, StorageError> {
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+    let compiled = compile(filter);
+    let mut by_revision = std::collections::HashMap::new();
+    for chunk in requested.chunks(250) {
+        let mut parameters = Vec::with_capacity(chunk.len() * 2 + compiled.parameters.len() + 1);
+        let mut values = String::new();
+        for (index, (identifier, revision)) in chunk.iter().enumerate() {
+            if index != 0 {
+                values.push(',');
+            }
+            let revision = i64::try_from(*revision).map_err(|_| StorageError::IntegerRange)?;
+            values.push_str("(?,?)");
+            parameters.push(SqlValue::Text(identifier.to_string()));
+            parameters.push(SqlValue::Integer(revision));
+        }
+        parameters.extend(compiled.parameters.iter().map(|parameter| match parameter {
+            SqlValue::Text(value) => SqlValue::Text(value.clone()),
+            SqlValue::Integer(value) => SqlValue::Integer(*value),
+        }));
+        parameters.push(SqlValue::Text(user.to_string()));
+        let sql = format!(
+            "WITH requested(identifier, search_revision) AS (VALUES {}) {SUMMARY_SELECT_WITH_REVISION} WHERE (mail.identifier, mail.search_revision) IN (SELECT identifier, search_revision FROM requested) AND ({}) AND NOT EXISTS (SELECT 1 FROM user_message_deletions WHERE user_identifier = ? AND mail_sequence = mail.sequence)",
+            values, compiled.sql,
+        );
+        let rows = bind_query(sqlx::query(sqlx::AssertSqlSafe(sql)), &parameters)
             .try_map(|row| {
                 let revision = row.try_get::<i64, _>("search_revision")?;
                 Ok((summary_row(&row)?, revision))

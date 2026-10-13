@@ -2,7 +2,8 @@
 mod indexing;
 mod parts;
 mod reads;
-mod summaries;
+pub(crate) mod summaries;
+mod tombstones;
 mod writes;
 
 #[cfg(test)]
@@ -11,9 +12,12 @@ mod concurrency_tests;
 use crate::SqliteStorage;
 use crate::error::StorageResult;
 use async_trait::async_trait;
-use sandpost_core::{Attachment, Message, MessageFacts, MessageIdentifier, MessageSequence};
+use sandpost_core::{
+    Attachment, Message, MessageFacts, MessageIdentifier, MessageSequence, UserIdentifier,
+};
 use sandpost_storage::{
-    IndexedMessage, MessageListQuery, MessageStorage, MessageSummary, StorageError,
+    FilterExpression, IndexedMessage, MessageListQuery, MessageStorage, MessageSummary,
+    StorageError,
 };
 
 #[async_trait]
@@ -52,6 +56,30 @@ impl MessageStorage for SqliteStorage {
         Ok(metadata)
     }
 
+    /// Read message facts and bytes from one snapshot when this user has not deleted it.
+    async fn get_user_message(
+        &self,
+        user: UserIdentifier,
+        identifier: MessageIdentifier,
+    ) -> Result<Option<Message>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let message = reads::get_user_message(&mut transaction, user, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(message)
+    }
+
+    /// Read message facts and attachments from one snapshot unless tombstoned for this user.
+    async fn get_user_message_metadata(
+        &self,
+        user: UserIdentifier,
+        identifier: MessageIdentifier,
+    ) -> Result<Option<(MessageFacts, Vec<Attachment>)>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let metadata = reads::get_user_message_metadata(&mut transaction, user, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(metadata)
+    }
+
     /// List bounded summaries newest first with canonical filters and a keyset cursor.
     async fn list_messages(
         &self,
@@ -59,6 +87,18 @@ impl MessageStorage for SqliteStorage {
     ) -> Result<Vec<MessageSummary>, StorageError> {
         let mut transaction = self.read_pool.begin().await.storage()?;
         let summaries = summaries::list_messages(&mut transaction, query).await?;
+        transaction.commit().await.storage()?;
+        Ok(summaries)
+    }
+
+    /// List authorized summaries while excluding this user's tombstoned messages.
+    async fn list_user_messages(
+        &self,
+        user: UserIdentifier,
+        query: MessageListQuery,
+    ) -> Result<Vec<MessageSummary>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let summaries = summaries::list_user_messages(&mut transaction, user, query).await?;
         transaction.commit().await.storage()?;
         Ok(summaries)
     }
@@ -92,6 +132,24 @@ impl MessageStorage for SqliteStorage {
         Ok(deleted)
     }
 
+    /// Atomically tombstone matching messages for this user and return newly deleted count.
+    async fn delete_user_messages(
+        &self,
+        user: UserIdentifier,
+        identifiers: Option<&[MessageIdentifier]>,
+        filter: &FilterExpression,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let deleted =
+            tombstones::delete_user_messages(&mut transaction, user, identifiers, filter).await?;
+        transaction.commit().await.storage()?;
+        Ok(deleted)
+    }
+
     /// Read the insertion high-water mark, including previously deleted mail.
     async fn max_message_sequence(&self) -> Result<MessageSequence, StorageError> {
         let mut transaction = self.read_pool.begin().await.storage()?;
@@ -118,6 +176,21 @@ impl MessageStorage for SqliteStorage {
     ) -> Result<Vec<MessageSummary>, StorageError> {
         let mut transaction = self.read_pool.begin().await.storage()?;
         let summaries = summaries::hydrate_current_messages(&mut transaction, requested).await?;
+        transaction.commit().await.storage()?;
+        Ok(summaries)
+    }
+
+    /// Hydrate authorized current revisions, omitting stale and user-deleted messages.
+    async fn hydrate_current_user_messages(
+        &self,
+        user: UserIdentifier,
+        requested: &[(MessageIdentifier, u64)],
+        filter: &FilterExpression,
+    ) -> Result<Vec<MessageSummary>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let summaries =
+            summaries::hydrate_current_user_messages(&mut transaction, user, requested, filter)
+                .await?;
         transaction.commit().await.storage()?;
         Ok(summaries)
     }

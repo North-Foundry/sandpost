@@ -73,6 +73,7 @@ pub(super) async fn create_account(
         .execute(&mut *connection)
         .await
         .storage()?;
+    super::folders::project_owner_folders(connection, identifier, account.owner_identifier).await?;
     get_account(connection, identifier)
         .await?
         .ok_or(StorageError::NotFound)

@@ -1,5 +1,4 @@
--- Applied schema operations and their version batch.
+-- Applied schema operations, identified by their script names.
 CREATE TABLE migrations (
-    migration TEXT PRIMARY KEY NOT NULL,
-    batch INTEGER NOT NULL CHECK(batch > 0)
+    migration TEXT PRIMARY KEY NOT NULL
 );

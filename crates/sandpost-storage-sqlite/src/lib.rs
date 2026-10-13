@@ -1,9 +1,8 @@
-
 mod connection;
 mod error;
 mod filter;
 mod imap;
-mod messages;
+pub(crate) mod messages;
 mod migrations;
 mod records;
 mod schema;

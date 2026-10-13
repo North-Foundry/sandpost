@@ -6,21 +6,23 @@ mod folders;
 mod mailboxes;
 mod members;
 mod membership;
+mod placements;
 mod shared;
 mod subscriptions;
+mod web_folders;
 
 use crate::SqliteStorage;
 use crate::error::StorageResult;
 use async_trait::async_trait;
 use sandpost_core::{
     ImapAccount, ImapAccountIdentifier, ImapFolderIdentifier, ImapLinkedView, ImapLocalFolder,
-    ImapMailboxIdentifier, ImapMailboxSource, ImapMessageFlags, UserIdentifier,
+    ImapMailboxIdentifier, ImapMailboxSource, ImapMessageFlags, MessageIdentifier, UserIdentifier,
 };
 use sandpost_storage::{
     ImapAccountCredential, ImapAccountSettings, ImapCopyResult, ImapFlagChange, ImapFlagChanges,
     ImapLocalFolderSettings, ImapMailboxCounts, ImapMailboxState, ImapMember, ImapMemberContent,
-    ImapMemberMetadata, ImapMembershipDefinition, ImapStorage, NewImapAccount, NewImapLocalFolder,
-    StorageError,
+    ImapMemberMetadata, ImapMembershipDefinition, ImapStorage, MessageListQuery, MessageSummary,
+    NewImapAccount, NewImapLocalFolder, StorageError,
 };
 
 #[async_trait]
@@ -227,6 +229,150 @@ impl ImapStorage for SqliteStorage {
         Ok(result)
     }
 
+    /// Create a private folder owned by one IMAP account.
+    async fn create_imap_private_folder(
+        &self,
+        account: ImapAccountIdentifier,
+        name: &str,
+        created_at: i64,
+    ) -> Result<ImapLocalFolder, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result =
+            folders::create_private_folder(&mut transaction, account, name, created_at).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// Create a Web manual folder with its selected account projections.
+    async fn create_web_folder(
+        &self,
+        owner: UserIdentifier,
+        name: &str,
+        accounts: &[ImapAccountIdentifier],
+        created_at: i64,
+    ) -> Result<sandpost_core::WebFolder, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result =
+            web_folders::create_folder(&mut transaction, owner, name, accounts, created_at).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// Read one Web folder and its account exposures.
+    async fn get_web_folder(
+        &self,
+        identifier: ImapFolderIdentifier,
+    ) -> Result<Option<sandpost_core::WebFolder>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let result = web_folders::get_folder(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// List Web manual folders owned by one user.
+    async fn list_web_folders(
+        &self,
+        owner: UserIdentifier,
+    ) -> Result<Vec<sandpost_core::WebFolder>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let result = web_folders::list_folders(&mut transaction, owner).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// Update one Web folder's name and exposed accounts.
+    async fn update_web_folder(
+        &self,
+        identifier: ImapFolderIdentifier,
+        name: &str,
+        accounts: &[ImapAccountIdentifier],
+    ) -> Result<Option<sandpost_core::WebFolder>, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result =
+            web_folders::update_folder(&mut transaction, identifier, name, accounts).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// Delete a Web folder and its account projections.
+    async fn delete_web_folder(
+        &self,
+        identifier: ImapFolderIdentifier,
+    ) -> Result<bool, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = web_folders::delete_folder(&mut transaction, identifier).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// Place authorized, non-deleted mail in one owner's Web mailbox.
+    async fn place_user_messages(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        folder: Option<ImapFolderIdentifier>,
+        authorization: &sandpost_storage::FilterExpression,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = placements::place_user_messages(
+            &mut transaction,
+            owner,
+            identifiers,
+            folder,
+            authorization,
+        )
+        .await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// List one Web mailbox in the caller's authorized, non-deleted message set.
+    async fn list_web_mailbox_messages(
+        &self,
+        owner: UserIdentifier,
+        folder: Option<ImapFolderIdentifier>,
+        query: MessageListQuery,
+    ) -> Result<Vec<MessageSummary>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        if let Some(identifier) = folder {
+            let definition = web_folders::get_folder(&mut transaction, identifier)
+                .await?
+                .ok_or(StorageError::NotFound)?;
+            if definition.owner_identifier != owner {
+                return Err(StorageError::NotFound);
+            }
+        }
+        let result = crate::messages::summaries::list_web_mailbox_messages(
+            &mut transaction,
+            owner,
+            folder,
+            query,
+        )
+        .await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
     /// Reconcile mailbox identities to the supplied ordered source list.
     async fn reconcile_imap_mailboxes(
         &self,
@@ -376,7 +522,7 @@ impl ImapStorage for SqliteStorage {
         Ok(result)
     }
 
-    /// Remove deleted members, recording exclusions for dynamic mailboxes.
+    /// Tombstone flagged members for the owning user across all their accounts without deleting mail.
     async fn expunge_imap_members(
         &self,
         identifier: ImapMailboxIdentifier,
@@ -435,6 +581,24 @@ impl ImapStorage for SqliteStorage {
         transaction.commit().await.storage()
     }
 
+    /// Retain default subscriptions for live names without overriding explicit unsubscribes.
+    async fn retain_imap_subscriptions(
+        &self,
+        account: ImapAccountIdentifier,
+        names: &[String],
+    ) -> Result<(), StorageError> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        subscriptions::retain_subscriptions(&mut transaction, account, names).await?;
+        transaction.commit().await.storage()
+    }
+
     /// List mailbox names the account has unsubscribed from.
     async fn list_imap_unsubscribed(
         &self,
@@ -442,6 +606,15 @@ impl ImapStorage for SqliteStorage {
     ) -> Result<Vec<String>, StorageError> {
         let mut connection = self.read_pool.acquire().await.storage()?;
         subscriptions::list_unsubscribed(&mut connection, account).await
+    }
+
+    /// List retained subscribed names (explicit and observed defaults), including absent names.
+    async fn list_imap_subscribed(
+        &self,
+        account: ImapAccountIdentifier,
+    ) -> Result<Vec<String>, StorageError> {
+        let mut connection = self.read_pool.acquire().await.storage()?;
+        subscriptions::list_subscribed(&mut connection, account).await
     }
 
     /// Clear recorded expunges for an account and force full mailbox reconciliation.

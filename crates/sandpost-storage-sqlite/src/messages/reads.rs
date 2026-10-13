@@ -1,7 +1,7 @@
 //! Full-message and metadata reads from authoritative SQL snapshots.
 use super::parts::{load_attachments, load_headers, load_recipients};
 use crate::error::StorageResult;
-use sandpost_core::{Attachment, Message, MessageFacts, MessageIdentifier};
+use sandpost_core::{Attachment, Message, MessageFacts, MessageIdentifier, UserIdentifier};
 use sandpost_storage::StorageError;
 use sqlx::{Row, SqliteConnection};
 
@@ -99,6 +99,58 @@ pub(super) async fn get_message_metadata(
         "SELECT sequence, subject, text_body, markup_body, message_identifier, received_at, size FROM mail WHERE identifier = ?",
     )
     .bind(identifier.to_string())
+    .fetch_optional(&mut *connection)
+    .await
+    .storage()?;
+    match stored {
+        Some(row) => Ok(Some(
+            load_message_parts(connection, mail_row(&row).storage()?).await?,
+        )),
+        None => Ok(None),
+    }
+}
+
+/// Load a user's visible message and payload from the caller-owned SQL snapshot.
+pub(super) async fn get_user_message(
+    connection: &mut SqliteConnection,
+    user: UserIdentifier,
+    identifier: MessageIdentifier,
+) -> Result<Option<Message>, StorageError> {
+    let stored = sqlx::query(
+        "SELECT sequence, subject, text_body, markup_body, message_identifier, received_at, size, raw_message FROM mail WHERE identifier = ? AND NOT EXISTS (SELECT 1 FROM user_message_deletions WHERE user_identifier = ? AND mail_sequence = mail.sequence)",
+    )
+    .bind(identifier.to_string())
+    .bind(user.to_string())
+    .fetch_optional(&mut *connection)
+    .await
+    .storage()?;
+    match stored {
+        Some(row) => {
+            let mail = mail_row(&row).storage()?;
+            let raw_message = row.try_get("raw_message").storage()?;
+            let (facts, attachments) = load_message_parts(connection, mail).await?;
+            Ok(Some(Message {
+                identifier,
+                facts,
+                raw_message,
+                attachments,
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Load a user's visible message metadata without selecting raw bytes.
+pub(super) async fn get_user_message_metadata(
+    connection: &mut SqliteConnection,
+    user: UserIdentifier,
+    identifier: MessageIdentifier,
+) -> Result<Option<(MessageFacts, Vec<Attachment>)>, StorageError> {
+    let stored = sqlx::query(
+        "SELECT sequence, subject, text_body, markup_body, message_identifier, received_at, size FROM mail WHERE identifier = ? AND NOT EXISTS (SELECT 1 FROM user_message_deletions WHERE user_identifier = ? AND mail_sequence = mail.sequence)",
+    )
+    .bind(identifier.to_string())
+    .bind(user.to_string())
     .fetch_optional(&mut *connection)
     .await
     .storage()?;
