@@ -1,5 +1,5 @@
 //! Scope policies and validated indexed hierarchy traversal and edits.
-use crate::{EndpointIdentifier, ScopeIdentifier};
+use crate::ScopeIdentifier;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -7,8 +7,6 @@ use std::collections::{HashMap, HashSet};
 pub struct Scope {
     #[serde(rename = "id")]
     pub identifier: ScopeIdentifier,
-    #[serde(default = "default_endpoint_identifier")]
-    pub endpoint_identifier: EndpointIdentifier,
     pub parent: Option<ScopeIdentifier>,
     pub name: String,
     pub description: Option<String>,
@@ -16,11 +14,6 @@ pub struct Scope {
     pub filter: String,
     pub position: i64,
     pub policy_version: u64,
-}
-
-/// Return the stable endpoint assigned to scopes created before endpoint routing.
-pub fn default_endpoint_identifier() -> EndpointIdentifier {
-    EndpointIdentifier(uuid::Uuid::from_u128(2))
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
