@@ -1,0 +1,20 @@
+[package]
+name = "sandpost-imap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mail-parser.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+imap-codec = { version = "2.0.0-alpha.9", default-features = false, features = ["ext_id", "ext_namespace", "starttls"] }
+# imap-codec relies on nom's `alloc` feature without enabling it; unify it for the test build.
+nom = { version = "7", default-features = false, features = ["alloc"] }
