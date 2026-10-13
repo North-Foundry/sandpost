@@ -1,31 +1,29 @@
 # Project instructions
 
-Repository guidance for coding agents is collected in `.agents/docs/`.
-Consult the documents that apply to a task before editing the project:
+This is the single project instruction entry point. Use `.agents/docs/` as the
+source of conventions/contracts; read applicable documents before editing:
 
-- `.agents/docs/project.md` — current application behavior, global/endpoint roles and mail-access authorization, search operations,
-  configuration, API, frontend/Electron workflow, verification, and limitations.
-- `.agents/docs/architecture.md` — system components, crate responsibilities,
-  application flows, deployment, and current limitations.
-- `.agents/docs/storage.md` — the backend-independent persistence contract and the SQLite backend schema/migrations,
-  async execution, transactions, search outbox and derived-index lifecycle, and concurrency limits.
-- `.agents/docs/backend-authoring.md` — backend authoring: implementing a new storage backend against the contract.
-- `.agents/docs/query-language.md` — query syntax, types, collection semantics, canonical verification, fingerprints,
-  search candidate limits, and safety bounds.
-- `.agents/docs/scope-engine.md` — scope membership and endpoint mail-access composition, inherited filters, search candidates,
-  exact verification, and durable index synchronization.
-- `.agents/docs/code-style.md` — complete Rust and SQL names and documentation
-  conventions for functions, helpers, and tests.
+- `.agents/docs/project.md` — branding, application behavior, roles/mail access,
+  SMTP/IMAP, configuration/API, frontend/Electron workflow, verification and limits.
+- `.agents/docs/architecture.md` — components, crate boundaries, flows, deployment and limits.
+- `.agents/docs/storage.md` — persistence contract, SQLite schema/migrations and
+  migration-file conventions, async execution, transactions, user deletion,
+  search outbox/index lifecycle and concurrency.
+- `.agents/docs/backend-authoring.md` — implementing a storage backend against the contract.
+- `.agents/docs/query-language.md` — syntax/types/collections, canonical verification,
+  fingerprints, candidate limits and safety bounds.
+- `.agents/docs/scope-engine.md` — memberships/mail-access composition, inherited
+  filters, candidates, exact verification and durable synchronization.
+- `.agents/docs/imap.md` — accounts/credentials, virtual mailbox and Web projections,
+  placement/Trash, membership/UIDs/flags/user deletion, IDLE, configuration and limits.
+- `.agents/docs/code-style.md` — complete Rust/SQL naming and documentation rules
+  for functions, helpers and tests.
 - `.agents/docs/commits.md` — commit format and workflow.
 
-Maintain this index when a task changes `.agents/docs/`: every path and
-description must match the documents present. Tasks outside that directory do
-not require an index review. Index only documents inside `.agents/`.
+When changing `.agents/docs/`, check that this index's paths/descriptions match
+all documents present; index only documents inside `.agents/`. Other changes do
+not require an index review.
 
-Use `.agents/docs/` as the source of project conventions and contracts. Apply
-its relevant guidance rather than introducing competing conventions. For
-changes to query semantics, scope visibility, or persistence, consult the
-corresponding document and keep the implementation, tests, and documentation
-consistent. Distinguish implemented behavior from planned features.
-
-Keep this root `AGENTS.md` as the single project instruction entry point.
+Apply these conventions rather than introducing competing ones. Query, scope
+visibility and persistence changes must keep implementation, tests and the
+corresponding documentation consistent. Distinguish implemented from planned behavior.

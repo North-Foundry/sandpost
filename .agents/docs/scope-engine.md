@@ -1,115 +1,45 @@
-# Scope visibility engine
+# Scope authorization and query engine
 
-A scope is a generic tree node, never an organization/team/project type.
-Identifiers remain stable across moves; names and order do not affect identity.
-The adjacency model provides indexed children, ancestors in O(depth), subtree
-preorder in O(subtree size), cycle/missing-parent/depth validation and atomic
-in-memory moves. Tree traversals use an explicit stack. Roots have depth zero;
-there may be multiple roots. Snapshot construction and validated topology moves
-may inspect all configuration nodes; normal ingest does not scan every scope.
+Scopes are instance-wide hierarchical query definitions over one pool of captured mail. Membership only determines which mail reaches a user; it grants no administrative authority. A saved **View** organizes mail and never grants access. Global roles (Owner, Admin, Member, Viewer) govern administration.
 
-## Semantics
+## Authorization composition
+
+Each user has one mail-access level. `All` grants all captured mail, subject to personal restrictions, without scope membership. `Scoped` grants the union of assigned scopes, with every ancestor filter inherited:
 
 ```text
-effective(child) = effective(parent) AND local(child)
-user visibility = (effective(scope A) OR effective(scope B) OR ...)
-                  AND optional personal filter
-inbox visibility = user visibility AND saved inbox filter
+mail access all:       true
+mail access scoped:    effective(scope A) OR effective(scope B) ...
+effective assignment:  scope.filter AND parent.filter AND ... AND root.filter
+user result:           authorization AND optional personal filter
+scoped, no assignments: false
 ```
 
-Empty local filters are true. A child cannot expand a parent's policy. User
-membership can cover several independent branches without copying messages.
-Role grants are separate: owner/admin can manage its scope and descendants;
-member/viewer only has the mail visibility granted by membership. Unknown scopes
-and empty memberships fail closed.
+`Scoped` with no assigned scopes grants no mail; it never falls back to `All`. Memberships can cover multiple branches, but descendants cannot widen ancestors. Personal filters only restrict. Owners bypass mail access, scopes, and personal filters; administrative actions still require the appropriate global role.
 
-## Candidate selection and shared execution
+Personal Views are visible to their owner; shared Views have no owner and remain subject to each reader's authorization. Selecting a View adds its filter but creates no membership or assignment.
 
-```mermaid
-flowchart TD
-    M[Normalized MessageFacts] --> K[Exact fact keys]
-    K --> I[Inverted index lookup]
-    I --> C[Candidate scopes]
-    F[Explicit unanchored fallback bucket] --> C
-    C --> E[Shared expression DAG / sparse memoization]
-    E --> P[Parent AND child; short circuit false parents]
-    P --> R[Scope IDs + policy versions]
-    R --> S[Transactional mail_scope materialization]
-```
+The application authorization module is the single composition boundary. Search and lists pass its structured plan to the search layer. Direct SQL reads, including identifier-check metadata, apply the same plan to authoritative current SQL facts and payload in one snapshot. This covers detail, raw message, attachment, and event delivery; indexed documents and UIDs are never final authority checks.
 
-Each policy receives a safe positive anchor cover: exact address/domain,
-header or RFC message-ID predicates. For AND, any required cover is safe, so
-the smallest available cover is selected. For OR, every branch must have a
-cover; their union is used. NOT and body-only comparisons have no safe positive
-anchor, so they use the fallback bucket. A child can reuse an inherited cover
-even when its local filter has none. False expressions have an empty cover.
+User deletion is a separate visibility condition. Lists, search, direct/raw/attachment reads, and event delivery exclude that user's tombstones. Physical mail and the global index remain available to other authorized users. Single deletion requires current authorization; bulk deletion affects only currently visible mail and counts only new tombstones. Repeating a single deletion returns not found.
 
-Ingest extracts only the field categories referenced by indexes and looks up
-matching keys directly. It visits candidate scopes plus the explicit fallback
-bucket. Shared nodes are hash-consed at snapshot build time, and the per-message
-memo caches only visited nodes. Identical predicates evaluate once per message.
-Effective policies reference parent nodes rather than permanently copying
-ancestor ASTs. Evaluation uses an explicit stack, including for deep hierarchies.
-Short circuiting a false parent skips descendant local predicates. Cheap cost
-hints run before expensive work.
+## IMAP and placement
 
-One matcher test configures 1,001 exact-domain scopes and checks that a message
-selects two matching scopes and evaluates their shared predicate once. This
-asserts the candidate/execution shape; it is not a throughput benchmark.
+An IMAP mailbox's membership is its owner's current authorization (mail access plus personal filter; no restriction for owners) AND the mailbox's own filter: linked View, local-folder filter, or INBOX aggregate. Storage reconciles against authoritative SQL facts, never the search index. Definitions are canonicalized and fingerprinted; changes to scopes, assignments, personal filter, role, mail access, or Views trigger synchronization that removes no-longer-authorized members. After such changes commit, `ApplicationChange::Visibility` notifies idling clients so they receive resulting EXPUNGE responses. See [imap.md](imap.md).
 
-**Known ceiling:** if every scope uses only an unanchored body/negative filter,
-the fallback bucket can include every scope. A catch-all root also legitimately
-matches every message. This is an explicit planner limitation, not a hidden
-messages-by-scopes scan in the usual indexed path. Later improvements can use
-additional necessary predicates, token indexes, parent candidate lists and
-set-oriented historical execution. Arbitrary policies cannot always be routed
-by positive exact indexes; never invent an anchor that loses possible matches.
+Placement is independent of authorization. Exclusive account placement takes precedence over exposed Web manual placement, then smart/general baseline. Recalculation preserves placement records, but stale placements never grant access. Web baseline lists omit manually filed messages; global search and authorized direct reads still find them. Deleting a folder restores organization without clearing tombstones.
 
-## Materialization and versioning
+## Administration and preview
 
-SQLite stores core mail in `mail` and versioned visibility links in
-`mail_scope(scope_identifier,mail_sequence,policy_version)`. The full identifier
-names distinguish the linked scope and mail sequence. Mailbox and header facts
-remain role-aware and ordered in relational child tables. Materialized union
-reads deduplicate overlap and accept only links whose version equals the current
-scope version. Numeric sequences support future compressed bitmaps and bounded
-keyset pagination. Saved inboxes and personal filters are restrictions over
-authorized mail, never separate physical mail stores.
+Authenticated APIs and application management support scopes, assignments, Views, and users. Scope and assignment management requires Owner or Admin. Scope definitions must form an acyclic tree within configured maximum depth, and every filter compiles before saving. An edit affects subsequent requests immediately through current persisted definitions; there is no historical mail reclassification job.
 
-`ScopeTree::set_filter` and `move_scope` return the affected subtree and increment
-each affected policy version. Unrelated branches keep their versions. Query
-validation must succeed before applying a policy mutation. These are domain
-building blocks, not an exposed scope editing service. The initial running
-binary loads one immutable matcher snapshot at startup; live editing and
-historical recomputation are deferred.
+`validate_query` (`POST /api/v1/query/validate`) reports the first compilation error and its UTF-8 byte position without saving or executing. `preview_scope` (`POST /api/v1/scopes/preview`) requires a global administrator and samples newest mail matching the unsaved filter plus all parent-ancestor filters, composed with the caller's own authorization. It cannot show mail the administrator cannot read. Deleting a scope with children returns an in-use conflict.
 
-The storage replacement primitive guards the expected current version. It can
-atomically replace one scope's complete set. `MatchDelta::between` computes:
+Membership rows are role-less and only contribute to a `Scoped` user's visibility union. Assignments are retained for `All` users but have no effect until mail access becomes `Scoped`; assigning an unknown scope returns not found. There is no message-to-scope materialization pipeline.
 
-```text
-added   = NEW_SET - OLD_SET
-removed = OLD_SET - NEW_SET
-```
+## Search candidates and exactness
 
-The first set representation is a sorted set. Roaring-style compressed bitmaps
-can replace it when measured cardinality/memory warrants it; no bitmap engine is
-claimed today.
+Tantivy stores sequence, identifier, exact/trigram terms, and serialized facts for canonical verification. Candidate plans must be safe supersets. The search layer evaluates the canonical query against indexed facts and applies shared authorization; indexing may lag SQL, and a candidate hit alone never authorizes or satisfies a search. Exact terms handle exact predicates; trigrams support sufficiently long substrings. Short substrings and broad negative predicates may scan broadly. Never complement an incomplete index to approximate negation.
 
-## Next policy-publication milestone
+Results sort by descending SQL message sequence and use exclusive `before` sequence keysets. Search reads bounded candidate batches and hydrates identifiers/revisions from SQL, dropping stale revisions and user tombstones. It continues bounded reads after exclusions so pages are full where more visible results exist and no later result is skipped. Advance by indexed sequence even if physical rows have vanished. The index stays user-independent. Summary rows and child mailbox metadata load from one SQL snapshot. Avoid offset pagination and unbounded reads.
 
-1. Validate the proposed subtree topology and every affected effective policy.
-2. Persist the subtree version changes transactionally and publish a new
-   immutable matcher snapshot with a generation/watermark coordination boundary.
-3. Mark older materializations stale; current-version reads fail closed.
-4. Reclassify only the affected subtree, starting from prior materializations,
-   parent sets and indexed facts. A broadened root with no usable anchor may
-   require examining all historical messages in bounded batches; this is a
-   legitimate exceptional policy change, not normal ingest behavior.
-5. Compute added/removed sets and propagate only those IDs to descendants. Keep
-   jobs resumable, version-check commits, and include ingests beyond the job's
-   watermark before declaring the new materialization complete.
-
-No background reclassification or delta job scheduler exists yet. In-memory
-tree edits alone must not be used to claim a fully updated persistent policy.
-FTS, richer candidate indexes and bitmap/DAG optimization require representative
-benchmarks and correctness tests before introducing new infrastructure.
+Outbox processing, durable generations, rebuilds, refresh watermarks, and revision synchronization are documented in [storage.md](storage.md). Direct reads check the exact facts and payload in one SQL snapshot. Definition edits need no message revision or reindex; permission revocation affects later requests, while an in-flight request may finish with facts it already read.

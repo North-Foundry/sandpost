@@ -1,107 +1,50 @@
-# Sand Post Query Language
+# Sandpost query language
 
-One typed DSL serves scope policies, personal restrictions and future saved
-inboxes/search. It accepts no SQL or executable code and has no HTTP/storage
-dependency.
-
-```text
-source -> lexer -> parser -> typed AST / validation
-       -> normalization / simplification -> canonicalization / fingerprint
-       -> predicates + cost hints -> shared matching nodes
-```
+The typed DSL serves scope policies, personal restrictions, saved Views, and ad hoc search. It accepts no SQL or executable code and has no HTTP or storage dependency.
 
 ## Syntax and types
 
 ```text
-from.domain == "sender.test" and to.domain == "recipient.test"
-from.address == "dev@sender.test" and subject contains "password"
-(from.domain == "sender.test" or from.domain == "website.dev")
-    and to.address matches "*@recipient.test"
-header["X-App"] == "bravo"
-size >= 1024 and has_attachments == true
-received_at >= 1791072000
+from.domain == "sender.test" and subject contains "password"
+to.address matches "*@recipient.test" and size >= 1024
+header["X-App"] == "bravo" and received_at >= 1791072000
 ```
 
-Precedence, highest first: comparison, `not`, `and`, `or`. Parentheses override
-it. Keywords and field names are case insensitive. Single/double quoted strings
-accept `\n`, `\r`, and `\t`; for any other escaped character the backslash is
-discarded and the character is kept. Empty source, `true` and `false` are
-boolean expressions. Numeric literals are signed integers; `received_at` uses
-Unix UTC seconds, `size` uses bytes, and `attachment_count` is an integer.
+Precedence, highest first: comparison, `not`, `and`, `or`; parentheses override it. Keywords and field names are case-insensitive. Quoted strings decode `\n`, `\r`, `\t`; other escapes discard the backslash. Empty source, `true`, and `false` are boolean expressions. Numeric literals are signed base-10 integers; `received_at` is Unix UTC seconds, `size` bytes, and `attachment_count` a count.
 
 | Fields | Type / cardinality |
 | --- | --- |
 | `envelope.from.address`, `envelope.from.domain` | Optional string |
-| `envelope.to.address`, `envelope.to.domain` | Collection of strings |
-| `from.address`, `from.domain`, `to.address`, `to.domain`, `cc.address`, `cc.domain` | Collections of strings |
+| `envelope.to.address`, `envelope.to.domain`; `from`, `to`, `cc` `.address`/`.domain` | Collections |
 | `subject`, `text`, `html` | String |
-| `message_id` | Optional string (RFC Message-ID, distinct from public UUID) |
-| `header["name"]` | Collection of header values, lowercase key |
+| `content` | Collection of subject, text, HTML, envelope/MIME addresses, RFC Message-ID, and header names/values |
+| `message_id` | Optional RFC Message-ID, distinct from public UUID |
+| `header["name"]` | Collection of values; lookup name is lowercase |
 | `received_at`, `size`, `attachment_count` | Integer |
 | `has_attachments` | Boolean |
 
-`envelope.*` fields come from the SMTP transaction, while plain `from`, `to`,
-and `cc` fields come from the message's MIME address headers; the two sources
-can differ. `message_id` is the MIME Message-ID, not Sand Post's public UUID.
+`envelope.*` comes from SMTP; plain address fields come from MIME and can differ. Aliases `envelope.from`, `envelope.to`, `from`, `to`, and `cc` select those addresses; there is no `bcc`. Strings allow `==`, `!=`, `contains`, `starts_with`, `ends_with`, `matches`; integers also allow `>`, `>=`, `<`, `<=`; booleans only `==`, `!=`. Subject, text, HTML, content, message ID, and header values allow lexicographic ordering; mailbox fields do not. Invalid fields, type/operator mismatches, incomplete input, and trailing tokens report zero-based UTF-8 byte positions.
 
-String operators: `==`, `!=`, `contains`, `starts_with`, `ends_with`, `matches`.
-Numeric operators: `==`, `!=`, `>`, `>=`, `<`, `<=`. Boolean operators: `==`,
-`!=`. Subject/body/message-ID/header strings additionally support lexicographic
-`>`, `>=`, `<`, `<=`; mailbox fields reject ordered comparisons. Invalid fields,
-operator/type combinations, incomplete input and trailing tokens return errors
-with zero-based UTF-8 byte positions. Missing optional fields and empty
-collections produce no matching values, so even `!=` is false for them.
-Mailbox addresses and domains are normalized at ingest, and mailbox comparisons
-are ASCII-case-insensitive. `matches` uses that same mailbox case rule.
-Subject/body/header value comparisons are case sensitive. Header names are
-trimmed and ASCII-lowercased for lookup.
+Domains are normalized at ingest. SMTP envelope local-parts retain spelling/case; MIME addresses are lowercased. Mailbox addresses/domains compare ASCII-case-insensitively, including `matches`. Subject, text, HTML, message ID, and header values are case-sensitive; header names are trimmed and ASCII-lowercased for lookup. `content` includes header names and values and compares all values ASCII-case-insensitively, also for ordering; non-ASCII characters are unchanged. Missing optional fields and empty collections have no values, so `!=` is false for them.
 
-## Collection semantics
+## Collections, globs, and numbers
 
-**ANY** applies to comparisons: `to.domain == "recipient.test"` is true if any
-recipient's domain equals that value. `to.domain != "recipient.test"` means any
-recipient has another domain, and can be true even alongside an equal recipient.
-To express no recipient in that domain use:
+Collection comparisons use **ANY**, including repeated headers. Thus `to.domain != "recipient.test"` means some recipient differs and may be true even if another equals it. To require that none match, use `not (to.domain == "recipient.test")`. Negation applies outside the existential comparison; equality and inequality are not logical complements.
 
-```text
-not (to.domain == "recipient.test")
-```
+`matches` is a whole-value glob: `*` matches any number of Unicode scalar values, `?` one, and other characters are literal. An empty pattern matches only an empty value. Backslash cannot escape glob metacharacters because string decoding removes it. Globs are not regex and have no character classes or regex backtracking. Ordering is Unicode lexicographic except `content`, which folds ASCII letters first. Evaluation stays exact under resource limits, including beneath `not`.
 
-This distinction also applies to duplicate headers. Negation is outside the
-collection existential operation. Therefore equality and inequality are not
-logical complements for collections and are never simplified as complements.
+Literals are signed `i64` with no separators or unit suffixes. Underlying sizes/counts are unsigned: evaluation compares them exactly with signed literals, while public `Value::Number` saturates values above `i64::MAX`. Use predicates/evaluation for exact decisions, not that projection.
 
-`matches` is a whole-value glob: `*` matches any number of Unicode scalar
-values, `?` one scalar value. Other characters are literals. An empty pattern
-matches only an empty value. Backslash does not escape `*` or `?`; string
-decoding removes the slash before glob matching. The glob is not regex and does
-not implement character classes or regex backtracking. Pattern length is
-bounded by query limits. The evaluator is exact; it must not silently return a
-different boolean when a resource limit is hit, particularly underneath `not`.
+## Canonicalization and search
 
-## Canonical forms and safety
+AND/OR flatten, sort, and deduplicate; constants fold; double negation collapses; exact expression/NOT-expression pairs simplify. Operand reordering preserves canonical form/fingerprint. This is practical normalization, not a theorem prover; distributive equivalence is not exhaustively computed. Fingerprints use format-v1 SHA-256 over tagged, length-delimited canonical bytes; existing field tags stay stable.
 
-AND/OR flatten, sort and deduplicate children. Constants fold, double negation
-collapses and exact expression/NOT-expression pairs simplify. Equivalent operand
-order produces the same canonical fingerprint. This is practical normalization,
-not a theorem prover: distributive equivalence is not exhaustively computed.
-Fingerprints use SHA-256 over a versioned, tagged, length-delimited encoding
-(`sandpost-query` format v1), rather than Rust debug formatting. They are
-compiler-format identifiers, not permanent authorization tokens;
-format changes require rebuilding policy snapshots/materializations.
+Tantivy plans safe candidate supersets using exact-value terms and trigrams. Boolean constants, supported numeric comparisons, attachment-presence comparisons, and AND/OR compositions of these exact predicates use indexed columns directly. Other candidates require canonical-expression verification against derived-index facts. Oversized encoded terms broaden candidates instead of excluding matches. Short substrings may have no useful trigrams, and broad negation has no selective positive candidate; these can scan broadly but cannot change semantics. Never approximate negation by complementing an incomplete index.
 
-The source limit is 16 KiB, token limit 4096 and nesting limit 64. The parser
-rejects oversized expressions before deep recursion. Typed ASTs are public
-library data; compiled queries expose their expression immutably, while callers
-constructing ASTs directly must uphold the same validation/normalization
-invariant before using them as policies.
+SQL hydration verifies persistent message revisions, rechecks the composed filter against current facts, and excludes the caller's user-message tombstones. Search refills bounded candidate pages after exclusions and advances by indexed sequences even past missing physical rows. Tombstones are separate user state, not query fields or per-user index content. Direct reads authorize facts and payload in one current SQL snapshot. See [storage.md](storage.md) for outbox, revision, hydration, and derived-index lifecycle details.
 
-Cheap exact mailbox/header predicates supply inverted-index anchors. Cost hints
-order cheap work ahead of body/glob work. The matcher interns equivalent
-predicates and expressions to avoid duplicated runtime execution.
+Compilation limits: source 16 KiB (16,384 UTF-8 bytes), 4,096 tokens, and nesting depth 64 for parentheses/`not`. Glob matching is never truncated when expensive; a pattern is bounded by the source limit.
 
-Glob-to-domain rewriting is deliberately deferred. `*@domain` is not equivalent
-to a domain test unless mailbox normalization, glob grammar and address
-validity establish all preconditions; an unsafe optimization could change
-authorization. Future optimizer passes must prove equivalence on scalar and
-collection cases and preserve missing-value/negation semantics.
+HTTP `/api/v1/search` `q` always contains DSL. The client literal-search adapter encodes entered text as `content contains <DSL-quoted string>`; the native helper builds the equivalent canonical `Content` predicate. The Vue search box additionally rewrites `from:`, `to:`, `cc:`, `subject:`, `has:attachment`, `after:`, and `before:` shortcuts into canonical predicates. These shortcuts are not DSL and are not accepted by Views, scopes, or the API. Views and personal filters use the same DSL; a View organizes mail and grants no authorization.
+
+The compiler indexes raw HTML with substring semantics; it does not strip tags or add token/stemming behavior. Attachment counts are indexed, while filenames and full metadata stay in authoritative storage; filename search is not exposed. Bcc recipients are searchable through SMTP envelope recipients and captured header values, with no separate Bcc field.
