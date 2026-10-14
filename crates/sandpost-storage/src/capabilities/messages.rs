@@ -79,7 +79,8 @@ pub trait MessageStorage: Send + Sync {
         requested: &[(MessageIdentifier, u64)],
     ) -> Result<Vec<MessageSummary>, StorageError>;
 
-    /// Hydrate current revisions that satisfy the fully composed authorization filter and deletion state.
+    /// Hydrate current revisions that satisfy the fully composed authorization filter and deletion
+    /// state, omitting messages in the user's Web Trash.
     async fn hydrate_current_user_messages(
         &self,
         user: UserIdentifier,
@@ -87,7 +88,8 @@ pub trait MessageStorage: Send + Sync {
         filter: &FilterExpression,
     ) -> Result<Vec<MessageSummary>, StorageError>;
 
-    /// Tombstone matching messages for one user without physically deleting shared mail.
+    /// Permanently release matching primary messages, preserving other primary/Independent views.
+    /// Content released by every retaining view may be garbage-collected atomically.
     /// The filter must contain the caller's fully composed authorization filter; an explicit
     /// identifier batch is limited to 256 entries, and the return value counts new tombstones.
     async fn delete_user_messages(

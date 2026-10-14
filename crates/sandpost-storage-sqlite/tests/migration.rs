@@ -86,7 +86,7 @@ async fn a_fresh_database_ignores_arbitrary_user_version() {
 
     let mut connection = open_connection(&path).await;
     let actual = migration_history(&mut connection).await;
-    assert_eq!(expected.len(), 39);
+    assert_eq!(expected.len(), 56);
     assert_eq!(actual, expected);
     let columns: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('migrations') ORDER BY cid")
@@ -253,9 +253,10 @@ async fn first_25_scripts_migrate_forward_without_losing_imap_state() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(
-        mapped_folder,
-        (account_identifier.clone(), folder_identifier.clone())
+    assert_eq!(mapped_folder.0, account_identifier);
+    assert_ne!(
+        mapped_folder.1, folder_identifier,
+        "primary projection is separate from preserved independent state"
     );
     let per_account_projection_counts: Vec<(String, i64)> = sqlx::query_as(
         "SELECT account_identifier, count(*) FROM imap_user_folder_accounts GROUP BY account_identifier ORDER BY account_identifier",
@@ -279,7 +280,10 @@ async fn first_25_scripts_migrate_forward_without_losing_imap_state() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(preserved_original_projections, 2);
+    assert_eq!(preserved_original_projections, 0);
+    let independent_original_folders: i64 = sqlx::query_scalar("SELECT count(*) FROM imap_local_folders WHERE identifier IN(?1,?2) AND organization_mode='independent'")
+        .bind(&folder_identifier).bind(&peer_folder_identifier).fetch_one(&mut connection).await.unwrap();
+    assert_eq!(independent_original_folders, 2);
     let preserved_membership: (i64, i64, i64) = sqlx::query_as(
         "SELECT membership.uid, mailbox.uid_validity, mailbox.recent_through FROM imap_mailbox_messages AS membership JOIN imap_mailboxes AS mailbox ON mailbox.identifier = membership.mailbox_identifier WHERE mailbox.identifier = ?",
     )
@@ -326,7 +330,10 @@ async fn first_25_scripts_migrate_forward_without_losing_imap_state() {
         let folders = storage.list_imap_local_folders(account).await.unwrap();
         let mut projected: Vec<_> = folders
             .into_iter()
-            .map(|folder| (folder.name, folder.filter))
+            .map(|folder| {
+                assert!(folder.name.starts_with("Foo"));
+                ("Foo".into(), folder.filter)
+            })
             .collect();
         projected.sort();
         assert_eq!(projected, expected_folders);
@@ -339,6 +346,8 @@ async fn first_25_scripts_migrate_forward_without_losing_imap_state() {
             username: format!("new-{}", uuid::Uuid::new_v4()),
             password_hash: "hash".into(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Mirror,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 3,
         })
         .await
@@ -349,7 +358,10 @@ async fn first_25_scripts_migrate_forward_without_losing_imap_state() {
         .unwrap();
     let mut projected: Vec<_> = folders
         .into_iter()
-        .map(|folder| (folder.name, folder.filter))
+        .map(|folder| {
+            assert!(folder.name.starts_with("Foo"));
+            ("Foo".into(), folder.filter)
+        })
         .collect();
     projected.sort();
     assert_eq!(projected, expected_folders);
@@ -359,7 +371,10 @@ async fn first_25_scripts_migrate_forward_without_losing_imap_state() {
         let folders = storage.list_imap_local_folders(account).await.unwrap();
         let mut projected: Vec<_> = folders
             .into_iter()
-            .map(|folder| (folder.name, folder.filter))
+            .map(|folder| {
+                assert!(folder.name.starts_with("Foo"));
+                ("Foo".into(), folder.filter)
+            })
             .collect();
         projected.sort();
         assert_eq!(projected, expected_folders);
@@ -405,7 +420,7 @@ async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 39);
+    assert_eq!(scripts.len(), 56);
 
     let owner = uuid::Uuid::new_v4().to_string();
     let account = uuid::Uuid::new_v4().to_string();
@@ -485,21 +500,18 @@ async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
     drop(SqliteStorage::open(&path).await.unwrap());
     let mut connection = open_connection(&path).await;
     let history = migration_history(&mut connection).await;
-    assert_eq!(history.len(), 39);
+    assert_eq!(history.len(), 56);
     assert_eq!(history[27], "0028_add_imap_local_folder_kinds.sql");
 
-    let preserved_folder: (String, String, String) = sqlx::query_as(
+    let preserved_folder: (String, String, Option<String>) = sqlx::query_as(
         "SELECT identifier, kind, definition_identifier FROM imap_local_folders WHERE identifier = ?",
     )
     .bind(&folder)
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(
-        preserved_folder,
-        (folder.clone(), "smart".into(), folder.clone())
-    );
-    let preserved_mailbox: (String, String, i64, i64, i64, i64, String) = sqlx::query_as(
+    assert_eq!(preserved_folder, (folder.clone(), "smart".into(), None));
+    let preserved_mailbox: (String, String, i64, i64, i64, i64, Option<String>) = sqlx::query_as(
         "SELECT identifier, folder_identifier, uid_validity, uid_next, recent_through, examined_sequence, definition_fingerprint FROM imap_mailboxes WHERE identifier = ?",
     )
     .bind(&mailbox)
@@ -515,7 +527,7 @@ async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
             6,
             4,
             live_sequence,
-            "legacy-fingerprint".into()
+            None
         )
     );
     let preserved_member: (i64, i64, i64, i64) = sqlx::query_as(
@@ -552,7 +564,11 @@ async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(preserved_projection, (account.clone(), folder.clone()));
+    assert_eq!(preserved_projection.0, account);
+    assert_ne!(preserved_projection.1, folder);
+    let modes: (String, String) = sqlx::query_as("SELECT account.mode, local.organization_mode FROM imap_accounts AS account JOIN imap_local_folders AS local ON local.account_identifier=account.identifier WHERE local.identifier=?")
+        .bind(&folder).fetch_one(&mut connection).await.unwrap();
+    assert_eq!(modes, ("independent".into(), "independent".into()));
     let peer_projection: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM imap_user_folder_accounts WHERE folder_identifier = ? AND account_identifier = ?",
     )
@@ -570,7 +586,14 @@ async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(preserved_peer_projection, peer_folder);
+    assert_ne!(preserved_peer_projection, peer_folder);
+    let peer_independent: String =
+        sqlx::query_scalar("SELECT organization_mode FROM imap_local_folders WHERE identifier=?")
+            .bind(&peer_folder)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(peer_independent, "independent");
     connection.close().await.unwrap();
 }
 
@@ -946,4 +969,125 @@ async fn a_foreign_key_violation_is_rejected_on_open() {
     connection.close().await.unwrap();
 
     assert!(SqliteStorage::open(&path).await.is_err());
+}
+
+/// Upgrading the previous release preserves inherited Web folder/Trash state and explicit overrides.
+#[tokio::test]
+async fn previous_release_organization_becomes_independent_without_uid_loss() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    let mut connection = open_connection(&path).await;
+    let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut scripts: Vec<_> = std::fs::read_dir(migration_directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect();
+    scripts.sort();
+    for script in scripts.iter().take(41) {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            std::fs::read_to_string(script).unwrap(),
+        ))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO migrations(migration) VALUES(?)")
+            .bind(script.file_name().unwrap().to_str().unwrap())
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    let owner = UserIdentifier::new();
+    let account = ImapAccountIdentifier::new();
+    let primary_folder = sandpost_core::ImapFolderIdentifier::new();
+    let local_folder = sandpost_core::ImapFolderIdentifier::new();
+    let mailbox = sandpost_core::ImapMailboxIdentifier::new();
+    sqlx::query("INSERT INTO users(identifier,name,email,password_hash,global_role,mail_access,created_at,updated_at) VALUES(?1,'Owner','upgrade@example.test','hash','owner','all',1,1)").bind(owner.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query("INSERT INTO imap_accounts(identifier,owner_identifier,name,username,password_hash,created_at,updated_at) VALUES(?1,?2,'Legacy','legacy','hash',1,1)").bind(account.to_string()).bind(owner.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query("INSERT INTO web_folders(identifier,owner_identifier,name,created_at,updated_at) VALUES(?1,?2,'Projects',1,1)").bind(primary_folder.to_string()).bind(owner.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query("INSERT INTO imap_local_folders(identifier,account_identifier,name,filter,created_at,updated_at,kind,definition_identifier) VALUES(?1,?2,'__web_projects','true',1,1,'manual',?3)").bind(local_folder.to_string()).bind(account.to_string()).bind(primary_folder.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query("INSERT INTO web_folder_accounts(folder_identifier,account_identifier,local_folder_identifier) VALUES(?1,?2,?3)").bind(primary_folder.to_string()).bind(account.to_string()).bind(local_folder.to_string()).execute(&mut connection).await.unwrap();
+    let collision_folder = sandpost_core::ImapFolderIdentifier::new();
+    sqlx::query("INSERT INTO imap_local_folders(identifier,account_identifier,name,filter,created_at,updated_at,kind) VALUES(?1,?2,'__web_projects_mirror','true',1,1,'private')").bind(collision_folder.to_string()).bind(account.to_string()).execute(&mut connection).await.unwrap();
+    for sequence in 1..=3 {
+        sqlx::query("INSERT INTO mail(sequence,identifier,subject,text_body,markup_body,message_identifier,raw_message,received_at,size) VALUES(?1,?2,?3,'body','','',X'74657374',1,4)").bind(sequence).bind(MessageIdentifier::new().to_string()).bind(format!("Message {sequence}")).execute(&mut connection).await.unwrap();
+    }
+    sqlx::query("INSERT INTO user_message_placements(owner_identifier,mail_sequence,folder_identifier) VALUES(?1,1,?2)").bind(owner.to_string()).bind(primary_folder.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query("INSERT INTO user_message_trash(owner_identifier,mail_sequence,trashed_at) VALUES(?1,2,1),(?1,3,1)").bind(owner.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query("INSERT INTO imap_message_placements(account_identifier,mail_sequence,target_kind) VALUES(?1,3,'inbox')").bind(account.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query("INSERT INTO imap_mailboxes(identifier,account_identifier,source,folder_identifier,uid_validity,uid_next) VALUES(?1,?2,'folder',?3,77,18)").bind(mailbox.to_string()).bind(account.to_string()).bind(local_folder.to_string()).execute(&mut connection).await.unwrap();
+    sqlx::query(
+        "INSERT INTO imap_mailbox_messages(mailbox_identifier,uid,mail_sequence) VALUES(?1,17,1)",
+    )
+    .bind(mailbox.to_string())
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    connection.close().await.unwrap();
+
+    let storage = SqliteStorage::open(&path).await.unwrap();
+    let restored = storage.get_imap_account(account).await.unwrap().unwrap();
+    assert_eq!(restored.mode, sandpost_core::ImapAccountMode::Independent);
+    let folders = storage.list_imap_local_folders(account).await.unwrap();
+    assert!(
+        folders
+            .iter()
+            .any(|folder| folder.identifier == collision_folder
+                && folder.name == "__web_projects_mirror"),
+        "legacy names that resemble projection keys survive upgrade"
+    );
+    assert_eq!(folders[0].identifier, local_folder);
+    assert_eq!(folders[0].name, "Projects");
+    assert_eq!(folders[0].kind, sandpost_core::ImapFolderKind::Private);
+    let states = storage
+        .reconcile_imap_mailboxes(
+            account,
+            &[
+                sandpost_core::ImapMailboxSource::Inbox,
+                sandpost_core::ImapMailboxSource::Trash,
+                sandpost_core::ImapMailboxSource::LocalFolder(local_folder),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+    for state in &states {
+        storage
+            .synchronize_imap_mailbox(
+                state.identifier,
+                &sandpost_storage::ImapMembershipDefinition {
+                    expected_mode_generation: None,
+                    filter: sandpost_query::Expression::True,
+                    fingerprint: "upgrade-all".into(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        storage
+            .imap_mailbox_members(states[0].identifier, 0)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "explicit Inbox overrides inherited Trash"
+    );
+    assert_eq!(
+        storage
+            .imap_mailbox_members(states[1].identifier, 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let filed = storage
+        .imap_mailbox_members(states[2].identifier, 0)
+        .await
+        .unwrap();
+    assert_eq!(filed.len(), 1);
+    assert_eq!(filed[0].uid, 17);
+    assert_eq!(states[2].identifier, mailbox);
+    assert_eq!(states[2].uid_validity, 77);
+    storage.close().await;
 }

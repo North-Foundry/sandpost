@@ -371,15 +371,22 @@ async fn unchanged_imap_membership_does_not_require_a_write_lock() {
             username: "owner".into(),
             password_hash: "hash".into(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Independent,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 0,
         })
         .await
         .unwrap();
     let states = storage
-        .reconcile_imap_mailboxes(account.identifier, &[ImapMailboxSource::Inbox])
+        .reconcile_imap_mailboxes(
+            account.identifier,
+            &[ImapMailboxSource::Inbox],
+            Some(account.mode_generation),
+        )
         .await
         .unwrap();
     let definition = ImapMembershipDefinition {
+        expected_mode_generation: Some(account.mode_generation),
         filter: sandpost_query::Expression::True,
         fingerprint: "all".into(),
     };
@@ -397,7 +404,11 @@ async fn unchanged_imap_membership_does_not_require_a_write_lock() {
     let result = tokio::time::timeout(Duration::from_secs(5), async {
         assert_eq!(
             storage
-                .reconcile_imap_mailboxes(account.identifier, &[ImapMailboxSource::Inbox])
+                .reconcile_imap_mailboxes(
+                    account.identifier,
+                    &[ImapMailboxSource::Inbox],
+                    Some(account.mode_generation)
+                )
                 .await
                 .unwrap(),
             vec![mailbox]

@@ -1,5 +1,5 @@
 //! IMAP account creation, credentials, and settings.
-use sandpost_core::{ImapAccount, UserIdentifier};
+use sandpost_core::{ImapAccount, ImapAccountMode, UserIdentifier};
 
 /// A new IMAP account. Only the one-way password hash crosses the storage boundary.
 ///
@@ -11,6 +11,9 @@ pub struct NewImapAccount {
     pub username: String,
     pub password_hash: String,
     pub mirror_views: bool,
+    pub mode: ImapAccountMode,
+    /// Current primary authorization used for the initial independent snapshot.
+    pub initial_authorization: crate::FilterExpression,
     /// Unix seconds, UTC.
     pub created_at: i64,
 }
@@ -30,4 +33,5 @@ pub struct ImapAccountSettings {
     pub name: String,
     pub enabled: bool,
     pub mirror_views: bool,
+    pub mode: ImapAccountMode,
 }

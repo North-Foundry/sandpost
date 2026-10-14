@@ -18,9 +18,16 @@ use sandpost_core::{
 };
 
 /// IMAP accounts, their configuration, mailbox identities, membership, and flags.
+/// Session generation fences require an enabled credential at the captured generation,
+/// checked in the same snapshot or transaction as the operation. A rejected fence returns
+/// NotFound without changes. None preserves trusted, unfenced backend-call behavior;
+/// mailbox and folder operations still refuse dormant-mode handles.
+/// Folder definition configuration requires the captured generation and active mode,
+/// but remains available to the Web owner while the IMAP credential is disabled.
 #[async_trait]
 pub trait ImapStorage: Send + Sync {
-    /// Create an enabled account; a taken username fails with DuplicateImapUsername.
+    /// Create an enabled account and snapshot authorized current primary history and organization.
+    /// A taken username fails with DuplicateImapUsername.
     async fn create_imap_account(
         &self,
         account: &NewImapAccount,
@@ -50,7 +57,7 @@ pub trait ImapStorage: Send + Sync {
         identifier: ImapAccountIdentifier,
     ) -> Result<Option<ImapAccountCredential>, StorageError>;
 
-    /// Replace an account's name, enabled state, and mirror setting.
+    /// Replace name/status/mode, preserving dormant state and advancing the mode generation.
     async fn update_imap_account(
         &self,
         identifier: ImapAccountIdentifier,
@@ -64,8 +71,8 @@ pub trait ImapStorage: Send + Sync {
         password_hash: &str,
     ) -> Result<Option<ImapAccount>, StorageError>;
 
-    /// Delete an account with its configuration, mailboxes, memberships, and flags; mail is
-    /// untouched.
+    /// Delete private configuration, both mode catalogs, flags and retained references.
+    /// Primary state is untouched; content with no remaining view may be collected.
     async fn delete_imap_account(
         &self,
         identifier: ImapAccountIdentifier,
@@ -91,8 +98,8 @@ pub trait ImapStorage: Send + Sync {
         account: ImapAccountIdentifier,
     ) -> Result<Vec<ImapLinkedView>, StorageError>;
 
-    /// Create an owner-shared folder through an account projection; a name used by the owner fails with
-    /// DuplicateImapFolderName.
+    /// Create an account-local Independent smart definition, or a legacy primary Mirror definition.
+    /// A name used in that namespace fails with DuplicateImapFolderName.
     async fn create_imap_local_folder(
         &self,
         folder: &NewImapLocalFolder,
@@ -104,32 +111,33 @@ pub trait ImapStorage: Send + Sync {
         identifier: ImapFolderIdentifier,
     ) -> Result<Option<ImapLocalFolder>, StorageError>;
 
-    /// List every owner folder projected through this account, ordered by name and identifier.
+    /// List the active mode's folder definitions, ordered by name and identifier.
     async fn list_imap_local_folders(
         &self,
         account: ImapAccountIdentifier,
     ) -> Result<Vec<ImapLocalFolder>, StorageError>;
 
-    /// Replace a shared owner folder's settings across all projections; a filter change reconciles its
-    /// mailbox at the next synchronization.
+    /// Replace a folder definition in its organization namespace; filter edits reconcile dynamically.
     async fn update_imap_local_folder(
         &self,
         identifier: ImapFolderIdentifier,
         settings: &ImapLocalFolderSettings,
     ) -> Result<Option<ImapLocalFolder>, StorageError>;
 
-    /// Delete the owner folder and every account projection with their mailbox identities.
+    /// Delete the folder in its owning view; normal occurrences retain copies or enter Trash.
     async fn delete_imap_local_folder(
         &self,
         identifier: ImapFolderIdentifier,
+        expected_mode_generation: Option<u64>,
     ) -> Result<bool, StorageError>;
 
-    /// Create an account-owned private folder with a fresh local mailbox identity.
+    /// Create an Independent private folder, or a shared primary Web folder in Mirror.
     async fn create_imap_private_folder(
         &self,
         account: ImapAccountIdentifier,
         name: &str,
         created_at: i64,
+        expected_mode_generation: Option<u64>,
     ) -> Result<ImapLocalFolder, StorageError>;
 
     /// Create a Web manual folder and expose it to the listed accounts atomically.
@@ -159,13 +167,16 @@ pub trait ImapStorage: Send + Sync {
         accounts: &[ImapAccountIdentifier],
     ) -> Result<Option<WebFolder>, StorageError>;
 
-    /// Delete a Web folder and its placements and account projections.
+    /// Delete a primary folder and its Mirror projections, trashing otherwise-unfiled occurrences.
     async fn delete_web_folder(
         &self,
         identifier: ImapFolderIdentifier,
     ) -> Result<bool, StorageError>;
 
     /// Place or unfile up to 256 authorized messages in one owner's Web mailbox.
+    ///
+    /// Placing a message in a folder or the general mailbox also restores it from the owner's
+    /// Web Trash.
     async fn place_user_messages(
         &self,
         owner: UserIdentifier,
@@ -174,7 +185,31 @@ pub trait ImapStorage: Send + Sync {
         authorization: &FilterExpression,
     ) -> Result<u64, StorageError>;
 
+    /// Copy up to 256 distinct authorized, untombstoned messages into Inbox or an owned folder.
+    /// Preserve primary placement and Trash; reject any existing destination occurrence atomically.
+    /// Unknown owners, destinations, or inaccessible messages return NotFound.
+    async fn copy_user_messages(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        folder: Option<ImapFolderIdentifier>,
+        authorization: &FilterExpression,
+    ) -> Result<u64, StorageError>;
+
+    /// Atomically change shared primary flags on up to 256 currently authorized messages.
+    /// Deleted is occurrence-only and refused; keywords must be bounded valid IMAP atoms.
+    /// Return the number of distinct messages whose supported flags actually changed.
+    async fn set_user_message_flags(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        change: &ImapFlagChange,
+        authorization: &FilterExpression,
+    ) -> Result<u64, StorageError>;
+
     /// List authorized messages in the Web general mailbox (`None`) or a manual folder.
+    ///
+    /// Messages in the owner's Web Trash are excluded from every such listing.
     async fn list_web_mailbox_messages(
         &self,
         owner: UserIdentifier,
@@ -182,13 +217,52 @@ pub trait ImapStorage: Send + Sync {
         query: MessageListQuery,
     ) -> Result<Vec<MessageSummary>, StorageError>;
 
-    /// Ensure exactly the given sources have mailbox identities: create missing ones with a fresh
-    /// UIDVALIDITY and delete those not listed. Returns the states in the order given.
+    /// Move up to 256 authorized, undeleted messages into one owner's Web Trash.
+    ///
+    /// Trash is exclusive with Web folder placement: a trashed message loses its folder placement,
+    /// leaves every Web mailbox listing and user search, and projects into the Trash of each of
+    /// the owner's IMAP accounts that did not place it elsewhere. Already trashed messages keep
+    /// their original time. Return the number of authorized messages processed.
+    async fn trash_user_messages(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        authorization: &FilterExpression,
+        trashed_at: i64,
+    ) -> Result<u64, StorageError>;
+
+    /// List authorized, undeleted messages in one owner's Web Trash, newest first with keysets.
+    async fn list_web_trash_messages(
+        &self,
+        owner: UserIdentifier,
+        query: MessageListQuery,
+    ) -> Result<Vec<MessageSummary>, StorageError>;
+
+    /// Set shared Seen for up to 256 currently authorized, undeleted messages.
+    async fn set_user_message_seen(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        seen: bool,
+        authorization: &FilterExpression,
+    ) -> Result<u64, StorageError>;
+
+    /// Tombstone every authorized message in one owner's Web Trash and return new tombstones.
+    async fn empty_user_trash(
+        &self,
+        owner: UserIdentifier,
+        authorization: &FilterExpression,
+    ) -> Result<u64, StorageError>;
+
+    /// Reconcile active-mode identities, preserving all dormant-mode identities and counters.
+    /// Missing active sources receive fresh UIDVALIDITY; unlisted live identities are retained.
+    /// Return states in request order.
     /// Local folders must belong to the account; otherwise NotFound and nothing changes.
     async fn reconcile_imap_mailboxes(
         &self,
         account: ImapAccountIdentifier,
         sources: &[ImapMailboxSource],
+        expected_mode_generation: Option<u64>,
     ) -> Result<Vec<ImapMailboxState>, StorageError>;
 
     /// Load one mailbox identity.
@@ -199,7 +273,7 @@ pub trait ImapStorage: Send + Sync {
 
     /// Atomically bring membership in line with the definition and return the new state.
     ///
-    /// Dynamic mailboxes gain every matching message except owner-deleted mail and mailbox exclusions,
+    /// Dynamic mailboxes gain matching retained and currently authorized messages,
     /// in ascending message order with new UIDs, and lose members that no longer match. The
     /// Trash and COPY targets restore authorized membership from durable placement state.
     /// Returns None for an unknown mailbox.
@@ -274,17 +348,20 @@ pub trait ImapStorage: Send + Sync {
         identifier: ImapMailboxIdentifier,
         uids: &[u32],
         change: &ImapFlagChange,
+        expected_mode_generation: Option<u64>,
     ) -> Result<Vec<(u32, ImapMessageFlags)>, StorageError>;
 
     /// Remove members flagged deleted, restricted to `uids` when given, and return their UIDs.
     ///
-    /// Atomically record user-message tombstones for the account owner and remove these messages
-    /// from every mailbox of every account of that user. Preserve physical mail and other users.
-    /// This product policy extends mailbox-local protocol semantics; genuine MOVE never uses it.
+    /// Remove only the active view's flagged occurrences. Promote surviving copies, move a final
+    /// normal occurrence into its Trash, and permanently release a final Trash occurrence.
+    /// Preserve primary/peer state for Independent; collect physical content only after all views
+    /// release it. COPY then source EXPUNGE transfers without duplicating physical mail.
     async fn expunge_imap_members(
         &self,
         identifier: ImapMailboxIdentifier,
         uids: Option<&[u32]>,
+        expected_mode_generation: Option<u64>,
     ) -> Result<Vec<u32>, StorageError>;
 
     /// Copy members to another mailbox of the same account, removing them from the source when

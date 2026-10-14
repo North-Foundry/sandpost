@@ -6,10 +6,14 @@ mod folders;
 mod mailboxes;
 mod members;
 mod membership;
+pub(crate) mod organization;
 mod placements;
 mod shared;
 mod subscriptions;
 mod web_folders;
+
+#[cfg(test)]
+mod read_status_tests;
 
 use crate::SqliteStorage;
 use crate::error::StorageResult;
@@ -122,6 +126,7 @@ impl ImapStorage for SqliteStorage {
             .await
             .storage()?;
         let result = accounts::delete_account(&mut transaction, identifier).await?;
+        organization::collect_unreferenced_messages(&mut transaction).await?;
         transaction.commit().await.storage()?;
         Ok(result)
     }
@@ -175,6 +180,12 @@ impl ImapStorage for SqliteStorage {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .storage()?;
+        organization::require_account_configuration_generation(
+            &mut transaction,
+            folder.account_identifier,
+            folder.expected_mode_generation,
+        )
+        .await?;
         let result = folders::create_folder(&mut transaction, folder).await?;
         transaction.commit().await.storage()?;
         Ok(result)
@@ -209,6 +220,12 @@ impl ImapStorage for SqliteStorage {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .storage()?;
+        organization::require_folder_configuration_generation(
+            &mut transaction,
+            identifier,
+            settings.expected_mode_generation,
+        )
+        .await?;
         let result = folders::update_folder(&mut transaction, identifier, settings).await?;
         transaction.commit().await.storage()?;
         Ok(result)
@@ -218,12 +235,19 @@ impl ImapStorage for SqliteStorage {
     async fn delete_imap_local_folder(
         &self,
         identifier: ImapFolderIdentifier,
+        expected_mode_generation: Option<u64>,
     ) -> Result<bool, StorageError> {
         let mut transaction = self
             .write_pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .storage()?;
+        organization::require_folder_configuration_generation(
+            &mut transaction,
+            identifier,
+            expected_mode_generation,
+        )
+        .await?;
         let result = folders::delete_folder(&mut transaction, identifier).await?;
         transaction.commit().await.storage()?;
         Ok(result)
@@ -235,12 +259,19 @@ impl ImapStorage for SqliteStorage {
         account: ImapAccountIdentifier,
         name: &str,
         created_at: i64,
+        expected_mode_generation: Option<u64>,
     ) -> Result<ImapLocalFolder, StorageError> {
         let mut transaction = self
             .write_pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .storage()?;
+        organization::require_account_generation(
+            &mut transaction,
+            account,
+            expected_mode_generation,
+        )
+        .await?;
         let result =
             folders::create_private_folder(&mut transaction, account, name, created_at).await?;
         transaction.commit().await.storage()?;
@@ -346,6 +377,51 @@ impl ImapStorage for SqliteStorage {
         Ok(result)
     }
 
+    /// Atomically copy primary messages without changing their source occurrences.
+    async fn copy_user_messages(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        folder: Option<ImapFolderIdentifier>,
+        authorization: &sandpost_storage::FilterExpression,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let copied = placements::copy_user_messages(
+            &mut transaction,
+            owner,
+            identifiers,
+            folder,
+            authorization,
+        )
+        .await?;
+        transaction.commit().await.storage()?;
+        Ok(copied)
+    }
+
+    /// Atomically update supported primary flags and every Mirror modification cursor.
+    async fn set_user_message_flags(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        change: &ImapFlagChange,
+        authorization: &sandpost_storage::FilterExpression,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let changed =
+            flags::set_user_flags(&mut transaction, owner, identifiers, change, authorization)
+                .await?;
+        transaction.commit().await.storage()?;
+        Ok(changed)
+    }
+
     /// List one Web mailbox in the caller's authorized, non-deleted message set.
     async fn list_web_mailbox_messages(
         &self,
@@ -373,13 +449,138 @@ impl ImapStorage for SqliteStorage {
         Ok(result)
     }
 
+    /// Set shared Seen for currently authorized, undeleted messages in one atomic batch.
+    async fn set_user_message_seen(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        seen: bool,
+        authorization: &sandpost_storage::FilterExpression,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let changed =
+            flags::set_user_seen(&mut transaction, owner, identifiers, seen, authorization).await?;
+        transaction.commit().await.storage()?;
+        Ok(changed)
+    }
+
+    /// Move authorized, non-deleted mail into one owner's Web Trash.
+    async fn trash_user_messages(
+        &self,
+        owner: UserIdentifier,
+        identifiers: &[MessageIdentifier],
+        authorization: &sandpost_storage::FilterExpression,
+        trashed_at: i64,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = placements::trash_user_messages(
+            &mut transaction,
+            owner,
+            identifiers,
+            authorization,
+            trashed_at,
+        )
+        .await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// List one owner's Web Trash with the authorization filter and tombstones applied in SQL.
+    async fn list_web_trash_messages(
+        &self,
+        owner: UserIdentifier,
+        query: MessageListQuery,
+    ) -> Result<Vec<MessageSummary>, StorageError> {
+        let mut transaction = self.read_pool.begin().await.storage()?;
+        let result =
+            crate::messages::summaries::list_web_trash_messages(&mut transaction, owner, query)
+                .await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
+    /// Permanently delete one owner's authorized Web Trash in one transaction.
+    async fn empty_user_trash(
+        &self,
+        owner: UserIdentifier,
+        authorization: &sandpost_storage::FilterExpression,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        let result = placements::empty_user_trash(&mut transaction, owner, authorization).await?;
+        transaction.commit().await.storage()?;
+        Ok(result)
+    }
+
     /// Reconcile mailbox identities to the supplied ordered source list.
     async fn reconcile_imap_mailboxes(
         &self,
         account: ImapAccountIdentifier,
         sources: &[ImapMailboxSource],
+        expected_mode_generation: Option<u64>,
     ) -> Result<Vec<ImapMailboxState>, StorageError> {
-        let mut transaction = self.write_pool.begin().await.storage()?;
+        {
+            let mut transaction = self.read_pool.begin().await.storage()?;
+            organization::require_account_generation(
+                &mut transaction,
+                account,
+                expected_mode_generation,
+            )
+            .await?;
+            let current = accounts::get_account(&mut transaction, account)
+                .await?
+                .ok_or(StorageError::NotFound)?;
+            let sql = format!(
+                "SELECT {} FROM imap_mailboxes WHERE account_identifier=?1 AND organization_mode=?2",
+                shared::MAILBOX_COLUMNS
+            );
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(account.to_string())
+                .bind(current.mode.as_str())
+                .fetch_all(&mut *transaction)
+                .await
+                .storage()?;
+            let existing = rows
+                .iter()
+                .map(shared::decode_mailbox)
+                .collect::<Result<Vec<_>, _>>()
+                .storage()?;
+            let unchanged = sources
+                .iter()
+                .map(|source| {
+                    existing
+                        .iter()
+                        .find(|state| state.source == *source)
+                        .copied()
+                })
+                .collect::<Option<Vec<_>>>();
+            transaction.commit().await.storage()?;
+            if let Some(states) = unchanged {
+                return Ok(states);
+            }
+        }
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        organization::require_account_generation(
+            &mut transaction,
+            account,
+            expected_mode_generation,
+        )
+        .await?;
         let result = mailboxes::reconcile_mailboxes(&mut transaction, account, sources).await?;
         transaction.commit().await.storage()?;
         Ok(result)
@@ -400,7 +601,25 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         definition: &ImapMembershipDefinition,
     ) -> Result<Option<ImapMailboxState>, StorageError> {
-        let mut transaction = self.write_pool.begin().await.storage()?;
+        let expected = definition.expected_mode_generation;
+        {
+            let mut transaction = self.read_pool.begin().await.storage()?;
+            organization::require_mailbox_generation(&mut transaction, identifier, expected)
+                .await?;
+            let state = mailboxes::get_mailbox(&mut transaction, identifier).await?;
+            let unchanged: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imap_mailboxes WHERE identifier=?1 AND definition_fingerprint=?2 AND examined_sequence=(SELECT coalesce(max(sequence),0) FROM mail))")
+                .bind(identifier.to_string()).bind(&definition.fingerprint).fetch_one(&mut *transaction).await.storage()?;
+            transaction.commit().await.storage()?;
+            if unchanged || state.is_none() {
+                return Ok(state);
+            }
+        }
+        let mut transaction = self
+            .write_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .storage()?;
+        organization::require_mailbox_generation(&mut transaction, identifier, expected).await?;
         let result =
             mailboxes::synchronize_mailbox(&mut transaction, identifier, definition).await?;
         transaction.commit().await.storage()?;
@@ -511,28 +730,42 @@ impl ImapStorage for SqliteStorage {
         identifier: ImapMailboxIdentifier,
         uids: &[u32],
         change: &ImapFlagChange,
+        expected_mode_generation: Option<u64>,
     ) -> Result<Vec<(u32, ImapMessageFlags)>, StorageError> {
         let mut transaction = self
             .write_pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .storage()?;
+        organization::require_mailbox_generation(
+            &mut transaction,
+            identifier,
+            expected_mode_generation,
+        )
+        .await?;
         let result = flags::store_flags(&mut transaction, identifier, uids, change).await?;
         transaction.commit().await.storage()?;
         Ok(result)
     }
 
-    /// Tombstone flagged members for the owning user across all their accounts without deleting mail.
+    /// Tombstone flagged members for the owner, or transfer primary occurrences that survive as copies.
     async fn expunge_imap_members(
         &self,
         identifier: ImapMailboxIdentifier,
         uids: Option<&[u32]>,
+        expected_mode_generation: Option<u64>,
     ) -> Result<Vec<u32>, StorageError> {
         let mut transaction = self
             .write_pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .storage()?;
+        organization::require_mailbox_generation(
+            &mut transaction,
+            identifier,
+            expected_mode_generation,
+        )
+        .await?;
         let result = membership::expunge(&mut transaction, identifier, uids).await?;
         transaction.commit().await.storage()?;
         Ok(result)
@@ -547,11 +780,15 @@ impl ImapStorage for SqliteStorage {
         destination_definition: Option<&ImapMembershipDefinition>,
         remove_from_source: bool,
     ) -> Result<ImapCopyResult, StorageError> {
+        let expected =
+            destination_definition.and_then(|definition| definition.expected_mode_generation);
         let mut transaction = self
             .write_pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .storage()?;
+        organization::require_mailbox_generation(&mut transaction, source, expected).await?;
+        organization::require_mailbox_generation(&mut transaction, destination, expected).await?;
         let result = membership::copy(
             &mut transaction,
             source,

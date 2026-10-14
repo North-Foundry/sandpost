@@ -47,6 +47,17 @@ pub(super) async fn project_owner_folders(
     account: ImapAccountIdentifier,
     owner: UserIdentifier,
 ) -> Result<(), StorageError> {
+    let mode: Option<String> = sqlx::query_scalar(
+        "SELECT mode FROM imap_accounts WHERE identifier = ?1 AND owner_identifier = ?2",
+    )
+    .bind(account.to_string())
+    .bind(owner.to_string())
+    .fetch_optional(&mut *connection)
+    .await
+    .storage()?;
+    if mode.as_deref() != Some("mirror") {
+        return Ok(());
+    }
     let rows = sqlx::query("SELECT identifier, name, filter, include_in_inbox, created_at, updated_at FROM imap_user_folders WHERE owner_identifier = ?1")
         .bind(owner.to_string())
         .fetch_all(&mut *connection)
@@ -54,8 +65,17 @@ pub(super) async fn project_owner_folders(
         .storage()?;
     for row in rows {
         let definition: String = row.try_get("identifier").storage()?;
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imap_user_folder_accounts WHERE account_identifier = ?1 AND folder_identifier = ?2)")
+            .bind(account.to_string())
+            .bind(&definition)
+            .fetch_one(&mut *connection)
+            .await
+            .storage()?;
+        if exists {
+            continue;
+        }
         let local = ImapFolderIdentifier::new();
-        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind, definition_identifier) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'smart', ?8)")
+        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind, definition_identifier, organization_mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'smart', ?8, 'mirror')")
             .bind(local.to_string())
             .bind(account.to_string())
             .bind(format!("__sandpost_owner_folder_{definition}"))
@@ -78,6 +98,82 @@ pub(super) async fn project_owner_folders(
     Ok(())
 }
 
+/// Snapshot every current Web folder into an account's independent folder namespace.
+pub(super) async fn snapshot_primary_folders(
+    connection: &mut SqliteConnection,
+    account: ImapAccountIdentifier,
+    owner: UserIdentifier,
+    created_at: i64,
+) -> Result<Vec<(String, String)>, StorageError> {
+    let folders = sqlx::query(
+        "SELECT identifier, name FROM web_folders WHERE owner_identifier = ?1 ORDER BY identifier",
+    )
+    .bind(owner.to_string())
+    .fetch_all(&mut *connection)
+    .await
+    .storage()?;
+    let mut mappings = Vec::with_capacity(folders.len());
+    for folder in folders {
+        let primary: String = folder.try_get("identifier").storage()?;
+        let name: String = folder.try_get("name").storage()?;
+        let identifier = ImapFolderIdentifier::new();
+        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind, organization_mode) VALUES (?1, ?2, ?3, 'true', 0, ?4, ?4, 'private', 'independent')")
+            .bind(identifier.to_string())
+            .bind(account.to_string())
+            .bind(name)
+            .bind(created_at)
+            .execute(&mut *connection)
+            .await
+            .storage()?;
+        mappings.push((primary, identifier.to_string()));
+    }
+    Ok(mappings)
+}
+
+/// Idempotently create all current owner Web and legacy smart projections for a Mirror account.
+pub(super) async fn ensure_mirror_folders(
+    connection: &mut SqliteConnection,
+    account: ImapAccountIdentifier,
+    owner: UserIdentifier,
+) -> Result<(), StorageError> {
+    let mode: Option<String> = sqlx::query_scalar(
+        "SELECT mode FROM imap_accounts WHERE identifier = ?1 AND owner_identifier = ?2",
+    )
+    .bind(account.to_string())
+    .bind(owner.to_string())
+    .fetch_optional(&mut *connection)
+    .await
+    .storage()?;
+    if mode.as_deref() != Some("mirror") {
+        return Err(StorageError::NotFound);
+    }
+    project_owner_folders(connection, account, owner).await?;
+    let web_folders = sqlx::query_scalar::<_, String>(
+        "SELECT identifier FROM web_folders WHERE owner_identifier = ?1 ORDER BY identifier",
+    )
+    .bind(owner.to_string())
+    .fetch_all(&mut *connection)
+    .await
+    .storage()?;
+    for identifier in web_folders {
+        super::web_folders::create_projection(
+            connection,
+            parse_identifier(&identifier)?,
+            account,
+            now_unix(),
+        )
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE imap_mailboxes SET definition_fingerprint = NULL WHERE account_identifier = ?1",
+    )
+    .bind(account.to_string())
+    .execute(connection)
+    .await
+    .storage()?;
+    Ok(())
+}
+
 /// Create an owner definition and a projection in every existing account.
 pub(super) async fn create_folder(
     connection: &mut SqliteConnection,
@@ -86,6 +182,36 @@ pub(super) async fn create_folder(
     let account = get_account(connection, folder.account_identifier)
         .await?
         .ok_or(StorageError::NotFound)?;
+    let mode: String = sqlx::query_scalar("SELECT mode FROM imap_accounts WHERE identifier = ?1")
+        .bind(folder.account_identifier.to_string())
+        .fetch_one(&mut *connection)
+        .await
+        .storage()?;
+    if mode == "independent" {
+        let duplicate: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imap_local_folders WHERE account_identifier = ?1 AND organization_mode = 'independent' AND name = ?2)")
+            .bind(folder.account_identifier.to_string())
+            .bind(&folder.name)
+            .fetch_one(&mut *connection)
+            .await
+            .storage()?;
+        if duplicate {
+            return Err(StorageError::DuplicateImapFolderName);
+        }
+        let identifier = ImapFolderIdentifier::new();
+        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind, organization_mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 'smart', 'independent')")
+            .bind(identifier.to_string())
+            .bind(folder.account_identifier.to_string())
+            .bind(&folder.name)
+            .bind(&folder.filter)
+            .bind(folder.include_in_inbox)
+            .bind(folder.created_at)
+            .execute(&mut *connection)
+            .await
+            .storage()?;
+        return get_folder(connection, identifier)
+            .await?
+            .ok_or(StorageError::NotFound);
+    }
     let duplicate: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM imap_user_folders WHERE owner_identifier = ?1 AND name = ?2 UNION ALL SELECT 1 FROM web_folders WHERE owner_identifier = ?1 AND name = ?2)",
     )
@@ -109,7 +235,7 @@ pub(super) async fn create_folder(
         .await
         .storage()?;
     let accounts = sqlx::query_scalar::<_, String>(
-        "SELECT identifier FROM imap_accounts WHERE owner_identifier = ?1 ORDER BY identifier",
+        "SELECT identifier FROM imap_accounts WHERE owner_identifier = ?1 AND mode = 'mirror' ORDER BY identifier",
     )
     .bind(account.owner_identifier.to_string())
     .fetch_all(&mut *connection)
@@ -118,7 +244,7 @@ pub(super) async fn create_folder(
     let mut created = None;
     for account_id in accounts {
         let local = ImapFolderIdentifier::new();
-        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind, definition_identifier) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 'smart', ?7)")
+        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind, definition_identifier, organization_mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 'smart', ?7, 'mirror')")
             .bind(local.to_string())
             .bind(&account_id)
             .bind(format!("__sandpost_owner_folder_{definition}"))
@@ -152,8 +278,23 @@ pub(super) async fn create_private_folder(
     name: &str,
     created_at: i64,
 ) -> Result<ImapLocalFolder, StorageError> {
-    if get_account(connection, account).await?.is_none() {
-        return Err(StorageError::NotFound);
+    let account_record = get_account(connection, account)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    if account_record.mode == sandpost_core::ImapAccountMode::Mirror {
+        let definition = super::web_folders::create_folder(
+            connection,
+            account_record.owner_identifier,
+            name,
+            &[],
+            created_at,
+        )
+        .await?;
+        let local: String = sqlx::query_scalar("SELECT local_folder_identifier FROM web_folder_accounts WHERE account_identifier = ?1 AND folder_identifier = ?2")
+            .bind(account.to_string()).bind(definition.identifier.to_string()).fetch_one(&mut *connection).await.storage()?;
+        return get_folder(connection, parse_identifier(&local)?)
+            .await?
+            .ok_or(StorageError::NotFound);
     }
     let duplicate: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM imap_local_folders WHERE account_identifier = ?1 AND name = ?2)",
@@ -167,7 +308,7 @@ pub(super) async fn create_private_folder(
         return Err(StorageError::DuplicateImapFolderName);
     }
     let identifier = ImapFolderIdentifier::new();
-    sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind) VALUES (?1, ?2, ?3, 'true', 0, ?4, ?4, 'private')")
+    sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at, kind, organization_mode) VALUES (?1, ?2, ?3, 'true', 0, ?4, ?4, 'private', 'independent')")
         .bind(identifier.to_string())
         .bind(account.to_string())
         .bind(name)
@@ -207,7 +348,16 @@ pub(super) async fn update_folder(
     let Some(existing) = get_folder(connection, identifier).await? else {
         return Ok(None);
     };
+    require_active_folder(connection, identifier).await?;
     if existing.kind == ImapFolderKind::Private {
+        super::organization::rename_folder_descendants(
+            connection,
+            false,
+            &existing.account_identifier.to_string(),
+            &existing.name,
+            &settings.name,
+        )
+        .await?;
         let duplicate: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imap_local_folders WHERE account_identifier = ?1 AND name = ?2 AND identifier != ?3)")
             .bind(existing.account_identifier.to_string())
             .bind(&settings.name)
@@ -229,10 +379,46 @@ pub(super) async fn update_folder(
         .storage()?;
         return get_folder(connection, identifier).await;
     }
+    let organization_mode: String = sqlx::query_scalar(
+        "SELECT organization_mode FROM imap_local_folders WHERE identifier = ?1",
+    )
+    .bind(identifier.to_string())
+    .fetch_one(&mut *connection)
+    .await
+    .storage()?;
+    if organization_mode == "independent" {
+        let duplicate: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imap_local_folders WHERE account_identifier = ?1 AND organization_mode = 'independent' AND name = ?2 AND identifier != ?3)")
+            .bind(existing.account_identifier.to_string())
+            .bind(&settings.name)
+            .bind(identifier.to_string())
+            .fetch_one(&mut *connection)
+            .await
+            .storage()?;
+        if duplicate {
+            return Err(StorageError::DuplicateImapFolderName);
+        }
+        sqlx::query("UPDATE imap_local_folders SET name = ?1, filter = ?2, include_in_inbox = ?3, updated_at = ?4 WHERE identifier = ?5")
+            .bind(&settings.name)
+            .bind(&settings.filter)
+            .bind(settings.include_in_inbox)
+            .bind(now_unix())
+            .bind(identifier.to_string())
+            .execute(&mut *connection)
+            .await
+            .storage()?;
+        return get_folder(connection, identifier).await;
+    }
     if existing.kind == ImapFolderKind::Manual {
-        return Err(StorageError::ConstraintViolation(
-            "Web-managed manual folders are updated through their owner definition".into(),
-        ));
+        super::web_folders::update_folder(
+            connection,
+            existing
+                .definition_identifier
+                .ok_or(StorageError::NotFound)?,
+            &settings.name,
+            &[],
+        )
+        .await?;
+        return get_folder(connection, identifier).await;
     }
     let definition: String = sqlx::query_scalar("SELECT folder_identifier FROM imap_user_folder_accounts WHERE local_folder_identifier = ?1")
         .bind(identifier.to_string())
@@ -284,7 +470,7 @@ pub(super) async fn list_folders(
     account: ImapAccountIdentifier,
 ) -> Result<Vec<ImapLocalFolder>, StorageError> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "{FOLDER_SELECT} WHERE local.account_identifier = ?1 ORDER BY name, local.identifier"
+        "{FOLDER_SELECT} JOIN imap_accounts AS account ON account.identifier = local.account_identifier WHERE local.account_identifier = ?1 AND local.organization_mode = account.mode ORDER BY name, local.identifier"
     )))
     .bind(account.to_string())
     .fetch_all(connection)
@@ -304,7 +490,14 @@ pub(super) async fn delete_folder(
     let Some(existing) = get_folder(connection, identifier).await? else {
         return Ok(false);
     };
+    require_active_folder(connection, identifier).await?;
     if existing.kind == ImapFolderKind::Private {
+        super::organization::delete_folder_occurrences(
+            connection,
+            existing.account_identifier,
+            identifier,
+        )
+        .await?;
         let deleted = sqlx::query("DELETE FROM imap_local_folders WHERE identifier = ?1")
             .bind(identifier.to_string())
             .execute(&mut *connection)
@@ -322,9 +515,43 @@ pub(super) async fn delete_folder(
         return Ok(deleted);
     }
     if existing.kind == ImapFolderKind::Manual {
-        return Err(StorageError::ConstraintViolation(
-            "Web-managed manual folders are deleted through their owner definition".into(),
-        ));
+        return super::web_folders::delete_folder(
+            connection,
+            existing
+                .definition_identifier
+                .ok_or(StorageError::NotFound)?,
+        )
+        .await;
+    }
+    let organization_mode: String = sqlx::query_scalar(
+        "SELECT organization_mode FROM imap_local_folders WHERE identifier = ?1",
+    )
+    .bind(identifier.to_string())
+    .fetch_one(&mut *connection)
+    .await
+    .storage()?;
+    if organization_mode == "independent" {
+        super::organization::delete_folder_occurrences(
+            connection,
+            existing.account_identifier,
+            identifier,
+        )
+        .await?;
+        let deleted = sqlx::query("DELETE FROM imap_local_folders WHERE identifier = ?1")
+            .bind(identifier.to_string())
+            .execute(&mut *connection)
+            .await
+            .storage()?
+            .rows_affected()
+            > 0;
+        sqlx::query(
+            "UPDATE imap_mailboxes SET definition_fingerprint = NULL WHERE account_identifier = ?1",
+        )
+        .bind(existing.account_identifier.to_string())
+        .execute(connection)
+        .await
+        .storage()?;
+        return Ok(deleted);
     }
     let definition = existing
         .definition_identifier
@@ -336,6 +563,12 @@ pub(super) async fn delete_folder(
             .fetch_one(&mut *connection)
             .await
             .storage()?;
+    super::organization::delete_folder_occurrences(
+        connection,
+        existing.account_identifier,
+        identifier,
+    )
+    .await?;
     sqlx::query("DELETE FROM imap_local_folders WHERE identifier IN (SELECT local_folder_identifier FROM imap_user_folder_accounts WHERE folder_identifier = ?1)")
         .bind(&definition)
         .execute(&mut *connection)
@@ -351,4 +584,18 @@ pub(super) async fn delete_folder(
     sqlx::query("UPDATE imap_mailboxes SET definition_fingerprint = NULL WHERE account_identifier IN (SELECT identifier FROM imap_accounts WHERE owner_identifier = ?1)")
         .bind(owner).execute(connection).await.storage()?;
     Ok(deleted)
+}
+
+/// Refuse dormant definitions in the same transaction as any update or deletion.
+async fn require_active_folder(
+    connection: &mut SqliteConnection,
+    identifier: ImapFolderIdentifier,
+) -> Result<(), StorageError> {
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imap_local_folders AS folder JOIN imap_accounts AS account ON account.identifier=folder.account_identifier WHERE folder.identifier=?1 AND folder.organization_mode=account.mode)")
+        .bind(identifier.to_string()).fetch_one(connection).await.storage()?;
+    if active {
+        Ok(())
+    } else {
+        Err(StorageError::NotFound)
+    }
 }

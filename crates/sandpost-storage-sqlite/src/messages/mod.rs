@@ -146,6 +146,7 @@ impl MessageStorage for SqliteStorage {
             .storage()?;
         let deleted =
             tombstones::delete_user_messages(&mut transaction, user, identifiers, filter).await?;
+        crate::imap::organization::collect_unreferenced_messages(&mut transaction).await?;
         transaction.commit().await.storage()?;
         Ok(deleted)
     }
@@ -180,7 +181,7 @@ impl MessageStorage for SqliteStorage {
         Ok(summaries)
     }
 
-    /// Hydrate authorized current revisions, omitting stale and user-deleted messages.
+    /// Hydrate authorized current revisions, omitting stale, user-deleted, and trashed messages.
     async fn hydrate_current_user_messages(
         &self,
         user: UserIdentifier,

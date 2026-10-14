@@ -37,6 +37,8 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
             username: format!("mailbox-persistence-{}", uuid::Uuid::new_v4()),
             password_hash: "hash".into(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Independent,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 1,
         })
         .await
@@ -46,11 +48,11 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
         .await
         .unwrap();
     let private_override = storage
-        .create_imap_private_folder(account.identifier, "Private override", 1)
+        .create_imap_private_folder(account.identifier, "Private override", 1, None)
         .await
         .unwrap();
     let copy_destination = storage
-        .create_imap_private_folder(account.identifier, "Copy destination", 1)
+        .create_imap_private_folder(account.identifier, "Copy destination", 1, None)
         .await
         .unwrap();
 
@@ -79,7 +81,7 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
         ImapMailboxSource::LocalFolder(copy_destination.identifier),
     ];
     let mailboxes = storage
-        .reconcile_imap_mailboxes(account.identifier, &sources)
+        .reconcile_imap_mailboxes(account.identifier, &sources, None)
         .await
         .unwrap();
     let mailbox_for = |source| {
@@ -93,6 +95,7 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
     let private_mailbox = mailbox_for(ImapMailboxSource::LocalFolder(private_override.identifier));
     let copy_mailbox = mailbox_for(ImapMailboxSource::LocalFolder(copy_destination.identifier));
     let definition = ImapMembershipDefinition {
+        expected_mode_generation: None,
         filter: Expression::True,
         fingerprint: "mailbox-persistence:all".into(),
     };
@@ -154,7 +157,7 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
     );
 
     let mailboxes = storage
-        .reconcile_imap_mailboxes(account.identifier, &sources)
+        .reconcile_imap_mailboxes(account.identifier, &sources, None)
         .await
         .unwrap();
     for mailbox in &mailboxes {

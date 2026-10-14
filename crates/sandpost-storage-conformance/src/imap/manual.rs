@@ -6,8 +6,9 @@ use sandpost_storage::{
 };
 
 use super::support::{
-    create_imap_account_fixture, insert_message_identifier_for_imap_check, mailbox_member_uids,
-    membership_definition, reconcile_imap_mailbox,
+    create_imap_account_fixture, create_imap_account_fixture_with_mode,
+    insert_message_identifier_for_imap_check, mailbox_member_uids, membership_definition,
+    reconcile_imap_mailbox,
 };
 use crate::ConformanceFailure;
 use crate::support::{failure, unique_token, unwrap_storage, verify, verify_equal};
@@ -72,256 +73,150 @@ async fn synchronize_imap_mailbox(
     Ok(())
 }
 
-/// Verify Web folders, selected exposures, transactional placement, and IMAP-local overrides.
+/// Verify shared Mirror folders, exposure compatibility, isolated snapshots, and deletion routing.
 pub async fn web_manual_folders_and_placements(
     storage: &dyn Storage,
 ) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "web_manual_folders_and_placements";
-    let token = format!("manual-{}-{}", std::process::id(), unique_token());
-    let first = create_imap_account_fixture(storage, CHECK).await?;
+    let first = create_imap_account_fixture_with_mode(
+        storage,
+        CHECK,
+        sandpost_core::ImapAccountMode::Mirror,
+    )
+    .await?;
     let owner = first.owner_identifier;
     let second = unwrap_storage(
         CHECK,
-        "create second account for owner",
+        "create sibling Mirror",
         storage
             .create_imap_account(&NewImapAccount {
                 owner_identifier: owner,
-                name: "Second account".into(),
+                name: "Second Mirror".into(),
                 username: format!("imap-{}-{}", std::process::id(), unique_token()),
-                password_hash: "hash-two".into(),
+                password_hash: "hash".into(),
                 mirror_views: false,
-                created_at: 1_700_000_000,
+                mode: sandpost_core::ImapAccountMode::Mirror,
+                initial_authorization: sandpost_query::Expression::True,
+                created_at: 1,
             })
             .await,
     )?;
     let other = create_imap_account_fixture(storage, CHECK).await?;
     let all = membership_definition("true");
-    let empty = membership_definition("false");
-
     let folder = unwrap_storage(
         CHECK,
-        "create Web folder",
+        "create primary folder",
         storage
-            .create_web_folder(owner, "Manual", &[first.identifier], 1_700_000_001)
+            .create_web_folder(owner, "Manual", &[first.identifier], 1)
             .await,
     )?;
-    verify_equal(
-        CHECK,
-        "selected Web exposure",
-        folder.exposed_accounts.clone(),
-        vec![first.identifier],
-    )?;
-    verify_equal(
-        CHECK,
-        "folder listed only for its owner",
-        unwrap_storage(
-            CHECK,
-            "list owner folders",
-            storage.list_web_folders(owner).await,
-        )?
-        .len(),
-        1,
-    )?;
     verify(
         CHECK,
-        unwrap_storage(
-            CHECK,
-            "list other user's folders",
-            storage.list_web_folders(other.owner_identifier).await,
-        )?
-        .is_empty(),
-        "Web folder definitions are private to their owner",
+        folder.exposed_accounts.contains(&first.identifier)
+            && folder.exposed_accounts.contains(&second.identifier),
+        "every Mirror account projects a primary folder regardless of requested exposure",
     )?;
-    let first_projection = unwrap_storage(
-        CHECK,
-        "list first account folders",
-        storage.list_imap_local_folders(first.identifier).await,
-    )?;
-    verify(
-        CHECK,
-        first_projection.iter().any(|projection| {
-            projection.kind == ImapFolderKind::Manual
-                && projection.definition_identifier == Some(folder.identifier)
-        }),
-        format!("selected account is missing its manual projection: {first_projection:?}"),
-    )?;
-    verify(
-        CHECK,
-        unwrap_storage(
-            CHECK,
-            "list unselected account folders",
-            storage.list_imap_local_folders(second.identifier).await,
-        )?
-        .is_empty(),
-        "unselected accounts do not receive a Web projection",
-    )?;
-
-    let invalid_create = storage
-        .create_web_folder(
-            owner,
-            "Rolled back",
-            &[first.identifier, other.identifier],
-            1,
-        )
+    let invalid = storage
+        .create_web_folder(owner, "Invalid", &[other.identifier], 1)
         .await;
     verify(
         CHECK,
-        matches!(invalid_create, Err(StorageError::NotFound)),
-        format!("cross-owner exposure must fail: {invalid_create:?}"),
+        matches!(invalid, Err(StorageError::NotFound)),
+        "cross-owner folder exposure is refused",
     )?;
-    verify_equal(
-        CHECK,
-        "failed create leaves the folder list unchanged",
-        unwrap_storage(
-            CHECK,
-            "list after failed create",
-            storage.list_web_folders(owner).await,
-        )?
-        .len(),
-        1,
-    )?;
-    let invalid_update = storage
-        .update_web_folder(folder.identifier, "Must roll back", &[other.identifier])
+    let invalid = storage
+        .update_web_folder(folder.identifier, "Invalid", &[other.identifier])
         .await;
     verify(
         CHECK,
-        matches!(invalid_update, Err(StorageError::NotFound)),
-        format!("cross-owner update must fail: {invalid_update:?}"),
+        matches!(invalid, Err(StorageError::NotFound)),
+        "cross-owner exposure update is refused",
     )?;
     let unchanged = unwrap_storage(
         CHECK,
-        "load folder after failed update",
+        "read after refused update",
         storage.get_web_folder(folder.identifier).await,
     )?
-    .ok_or_else(|| failure(CHECK, "folder disappeared after failed update"))?;
+    .ok_or_else(|| failure(CHECK, "folder disappeared"))?;
+    verify_equal(
+        CHECK,
+        "refused update is atomic",
+        unchanged.name.as_str(),
+        "Manual",
+    )?;
+    let invalid = storage.create_web_folder(owner, "Manual", &[], 1).await;
     verify(
         CHECK,
-        unchanged.name == "Manual" && unchanged.exposed_accounts == [first.identifier],
-        format!("failed update changed the definition: {unchanged:?}"),
-    )?;
-    let foreign_create = storage
-        .create_web_folder(other.owner_identifier, "Foreign", &[first.identifier], 1)
-        .await;
-    verify(
-        CHECK,
-        matches!(foreign_create, Err(StorageError::NotFound)),
-        format!("a user cannot expose another user's account: {foreign_create:?}"),
+        matches!(invalid, Err(StorageError::DuplicateImapFolderName)),
+        "owner folder names remain unique",
     )?;
 
-    let manual_a = first_projection
-        .iter()
-        .find(|projection| projection.definition_identifier == Some(folder.identifier))
-        .ok_or_else(|| failure(CHECK, "manual account projection missing"))?;
-    let private_a = unwrap_storage(
+    let mut projections = Vec::new();
+    for account in [&first, &second] {
+        projections.push(
+            unwrap_storage(
+                CHECK,
+                "list Mirror projection",
+                storage.list_imap_local_folders(account.identifier).await,
+            )?
+            .into_iter()
+            .find(|local| local.definition_identifier == Some(folder.identifier))
+            .ok_or_else(|| failure(CHECK, "automatic Mirror projection missing"))?,
+        );
+    }
+    let mut inboxes = Vec::new();
+    let mut manuals = Vec::new();
+    let mut trashes = Vec::new();
+    for (account, projection) in [&first, &second].into_iter().zip(&projections) {
+        let sources = [
+            ImapMailboxSource::Inbox,
+            ImapMailboxSource::Trash,
+            ImapMailboxSource::LocalFolder(projection.identifier),
+        ];
+        inboxes.push(
+            reconcile_imap_mailbox(storage, CHECK, account, &sources, ImapMailboxSource::Inbox)
+                .await?,
+        );
+        manuals.push(
+            reconcile_imap_mailbox(
+                storage,
+                CHECK,
+                account,
+                &sources,
+                ImapMailboxSource::LocalFolder(projection.identifier),
+            )
+            .await?,
+        );
+        trashes.push(
+            reconcile_imap_mailbox(storage, CHECK, account, &sources, ImapMailboxSource::Trash)
+                .await?,
+        );
+    }
+    let copied =
+        insert_message_identifier_for_imap_check(storage, CHECK, "manual copied survivor").await?;
+    let sole =
+        insert_message_identifier_for_imap_check(storage, CHECK, "manual sole occurrence").await?;
+    unwrap_storage(
         CHECK,
-        "create first private folder",
+        "place primary messages",
         storage
-            .create_imap_private_folder(first.identifier, "Private A", 1_700_000_002)
+            .place_user_messages(owner, &[copied, sole], Some(folder.identifier), &all.filter)
             .await,
     )?;
-    let private_b = unwrap_storage(
-        CHECK,
-        "create second private folder",
-        storage
-            .create_imap_private_folder(first.identifier, "Private B", 1_700_000_003)
-            .await,
-    )?;
-    let mut sources_a = vec![
-        ImapMailboxSource::Inbox,
-        ImapMailboxSource::Trash,
-        ImapMailboxSource::LocalFolder(manual_a.identifier),
-        ImapMailboxSource::LocalFolder(private_a.identifier),
-        ImapMailboxSource::LocalFolder(private_b.identifier),
-    ];
-    let sources_b = [ImapMailboxSource::Inbox, ImapMailboxSource::Trash];
-    let inbox_a =
-        reconcile_imap_mailbox(storage, CHECK, &first, &sources_a, ImapMailboxSource::Inbox)
-            .await?;
-    let trash_a =
-        reconcile_imap_mailbox(storage, CHECK, &first, &sources_a, ImapMailboxSource::Trash)
-            .await?;
-    let manual_mailbox_a = reconcile_imap_mailbox(
-        storage,
-        CHECK,
-        &first,
-        &sources_a,
-        ImapMailboxSource::LocalFolder(manual_a.identifier),
-    )
-    .await?;
-    let private_mailbox_a = reconcile_imap_mailbox(
-        storage,
-        CHECK,
-        &first,
-        &sources_a,
-        ImapMailboxSource::LocalFolder(private_a.identifier),
-    )
-    .await?;
-    let copy_mailbox_a = reconcile_imap_mailbox(
-        storage,
-        CHECK,
-        &first,
-        &sources_a,
-        ImapMailboxSource::LocalFolder(private_b.identifier),
-    )
-    .await?;
-    let inbox_b = reconcile_imap_mailbox(
-        storage,
-        CHECK,
-        &second,
-        &sources_b,
-        ImapMailboxSource::Inbox,
-    )
-    .await?;
-    let trash_b = reconcile_imap_mailbox(
-        storage,
-        CHECK,
-        &second,
-        &sources_b,
-        ImapMailboxSource::Trash,
-    )
-    .await?;
-
-    let web_message =
-        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} web")).await?;
-    let fallback_message =
-        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} fallback"))
-            .await?;
-    let moved_message =
-        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} move")).await?;
-    let copied_message =
-        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} copy")).await?;
-    let trash_message =
-        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} trash")).await?;
-    let deleted_message =
-        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} tombstone"))
-            .await?;
-    for mailbox in [
-        inbox_a,
-        manual_mailbox_a,
-        private_mailbox_a,
-        copy_mailbox_a,
-        inbox_b,
-    ] {
-        synchronize_imap_mailbox(storage, CHECK, mailbox, &all).await?;
-    }
-    for mailbox in [trash_a, trash_b] {
-        synchronize_imap_mailbox(storage, CHECK, mailbox, &all).await?;
-    }
-
-    let wrong_owner_placement = storage
+    let invalid = storage
         .place_user_messages(
             other.owner_identifier,
-            &[web_message],
+            &[sole],
             Some(folder.identifier),
             &all.filter,
         )
         .await;
     verify(
         CHECK,
-        matches!(wrong_owner_placement, Err(StorageError::NotFound)),
-        format!("another user cannot place mail in this folder: {wrong_owner_placement:?}"),
+        matches!(invalid, Err(StorageError::NotFound)),
+        "cross-owner placement is refused",
     )?;
-    let foreign_folder_query = storage
+    let invalid = storage
         .list_web_mailbox_messages(
             other.owner_identifier,
             Some(folder.identifier),
@@ -330,248 +225,191 @@ pub async fn web_manual_folders_and_placements(
         .await;
     verify(
         CHECK,
-        matches!(foreign_folder_query, Err(StorageError::NotFound)),
-        format!("cross-owner folder listing must fail: {foreign_folder_query:?}"),
+        matches!(invalid, Err(StorageError::NotFound)),
+        "cross-owner folder listing is refused",
     )?;
+    for mailbox in inboxes.iter().chain(&manuals).chain(&trashes) {
+        synchronize_imap_mailbox(storage, CHECK, *mailbox, &all).await?;
+    }
+    for mailbox in &manuals {
+        verify(
+            CHECK,
+            find_imap_mailbox_uid_for_message(storage, CHECK, *mailbox, sole)
+                .await?
+                .is_some(),
+            "Web placement is shared by all Mirror accounts",
+        )?;
+    }
+    let independent = unwrap_storage(
+        CHECK,
+        "create independent snapshot",
+        storage
+            .create_imap_account(&NewImapAccount {
+                owner_identifier: owner,
+                name: "Independent".into(),
+                username: format!("imap-{}-{}", std::process::id(), unique_token()),
+                password_hash: "hash".into(),
+                mirror_views: false,
+                mode: sandpost_core::ImapAccountMode::Independent,
+                initial_authorization: sandpost_query::Expression::True,
+                created_at: 2,
+            })
+            .await,
+    )?;
+    let snapshot = unwrap_storage(
+        CHECK,
+        "list snapshot folders",
+        storage
+            .list_imap_local_folders(independent.identifier)
+            .await,
+    )?
+    .into_iter()
+    .find(|local| local.name == "Manual")
+    .ok_or_else(|| failure(CHECK, "all primary folders must be snapshotted"))?;
+    verify(
+        CHECK,
+        snapshot.kind == ImapFolderKind::Private && snapshot.definition_identifier.is_none(),
+        "snapshots are independent private definitions",
+    )?;
+    let independent_sources = [
+        ImapMailboxSource::Inbox,
+        ImapMailboxSource::Trash,
+        ImapMailboxSource::LocalFolder(snapshot.identifier),
+    ];
+    let snapshot_mailbox = reconcile_imap_mailbox(
+        storage,
+        CHECK,
+        &independent,
+        &independent_sources,
+        ImapMailboxSource::LocalFolder(snapshot.identifier),
+    )
+    .await?;
+    synchronize_imap_mailbox(storage, CHECK, snapshot_mailbox, &all).await?;
+    let copied_uid = find_imap_mailbox_uid_for_message(storage, CHECK, manuals[0], copied)
+        .await?
+        .ok_or_else(|| failure(CHECK, "COPY source missing"))?;
+    unwrap_storage(
+        CHECK,
+        "copy primary folder occurrence to Inbox",
+        storage
+            .copy_imap_members(manuals[0], &[copied_uid], inboxes[0], Some(&all), false)
+            .await,
+    )?;
+    synchronize_imap_mailbox(storage, CHECK, inboxes[1], &all).await?;
+    verify(
+        CHECK,
+        find_imap_mailbox_uid_for_message(storage, CHECK, inboxes[1], copied)
+            .await?
+            .is_some(),
+        "Mirror COPY adds a shared primary occurrence",
+    )?;
+    let refused = storage
+        .copy_imap_members(manuals[0], &[copied_uid], inboxes[0], Some(&all), false)
+        .await;
+    verify(
+        CHECK,
+        matches!(refused, Err(StorageError::ConstraintViolation(_))),
+        "duplicate occurrence COPY is refused",
+    )?;
+    unwrap_storage(
+        CHECK,
+        "rename without selected exposure",
+        storage
+            .update_web_folder(folder.identifier, "Renamed", &[])
+            .await,
+    )?;
+    for (account, projection) in [&first, &second].into_iter().zip(&projections) {
+        let current = unwrap_storage(
+            CHECK,
+            "Mirror projection after rename",
+            storage.list_imap_local_folders(account.identifier).await,
+        )?;
+        verify(
+            CHECK,
+            current
+                .iter()
+                .any(|local| local.identifier == projection.identifier && local.name == "Renamed"),
+            "Mirror projections retain their identity when exposure selection is empty",
+        )?;
+    }
     verify_equal(
         CHECK,
-        "placing Web messages reports the changed count",
+        "snapshot name is independent",
         unwrap_storage(
             CHECK,
-            "place Web messages",
-            storage
-                .place_user_messages(
-                    owner,
-                    &[web_message, fallback_message],
-                    Some(folder.identifier),
-                    &all.filter,
-                )
-                .await,
-        )?,
-        2,
+            "read private snapshot",
+            storage.get_imap_local_folder(snapshot.identifier).await,
+        )?
+        .map(|local| local.name),
+        Some("Manual".into()),
     )?;
-    verify_equal(
+    unwrap_storage(
         CHECK,
-        "placed messages leave the Web general mailbox",
+        "delete primary folder",
+        storage.delete_web_folder(folder.identifier).await,
+    )?;
+    for mailbox in inboxes.iter().chain(&trashes) {
+        synchronize_imap_mailbox(storage, CHECK, *mailbox, &all).await?;
+    }
+    verify(
+        CHECK,
+        list_web_trash_message_identifiers(storage, CHECK, owner)
+            .await?
+            .contains(&sole),
+        "deleting the sole primary folder occurrence sends it to primary Trash",
+    )?;
+    verify(
+        CHECK,
         list_web_mailbox_message_identifiers(storage, CHECK, owner, None)
             .await?
-            .contains(&web_message),
-        false,
+            .contains(&copied),
+        "folder deletion promotes a surviving normal occurrence",
     )?;
+    for mailbox in &trashes {
+        verify(
+            CHECK,
+            find_imap_mailbox_uid_for_message(storage, CHECK, *mailbox, sole)
+                .await?
+                .is_some(),
+            "primary folder deletion reaches every Mirror Trash",
+        )?;
+    }
+    synchronize_imap_mailbox(storage, CHECK, snapshot_mailbox, &all).await?;
     verify_equal(
         CHECK,
-        "placed messages appear in their Web folder",
-        list_web_mailbox_message_identifiers(storage, CHECK, owner, Some(folder.identifier))
+        "primary deletion preserves independent snapshot contents",
+        mailbox_member_uids(storage, CHECK, snapshot_mailbox)
             .await?
             .len(),
         2,
     )?;
     verify(
         CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, manual_mailbox_a, web_message)
-            .await?
-            .is_none(),
-        "the manual IMAP projection changes only after synchronization",
+        unwrap_storage(
+            CHECK,
+            "read preserved independent snapshot",
+            storage.get_imap_local_folder(snapshot.identifier).await,
+        )?
+        .is_some(),
+        "Web deletion preserves independent folder definitions",
     )?;
-    synchronize_imap_mailbox(storage, CHECK, manual_mailbox_a, &all).await?;
-    synchronize_imap_mailbox(storage, CHECK, inbox_a, &all).await?;
-    synchronize_imap_mailbox(storage, CHECK, inbox_b, &all).await?;
-    let manual_uid =
-        find_imap_mailbox_uid_for_message(storage, CHECK, manual_mailbox_a, web_message)
-            .await?
-            .ok_or_else(|| failure(CHECK, "exposed Web mail did not enter its manual mailbox"))?;
-    let copied_to_inbox = unwrap_storage(
-        CHECK,
-        "copy Web mail into Inbox",
-        storage
-            .copy_imap_members(manual_mailbox_a, &[manual_uid], inbox_a, Some(&all), false)
-            .await,
-    )?;
-    verify(
-        CHECK,
-        copied_to_inbox.all_new && copied_to_inbox.destination_uids.len() == 1,
-        format!("Inbox COPY should create a fresh UID: {copied_to_inbox:?}"),
-    )?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, manual_mailbox_a, web_message)
-            .await?
-            .is_some(),
-        "COPY into Inbox preserves its source membership",
-    )?;
-    synchronize_imap_mailbox(storage, CHECK, inbox_a, &empty).await?;
-    synchronize_imap_mailbox(storage, CHECK, inbox_a, &all).await?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, web_message)
-            .await?
-            .is_some(),
-        "an Inbox COPY survives membership recalculation",
-    )?;
+    Ok(())
+}
 
-    let copy_uid = find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, copied_message)
-        .await?
-        .ok_or_else(|| failure(CHECK, "copy source is absent from Inbox"))?;
-    let copied = unwrap_storage(
-        CHECK,
-        "copy into account folder",
-        storage
-            .copy_imap_members(inbox_a, &[copy_uid], copy_mailbox_a, Some(&all), false)
-            .await,
-    )?;
-    verify(
-        CHECK,
-        copied.all_new && copied.destination_uids[0] > 0,
-        format!("COPY should assign a fresh destination UID: {copied:?}"),
-    )?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, copied_message)
-            .await?
-            .is_some(),
-        "COPY preserves source membership",
-    )?;
-    let duplicate_copy = storage
-        .copy_imap_members(inbox_a, &[copy_uid], copy_mailbox_a, Some(&all), false)
-        .await;
-    verify(
-        CHECK,
-        matches!(duplicate_copy, Err(StorageError::ConstraintViolation(_))),
-        format!("duplicate destination COPY is refused: {duplicate_copy:?}"),
-    )?;
-    verify_equal(
-        CHECK,
-        "duplicate refusal leaves destination UIDs unchanged",
-        mailbox_member_uids(storage, CHECK, copy_mailbox_a).await?,
-        copied.destination_uids.clone(),
-    )?;
-
-    let move_uid = find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, moved_message)
-        .await?
-        .ok_or_else(|| failure(CHECK, "move source is absent from Inbox"))?;
+/// Flag one mailbox member `\Deleted` so a later expunge selects it.
+async fn flag_imap_member_deleted(
+    storage: &dyn Storage,
+    check: &'static str,
+    mailbox: sandpost_core::ImapMailboxIdentifier,
+    uid: u32,
+) -> Result<(), ConformanceFailure> {
     unwrap_storage(
-        CHECK,
-        "copy message before moving it",
-        storage
-            .copy_imap_members(inbox_a, &[move_uid], copy_mailbox_a, Some(&all), false)
-            .await,
-    )?;
-    let moved = unwrap_storage(
-        CHECK,
-        "move into private folder",
-        storage
-            .copy_imap_members(inbox_a, &[move_uid], private_mailbox_a, Some(&all), true)
-            .await,
-    )?;
-    verify_equal(
-        CHECK,
-        "MOVE source UIDs",
-        moved.removed_uids,
-        vec![move_uid],
-    )?;
-    synchronize_imap_mailbox(storage, CHECK, inbox_a, &all).await?;
-    synchronize_imap_mailbox(storage, CHECK, private_mailbox_a, &all).await?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, moved_message)
-            .await?
-            .is_none()
-            && find_imap_mailbox_uid_for_message(storage, CHECK, private_mailbox_a, moved_message)
-                .await?
-                .is_some(),
-        "MOVE changes only placement within the selected account",
-    )?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, inbox_b, moved_message)
-            .await?
-            .is_some(),
-        "another account's placement is unchanged",
-    )?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, copy_mailbox_a, moved_message)
-            .await?
-            .is_some(),
-        "MOVE preserves an unrelated COPY membership in the account",
-    )?;
-    verify(
-        CHECK,
-        list_web_mailbox_message_identifiers(storage, CHECK, owner, None)
-            .await?
-            .contains(&moved_message),
-        "MOVE does not create a user deletion tombstone",
-    )?;
-    let first_move_uid =
-        find_imap_mailbox_uid_for_message(storage, CHECK, private_mailbox_a, moved_message)
-            .await?
-            .unwrap();
-    synchronize_imap_mailbox(storage, CHECK, private_mailbox_a, &empty).await?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, private_mailbox_a, moved_message)
-            .await?
-            .is_none(),
-        "lost authorization removes the materialized override membership",
-    )?;
-    synchronize_imap_mailbox(storage, CHECK, private_mailbox_a, &all).await?;
-    let restored_move_uid =
-        find_imap_mailbox_uid_for_message(storage, CHECK, private_mailbox_a, moved_message)
-            .await?
-            .ok_or_else(|| failure(CHECK, "account placement did not survive scope regain"))?;
-    verify(
-        CHECK,
-        restored_move_uid > first_move_uid
-            && find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, moved_message)
-                .await?
-                .is_none(),
-        "the account override survives false-to-true authorization without returning to Inbox",
-    )?;
-
-    let trash_uid = find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, trash_message)
-        .await?
-        .ok_or_else(|| failure(CHECK, "Trash test source is absent from Inbox"))?;
-    let trash_move = unwrap_storage(
-        CHECK,
-        "move into Trash",
-        storage
-            .copy_imap_members(inbox_a, &[trash_uid], trash_a, Some(&all), true)
-            .await,
-    )?;
-    verify_equal(
-        CHECK,
-        "Trash MOVE source UIDs",
-        trash_move.removed_uids,
-        vec![trash_uid],
-    )?;
-    synchronize_imap_mailbox(storage, CHECK, trash_a, &empty).await?;
-    synchronize_imap_mailbox(storage, CHECK, trash_a, &all).await?;
-    let trash_restored_uid =
-        find_imap_mailbox_uid_for_message(storage, CHECK, trash_a, trash_message)
-            .await?
-            .ok_or_else(|| failure(CHECK, "Trash placement did not survive scope regain"))?;
-    verify(
-        CHECK,
-        trash_restored_uid > trash_move.destination_uids[0]
-            && find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, trash_message)
-                .await?
-                .is_none()
-            && find_imap_mailbox_uid_for_message(storage, CHECK, inbox_b, trash_message)
-                .await?
-                .is_some(),
-        "Trash placement restores only in its account after authorization returns",
-    )?;
-
-    let deleted_uid = find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, deleted_message)
-        .await?
-        .ok_or_else(|| failure(CHECK, "tombstone test message is absent from Inbox"))?;
-    unwrap_storage(
-        CHECK,
-        "flag message deleted",
+        check,
+        "flag member deleted",
         storage
             .store_imap_flags(
-                inbox_a,
-                &[deleted_uid],
+                mailbox,
+                &[uid],
                 &ImapFlagChange {
                     operation: ImapFlagOperation::Add,
                     flags: ImapMessageFlags {
@@ -579,190 +417,577 @@ pub async fn web_manual_folders_and_placements(
                         ..ImapMessageFlags::default()
                     },
                 },
+                None,
             )
             .await,
     )?;
-    verify_equal(
+    Ok(())
+}
+
+/// Verify COPY, `\Deleted`, and EXPUNGE of a primary occurrence transfers it like MOVE.
+///
+/// Clients without MOVE (Apple Mail) organize and delete this way. The surviving copy becomes
+/// the account placement and no tombstone is recorded; expunging a copy or the last occurrence
+/// removes only that occurrence; deleting the final Trash occurrence releases only this account.
+pub async fn imap_copy_then_expunge_transfers(
+    storage: &dyn Storage,
+) -> Result<(), ConformanceFailure> {
+    const CHECK: &str = "imap_copy_then_expunge_transfers";
+    let token = format!("transfer-{}-{}", std::process::id(), unique_token());
+    let account = create_imap_account_fixture(storage, CHECK).await?;
+    let owner = account.owner_identifier;
+    let all = membership_definition("true");
+    let empty = membership_definition("false");
+    let folder = unwrap_storage(
         CHECK,
-        "expunged UIDs",
-        unwrap_storage(
-            CHECK,
-            "expunge deleted message",
-            storage
-                .expunge_imap_members(inbox_a, Some(&[deleted_uid]))
-                .await,
-        )?,
-        vec![deleted_uid],
+        "create private folder",
+        storage
+            .create_imap_private_folder(account.identifier, "Pippo", 1_700_000_010, None)
+            .await,
     )?;
-    unwrap_storage(
+    let sources = [
+        ImapMailboxSource::Inbox,
+        ImapMailboxSource::Trash,
+        ImapMailboxSource::LocalFolder(folder.identifier),
+    ];
+    let inbox =
+        reconcile_imap_mailbox(storage, CHECK, &account, &sources, ImapMailboxSource::Inbox)
+            .await?;
+    let trash =
+        reconcile_imap_mailbox(storage, CHECK, &account, &sources, ImapMailboxSource::Trash)
+            .await?;
+    let folder_mailbox = reconcile_imap_mailbox(
+        storage,
         CHECK,
-        "clear account A exclusions",
-        storage.clear_imap_exclusions(first.identifier).await,
-    )?;
-    unwrap_storage(
-        CHECK,
-        "clear account B exclusions",
-        storage.clear_imap_exclusions(second.identifier).await,
-    )?;
-    for mailbox in [inbox_a, inbox_b] {
+        &account,
+        &sources,
+        ImapMailboxSource::LocalFolder(folder.identifier),
+    )
+    .await?;
+    let filed_message =
+        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} filed")).await?;
+    let trashed_message =
+        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} trashed"))
+            .await?;
+    let copied_message =
+        insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} copied"))
+            .await?;
+    for mailbox in [inbox, trash, folder_mailbox] {
         synchronize_imap_mailbox(storage, CHECK, mailbox, &all).await?;
+    }
+    let inbox_uid = |message| async move {
+        find_imap_mailbox_uid_for_message(storage, CHECK, inbox, message)
+            .await?
+            .ok_or_else(|| failure(CHECK, "transfer source is absent from Inbox"))
+    };
+    let filed_uid = inbox_uid(filed_message).await?;
+    let trashed_uid = inbox_uid(trashed_message).await?;
+
+    let filed_copy = unwrap_storage(
+        CHECK,
+        "copy into private folder",
+        storage
+            .copy_imap_members(inbox, &[filed_uid], folder_mailbox, Some(&all), false)
+            .await,
+    )?;
+    let copied_uid = inbox_uid(copied_message).await?;
+    let destination_before = unwrap_storage(
+        CHECK,
+        "destination before refused batch",
+        storage.get_imap_mailbox(folder_mailbox).await,
+    )?;
+    for remove_from_source in [false, true] {
+        let refused = storage
+            .copy_imap_members(
+                inbox,
+                &[copied_uid, filed_uid],
+                folder_mailbox,
+                Some(&all),
+                remove_from_source,
+            )
+            .await;
         verify(
             CHECK,
-            find_imap_mailbox_uid_for_message(storage, CHECK, mailbox, deleted_message)
+            matches!(refused, Err(StorageError::ConstraintViolation(_))),
+            "a batch containing a duplicate destination is refused atomically",
+        )?;
+        verify_equal(
+            CHECK,
+            "failed batch does not consume destination UIDs",
+            unwrap_storage(
+                CHECK,
+                "destination after refused batch",
+                storage.get_imap_mailbox(folder_mailbox).await,
+            )?,
+            destination_before,
+        )?;
+        verify_equal(
+            CHECK,
+            "failed batch preserves source occurrence",
+            inbox_uid(copied_message).await?,
+            copied_uid,
+        )?;
+        verify_equal(
+            CHECK,
+            "failed batch rolls back new destination occurrences",
+            mailbox_member_uids(storage, CHECK, folder_mailbox).await?,
+            filed_copy.destination_uids.clone(),
+        )?;
+        let refused = storage
+            .copy_imap_members(
+                inbox,
+                &[copied_uid],
+                folder_mailbox,
+                Some(&empty),
+                remove_from_source,
+            )
+            .await;
+        verify(
+            CHECK,
+            matches!(refused, Err(StorageError::ConstraintViolation(_))),
+            "destination authorization is required for COPY and MOVE",
+        )?;
+    }
+    let refused = storage
+        .copy_imap_members(inbox, &[copied_uid], inbox, Some(&all), false)
+        .await;
+    verify(
+        CHECK,
+        matches!(refused, Err(StorageError::ConstraintViolation(_))),
+        "same-mailbox COPY cannot create a duplicate occurrence",
+    )?;
+    unwrap_storage(
+        CHECK,
+        "copy into Trash",
+        storage
+            .copy_imap_members(inbox, &[trashed_uid], trash, Some(&all), false)
+            .await,
+    )?;
+    flag_imap_member_deleted(storage, CHECK, inbox, filed_uid).await?;
+    flag_imap_member_deleted(storage, CHECK, inbox, trashed_uid).await?;
+    verify_equal(
+        CHECK,
+        "expunged transfer source UIDs",
+        unwrap_storage(
+            CHECK,
+            "expunge transferred sources",
+            storage.expunge_imap_members(inbox, None, None).await,
+        )?,
+        {
+            let mut expected = vec![filed_uid, trashed_uid];
+            expected.sort_unstable();
+            expected
+        },
+    )?;
+    let web_messages = list_web_mailbox_message_identifiers(storage, CHECK, owner, None).await?;
+    verify(
+        CHECK,
+        web_messages.contains(&filed_message) && web_messages.contains(&trashed_message),
+        "COPY then EXPUNGE of the source does not create a user deletion tombstone",
+    )?;
+    for definition in [&empty, &all] {
+        for mailbox in [inbox, trash, folder_mailbox] {
+            synchronize_imap_mailbox(storage, CHECK, mailbox, definition).await?;
+        }
+    }
+    verify(
+        CHECK,
+        find_imap_mailbox_uid_for_message(storage, CHECK, inbox, filed_message)
+            .await?
+            .is_none()
+            && find_imap_mailbox_uid_for_message(storage, CHECK, inbox, trashed_message)
                 .await?
                 .is_none(),
-            "a tombstoned message stays hidden after restore and synchronization",
+        "transferred messages do not return to the Inbox fallback",
+    )?;
+    let filed_restored_uid =
+        find_imap_mailbox_uid_for_message(storage, CHECK, folder_mailbox, filed_message)
+            .await?
+            .ok_or_else(|| failure(CHECK, "the surviving folder copy did not become placement"))?;
+    verify(
+        CHECK,
+        filed_restored_uid > filed_copy.destination_uids[0],
+        "the promoted placement survives authorization loss and regain with a fresh UID",
+    )?;
+    let trashed_trash_uid =
+        find_imap_mailbox_uid_for_message(storage, CHECK, trash, trashed_message)
+            .await?
+            .ok_or_else(|| failure(CHECK, "the surviving Trash copy did not become placement"))?;
+
+    flag_imap_member_deleted(storage, CHECK, trash, trashed_trash_uid).await?;
+    unwrap_storage(
+        CHECK,
+        "expunge the last occurrence from Trash",
+        storage.expunge_imap_members(trash, None, None).await,
+    )?;
+    // Authorization loss and regain assigned the Inbox occurrence a fresh UID.
+    let copied_uid = inbox_uid(copied_message).await?;
+    let copy_result = unwrap_storage(
+        CHECK,
+        "copy before expunging the copy",
+        storage
+            .copy_imap_members(inbox, &[copied_uid], folder_mailbox, Some(&all), false)
+            .await,
+    )?;
+    flag_imap_member_deleted(
+        storage,
+        CHECK,
+        folder_mailbox,
+        copy_result.destination_uids[0],
+    )
+    .await?;
+    unwrap_storage(
+        CHECK,
+        "expunge an additional COPY occurrence",
+        storage
+            .expunge_imap_members(folder_mailbox, None, None)
+            .await,
+    )?;
+    let web_messages = list_web_mailbox_message_identifiers(storage, CHECK, owner, None).await?;
+    verify(
+        CHECK,
+        web_messages.contains(&trashed_message) && web_messages.contains(&copied_message),
+        "Independent Trash deletion and COPY removal preserve the primary view",
+    )?;
+    verify(
+        CHECK,
+        web_messages.contains(&filed_message),
+        "an unrelated transferred message is unaffected",
+    )?;
+    let copied_again = unwrap_storage(
+        CHECK,
+        "copy before moving an additional occurrence",
+        storage
+            .copy_imap_members(inbox, &[copied_uid], folder_mailbox, Some(&all), false)
+            .await,
+    )?;
+    unwrap_storage(
+        CHECK,
+        "move additional copy to Trash",
+        storage
+            .copy_imap_members(
+                folder_mailbox,
+                &copied_again.destination_uids,
+                trash,
+                Some(&all),
+                true,
+            )
+            .await,
+    )?;
+    for mailbox in [inbox, trash, folder_mailbox] {
+        synchronize_imap_mailbox(storage, CHECK, mailbox, &all).await?;
+    }
+    verify(
+        CHECK,
+        find_imap_mailbox_uid_for_message(storage, CHECK, inbox, copied_message)
+            .await?
+            .is_some()
+            && find_imap_mailbox_uid_for_message(storage, CHECK, folder_mailbox, copied_message)
+                .await?
+                .is_none(),
+        "moving an additional copy preserves the independent Inbox occurrence",
+    )?;
+    let trash_copy = find_imap_mailbox_uid_for_message(storage, CHECK, trash, copied_message)
+        .await?
+        .ok_or_else(|| failure(CHECK, "moved copy missing from Trash"))?;
+    flag_imap_member_deleted(storage, CHECK, trash, trash_copy).await?;
+    unwrap_storage(
+        CHECK,
+        "remove additional Trash copy",
+        storage
+            .expunge_imap_members(trash, Some(&[trash_copy]), None)
+            .await,
+    )?;
+    verify(
+        CHECK,
+        find_imap_mailbox_uid_for_message(storage, CHECK, inbox, copied_message)
+            .await?
+            .is_some(),
+        "expunging an additional Trash occurrence preserves the normal primary occurrence",
+    )?;
+    Ok(())
+}
+
+/// List message identifiers in an owner's Web Trash.
+async fn list_web_trash_message_identifiers(
+    storage: &dyn Storage,
+    check: &'static str,
+    owner: sandpost_core::UserIdentifier,
+) -> Result<Vec<MessageIdentifier>, ConformanceFailure> {
+    Ok(unwrap_storage(
+        check,
+        "list_web_trash_messages",
+        storage
+            .list_web_trash_messages(owner, web_mailbox_query("true"))
+            .await,
+    )?
+    .into_iter()
+    .map(|message| message.identifier)
+    .collect())
+}
+
+/// Verify Web Trash and Mirror share placement, restoration, and permanent deletion state.
+pub async fn web_trash(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
+    const CHECK: &str = "web_trash";
+    let token = format!("trash-{}-{}", std::process::id(), unique_token());
+    let account = create_imap_account_fixture_with_mode(
+        storage,
+        CHECK,
+        sandpost_core::ImapAccountMode::Mirror,
+    )
+    .await?;
+    let owner = account.owner_identifier;
+    let all = membership_definition("true");
+    let archive = unwrap_storage(
+        CHECK,
+        "create Web folder",
+        storage
+            .create_web_folder(owner, "Archive", &[], 1_700_000_020)
+            .await,
+    )?;
+    let kept_definition = unwrap_storage(
+        CHECK,
+        "create primary kept folder",
+        storage
+            .create_web_folder(owner, "Kept", &[], 1_700_000_021)
+            .await,
+    )?;
+    let kept = unwrap_storage(
+        CHECK,
+        "find kept Mirror projection",
+        storage.list_imap_local_folders(account.identifier).await,
+    )?
+    .into_iter()
+    .find(|folder| folder.definition_identifier == Some(kept_definition.identifier))
+    .ok_or_else(|| failure(CHECK, "kept projection missing"))?;
+    let sources = [
+        ImapMailboxSource::Inbox,
+        ImapMailboxSource::Trash,
+        ImapMailboxSource::LocalFolder(kept.identifier),
+    ];
+    let inbox =
+        reconcile_imap_mailbox(storage, CHECK, &account, &sources, ImapMailboxSource::Inbox)
+            .await?;
+    let trash =
+        reconcile_imap_mailbox(storage, CHECK, &account, &sources, ImapMailboxSource::Trash)
+            .await?;
+    let kept_mailbox = reconcile_imap_mailbox(
+        storage,
+        CHECK,
+        &account,
+        &sources,
+        ImapMailboxSource::LocalFolder(kept.identifier),
+    )
+    .await?;
+    let mut fixture = Vec::new();
+    for name in ["trashed", "filed", "restored", "overridden", "unaffected"] {
+        fixture.push(
+            insert_message_identifier_for_imap_check(storage, CHECK, &format!("{token} {name}"))
+                .await?,
+        );
+    }
+    let [trashed, filed, restored, overridden, unaffected] = fixture[..] else {
+        unreachable!("the fixture has five messages");
+    };
+    for mailbox in [inbox, trash, kept_mailbox] {
+        synchronize_imap_mailbox(storage, CHECK, mailbox, &all).await?;
+    }
+    unwrap_storage(
+        CHECK,
+        "file message in Web folder",
+        storage
+            .place_user_messages(owner, &[filed], Some(archive.identifier), &all.filter)
+            .await,
+    )?;
+    let overridden_uid = find_imap_mailbox_uid_for_message(storage, CHECK, inbox, overridden)
+        .await?
+        .ok_or_else(|| failure(CHECK, "override source is absent from Inbox"))?;
+    unwrap_storage(
+        CHECK,
+        "move into private folder",
+        storage
+            .copy_imap_members(inbox, &[overridden_uid], kept_mailbox, Some(&all), true)
+            .await,
+    )?;
+
+    let oversized = vec![trashed; 257];
+    let refused = storage
+        .trash_user_messages(owner, &oversized, &all.filter, 1_700_000_022)
+        .await;
+    verify(
+        CHECK,
+        matches!(refused, Err(StorageError::ConstraintViolation(_))),
+        format!("a Trash batch above 256 messages is refused: {refused:?}"),
+    )?;
+    verify_equal(
+        CHECK,
+        "trashed message count",
+        unwrap_storage(
+            CHECK,
+            "trash messages",
+            storage
+                .trash_user_messages(
+                    owner,
+                    &[trashed, filed, restored, overridden, trashed],
+                    &all.filter,
+                    1_700_000_022,
+                )
+                .await,
+        )?,
+        4,
+    )?;
+    let inbox_messages = list_web_mailbox_message_identifiers(storage, CHECK, owner, None).await?;
+    verify(
+        CHECK,
+        inbox_messages.contains(&unaffected)
+            && [trashed, filed, restored, overridden]
+                .iter()
+                .all(|message| !inbox_messages.contains(message)),
+        "trashed mail leaves the general Web mailbox",
+    )?;
+    verify(
+        CHECK,
+        list_web_mailbox_message_identifiers(storage, CHECK, owner, Some(archive.identifier))
+            .await?
+            .is_empty(),
+        "Trash replaces Web folder placement",
+    )?;
+    let mut trash_listing = list_web_trash_message_identifiers(storage, CHECK, owner).await?;
+    trash_listing.sort_unstable();
+    let mut expected_trash = vec![trashed, filed, restored, overridden];
+    expected_trash.sort_unstable();
+    verify_equal(CHECK, "Web Trash listing", trash_listing, expected_trash)?;
+    let indexed = unwrap_storage(
+        CHECK,
+        "load current revisions",
+        storage.indexed_messages(&[trashed, unaffected]).await,
+    )?;
+    let requested = indexed
+        .iter()
+        .map(|message| (message.identifier, message.revision))
+        .collect::<Vec<_>>();
+    verify_equal(
+        CHECK,
+        "search hydration omits trashed mail",
+        unwrap_storage(
+            CHECK,
+            "hydrate current user messages",
+            storage
+                .hydrate_current_user_messages(owner, &requested, &all.filter)
+                .await,
+        )?
+        .into_iter()
+        .map(|summary| summary.identifier)
+        .collect::<Vec<_>>(),
+        vec![unaffected],
+    )?;
+
+    for mailbox in [inbox, trash, kept_mailbox] {
+        synchronize_imap_mailbox(storage, CHECK, mailbox, &all).await?;
+    }
+    for message in [trashed, filed, restored] {
+        verify(
+            CHECK,
+            find_imap_mailbox_uid_for_message(storage, CHECK, inbox, message)
+                .await?
+                .is_none()
+                && find_imap_mailbox_uid_for_message(storage, CHECK, trash, message)
+                    .await?
+                    .is_some(),
+            "Web Trash moves mail from IMAP INBOX to every account's Trash",
         )?;
     }
     verify(
         CHECK,
-        !list_web_mailbox_message_identifiers(storage, CHECK, owner, None)
-            .await?
-            .contains(&deleted_message),
-        "IMAP exclusion restore never clears a user tombstone",
-    )?;
-
-    let renamed = unwrap_storage(
-        CHECK,
-        "rename folder and change selected accounts",
-        storage
-            .update_web_folder(folder.identifier, "Renamed", &[second.identifier])
-            .await,
-    )?
-    .ok_or_else(|| failure(CHECK, "folder update returned no row"))?;
-    verify(
-        CHECK,
-        renamed.name == "Renamed" && renamed.exposed_accounts == [second.identifier],
-        format!("folder update did not replace its exposure: {renamed:?}"),
-    )?;
-    sources_a.retain(|source| *source != ImapMailboxSource::LocalFolder(manual_a.identifier));
-    let inbox_a_state = unwrap_storage(
-        CHECK,
-        "reconcile account A after exposure removal",
-        storage
-            .reconcile_imap_mailboxes(first.identifier, &sources_a)
-            .await,
-    )?;
-    let inbox_a = inbox_a_state
-        .iter()
-        .find(|state| state.source == ImapMailboxSource::Inbox)
-        .ok_or_else(|| failure(CHECK, "account A Inbox disappeared"))?
-        .identifier;
-    synchronize_imap_mailbox(storage, CHECK, inbox_a, &all).await?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, inbox_a, fallback_message)
-            .await?
-            .is_some(),
-        "removing exposure returns Web-placed mail to account A's general fallback",
-    )?;
-    let projection_b = unwrap_storage(
-        CHECK,
-        "find newly exposed projection",
-        storage.list_imap_local_folders(second.identifier).await,
-    )?
-    .into_iter()
-    .find(|projection| projection.definition_identifier == Some(folder.identifier))
-    .ok_or_else(|| failure(CHECK, "newly selected account lacks its folder projection"))?;
-    let mut sources_b = vec![
-        ImapMailboxSource::Inbox,
-        ImapMailboxSource::Trash,
-        ImapMailboxSource::LocalFolder(projection_b.identifier),
-    ];
-    let inbox_b_state = unwrap_storage(
-        CHECK,
-        "reconcile account B after exposure change",
-        storage
-            .reconcile_imap_mailboxes(second.identifier, &sources_b)
-            .await,
-    )?;
-    let inbox_b = inbox_b_state
-        .iter()
-        .find(|state| state.source == ImapMailboxSource::Inbox)
-        .unwrap()
-        .identifier;
-    let manual_mailbox_b = inbox_b_state
-        .iter()
-        .find(|state| state.source == ImapMailboxSource::LocalFolder(projection_b.identifier))
-        .unwrap()
-        .identifier;
-    synchronize_imap_mailbox(storage, CHECK, inbox_b, &all).await?;
-    synchronize_imap_mailbox(storage, CHECK, manual_mailbox_b, &all).await?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, inbox_b, fallback_message)
+        find_imap_mailbox_uid_for_message(storage, CHECK, kept_mailbox, overridden)
             .await?
             .is_none()
-            && find_imap_mailbox_uid_for_message(
-                storage,
-                CHECK,
-                manual_mailbox_b,
-                fallback_message,
-            )
-            .await?
-            .is_some(),
-        "only the selected account inherits Web placement",
+            && find_imap_mailbox_uid_for_message(storage, CHECK, trash, overridden)
+                .await?
+                .is_some(),
+        "Mirror placement follows the primary user's Web Trash",
     )?;
 
-    let unexposed = unwrap_storage(
+    unwrap_storage(
         CHECK,
-        "remove all folder exposures",
+        "restore from Trash by placement",
         storage
-            .update_web_folder(folder.identifier, "Renamed", &[])
+            .place_user_messages(owner, &[restored], None, &all.filter)
             .await,
-    )?
-    .ok_or_else(|| failure(CHECK, "folder disappeared when exposures were removed"))?;
-    verify(
-        CHECK,
-        unexposed.exposed_accounts.is_empty(),
-        "exposures were not removed",
-    )?;
-    sources_b.retain(|source| *source != ImapMailboxSource::LocalFolder(projection_b.identifier));
-    let inbox_b_state = unwrap_storage(
-        CHECK,
-        "reconcile account B after removing exposure",
-        storage
-            .reconcile_imap_mailboxes(second.identifier, &sources_b)
-            .await,
-    )?;
-    let inbox_b = inbox_b_state[0].identifier;
-    synchronize_imap_mailbox(storage, CHECK, inbox_b, &all).await?;
-    verify(
-        CHECK,
-        find_imap_mailbox_uid_for_message(storage, CHECK, inbox_b, fallback_message)
-            .await?
-            .is_some(),
-        "removing the final exposure returns placed mail to Inbox fallback",
-    )?;
-
-    verify(
-        CHECK,
-        unwrap_storage(
-            CHECK,
-            "delete Web folder",
-            storage.delete_web_folder(folder.identifier).await,
-        )?,
-        "an owned Web folder can be deleted",
     )?;
     verify(
         CHECK,
         list_web_mailbox_message_identifiers(storage, CHECK, owner, None)
             .await?
-            .contains(&web_message),
-        "folder deletion clears Web placement and restores the general mailbox",
+            .contains(&restored)
+            && !list_web_trash_message_identifiers(storage, CHECK, owner)
+                .await?
+                .contains(&restored),
+        "placement restores a message from the Web Trash",
+    )?;
+    for mailbox in [inbox, trash] {
+        synchronize_imap_mailbox(storage, CHECK, mailbox, &all).await?;
+    }
+    verify(
+        CHECK,
+        find_imap_mailbox_uid_for_message(storage, CHECK, inbox, restored)
+            .await?
+            .is_some()
+            && find_imap_mailbox_uid_for_message(storage, CHECK, trash, restored)
+                .await?
+                .is_none(),
+        "a restored message returns to IMAP INBOX",
     )?;
 
-    for account in [first.identifier, second.identifier] {
-        unwrap_storage(
-            CHECK,
-            "delete conformance account",
-            storage.delete_imap_account(account).await,
-        )?;
-    }
+    let trashed_uid = find_imap_mailbox_uid_for_message(storage, CHECK, trash, trashed)
+        .await?
+        .ok_or_else(|| failure(CHECK, "trashed message is absent from IMAP Trash"))?;
+    flag_imap_member_deleted(storage, CHECK, trash, trashed_uid).await?;
     unwrap_storage(
         CHECK,
-        "delete foreign conformance account",
-        storage.delete_imap_account(other.identifier).await,
+        "expunge from IMAP Trash",
+        storage.expunge_imap_members(trash, None, None).await,
+    )?;
+    verify(
+        CHECK,
+        !list_web_trash_message_identifiers(storage, CHECK, owner)
+            .await?
+            .contains(&trashed),
+        "expunging from IMAP Trash permanently deletes the Web Trash entry",
+    )?;
+    verify_equal(
+        CHECK,
+        "emptied Trash count",
+        unwrap_storage(
+            CHECK,
+            "empty Trash",
+            storage.empty_user_trash(owner, &all.filter).await,
+        )?,
+        2,
+    )?;
+    verify(
+        CHECK,
+        list_web_trash_message_identifiers(storage, CHECK, owner)
+            .await?
+            .is_empty(),
+        "emptying the Trash leaves it empty",
+    )?;
+    let inbox_messages = list_web_mailbox_message_identifiers(storage, CHECK, owner, None).await?;
+    verify(
+        CHECK,
+        !inbox_messages.contains(&filed)
+            && !inbox_messages.contains(&overridden)
+            && inbox_messages.contains(&unaffected)
+            && inbox_messages.contains(&restored),
+        "emptying the Trash tombstones only trashed mail",
+    )?;
+    synchronize_imap_mailbox(storage, CHECK, kept_mailbox, &all).await?;
+    verify(
+        CHECK,
+        find_imap_mailbox_uid_for_message(storage, CHECK, kept_mailbox, overridden)
+            .await?
+            .is_none(),
+        "the emptied message leaves every IMAP mailbox of its owner",
     )?;
     Ok(())
 }

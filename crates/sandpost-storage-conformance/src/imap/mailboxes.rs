@@ -19,7 +19,7 @@ pub async fn imap_mailbox_identities(storage: &dyn Storage) -> Result<(), Confor
         CHECK,
         "reconcile_imap_mailboxes",
         storage
-            .reconcile_imap_mailboxes(account.identifier, &sources)
+            .reconcile_imap_mailboxes(account.identifier, &sources, None)
             .await,
     )?;
     verify_equal(
@@ -38,7 +38,7 @@ pub async fn imap_mailbox_identities(storage: &dyn Storage) -> Result<(), Confor
         CHECK,
         "reconcile_imap_mailboxes again",
         storage
-            .reconcile_imap_mailboxes(account.identifier, &sources)
+            .reconcile_imap_mailboxes(account.identifier, &sources, None)
             .await,
     )?;
     verify_equal(CHECK, "repeated reconciliation", again, first.clone())?;
@@ -46,33 +46,98 @@ pub async fn imap_mailbox_identities(storage: &dyn Storage) -> Result<(), Confor
         CHECK,
         "reconcile without trash",
         storage
-            .reconcile_imap_mailboxes(account.identifier, &[ImapMailboxSource::Inbox])
+            .reconcile_imap_mailboxes(account.identifier, &[ImapMailboxSource::Inbox], None)
             .await,
     )?;
     verify_equal(CHECK, "one reconciled mailbox", only_inbox.len(), 1)?;
     verify_equal(CHECK, "kept inbox", only_inbox[0], first[0])?;
-    verify(
+    verify_equal(
         CHECK,
+        "omitted valid source retains its identity",
         unwrap_storage(
             CHECK,
-            "get removed trash",
+            "get omitted trash",
             storage.get_imap_mailbox(first[1].identifier).await,
-        )?
-        .is_none(),
-        "an unlisted source loses its identity",
+        )?,
+        Some(first[1]),
     )?;
-    let recreated = unwrap_storage(
+    let restored = unwrap_storage(
         CHECK,
-        "recreate trash",
+        "restore omitted catalog source",
         storage
-            .reconcile_imap_mailboxes(account.identifier, &sources)
+            .reconcile_imap_mailboxes(account.identifier, &sources, None)
+            .await,
+    )?;
+    verify_equal(
+        CHECK,
+        "restored source keeps UIDVALIDITY",
+        restored[1],
+        first[1],
+    )?;
+
+    // Genuine definition deletion, rather than a stale plan, must remove the mailbox identity.
+    let folder_name = format!("Identity {}", unique_token());
+    let folder = unwrap_storage(
+        CHECK,
+        "create identity folder",
+        storage
+            .create_imap_private_folder(account.identifier, &folder_name, 1_700_000_001, None)
+            .await,
+    )?;
+    let folder_sources = [
+        ImapMailboxSource::Inbox,
+        ImapMailboxSource::Trash,
+        ImapMailboxSource::LocalFolder(folder.identifier),
+    ];
+    let folder_states = unwrap_storage(
+        CHECK,
+        "reconcile identity folder",
+        storage
+            .reconcile_imap_mailboxes(account.identifier, &folder_sources, None)
+            .await,
+    )?;
+    let original = folder_states[2];
+    unwrap_storage(
+        CHECK,
+        "delete identity folder",
+        storage
+            .delete_imap_local_folder(folder.identifier, None)
             .await,
     )?;
     verify(
         CHECK,
-        recreated[1].identifier != first[1].identifier
-            && recreated[1].uid_validity > first[1].uid_validity.max(first[0].uid_validity),
-        format!("a recreated mailbox needs a new, larger UIDVALIDITY: {recreated:?}"),
+        unwrap_storage(
+            CHECK,
+            "get deleted folder identity",
+            storage.get_imap_mailbox(original.identifier).await,
+        )?
+        .is_none(),
+        "actual source deletion removes its identity",
+    )?;
+    let replacement = unwrap_storage(
+        CHECK,
+        "recreate identity folder",
+        storage
+            .create_imap_private_folder(account.identifier, &folder_name, 1_700_000_002, None)
+            .await,
+    )?;
+    let replacement_sources = [
+        ImapMailboxSource::Inbox,
+        ImapMailboxSource::Trash,
+        ImapMailboxSource::LocalFolder(replacement.identifier),
+    ];
+    let recreated = unwrap_storage(
+        CHECK,
+        "reconcile recreated folder",
+        storage
+            .reconcile_imap_mailboxes(account.identifier, &replacement_sources, None)
+            .await,
+    )?;
+    verify(
+        CHECK,
+        recreated[2].identifier != original.identifier
+            && recreated[2].uid_validity > original.uid_validity.max(first[1].uid_validity),
+        format!("a genuinely recreated mailbox needs a fresh UIDVALIDITY: {recreated:?}"),
     )?;
     unwrap_storage(
         CHECK,

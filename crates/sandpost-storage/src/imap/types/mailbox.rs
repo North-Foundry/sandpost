@@ -20,6 +20,8 @@ pub struct ImapMailboxState {
 /// The complete membership definition of a mailbox at one moment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImapMembershipDefinition {
+    /// When supplied, require this enabled account generation in the membership transaction.
+    pub expected_mode_generation: Option<u64>,
     /// Owner authorization AND the mailbox's own filter. A message is a member of a dynamic
     /// mailbox exactly when it matches; an explicit mailbox drops members that stop matching.
     pub filter: FilterExpression,

@@ -264,6 +264,7 @@ async fn delete_user(
         .storage()?
         .rows_affected()
         > 0;
+    crate::imap::organization::collect_unreferenced_messages(&mut transaction).await?;
     transaction.commit().await.storage()?;
     Ok(deleted)
 }

@@ -11,7 +11,12 @@ use std::collections::{HashMap, HashSet};
 /// Keep UID filters below SQLite's supported bound-parameter limit.
 const UID_BATCH_SIZE: usize = 500;
 
-/// Tombstone flagged messages for the mailbox owner's user across all their IMAP accounts.
+/// Expunge flagged members of one mailbox and return their UIDs.
+///
+/// Clients without MOVE transfer mail with COPY, `\Deleted`, and EXPUNGE. When the expunged
+/// occurrence is the account's primary one and an explicit COPY occurrence survives elsewhere in
+/// view, that copy becomes its primary placement. Other occurrences are removed locally,
+/// with the final normal occurrence entering Trash and final Trash releasing the view.
 pub(super) async fn expunge(
     connection: &mut SqliteConnection,
     identifier: ImapMailboxIdentifier,
@@ -20,14 +25,11 @@ pub(super) async fn expunge(
     let Some(state) = mailbox_state(connection, identifier).await? else {
         return Ok(Vec::new());
     };
-    let owner: String =
-        sqlx::query_scalar("SELECT owner_identifier FROM imap_accounts WHERE identifier = ?1")
-            .bind(state.account_identifier.to_string())
-            .fetch_one(&mut *connection)
-            .await
-            .storage()?;
+    let organization =
+        super::organization::organization_for_mailbox(connection, identifier).await?;
+    let source_target = organization.target(connection, state.source).await?;
     let mailbox_id = identifier.to_string();
-    let mut candidates = Vec::new();
+    let mut flagged_members = Vec::new();
     match uids {
         Some(uids) => {
             for batch in uids.chunks(UID_BATCH_SIZE) {
@@ -36,72 +38,50 @@ pub(super) async fn expunge(
                 }
                 let placeholders = vec!["?"; batch.len()].join(",");
                 let sql = format!(
-                    "SELECT uid AS member_uid FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND deleted = 1 AND uid IN ({placeholders}) ORDER BY uid"
+                    "SELECT uid AS member_uid, mail_sequence FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND deleted = 1 AND uid IN ({placeholders}) ORDER BY uid"
                 );
                 let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(&mailbox_id);
                 for uid in batch {
                     query = query.bind(uid);
                 }
-                let rows = query.fetch_all(&mut *connection).await.storage()?;
-                candidates.extend(
-                    rows.iter()
-                        .map(|row| row.try_get::<i64, _>("member_uid"))
-                        .collect::<Result<Vec<_>, _>>()
-                        .storage()?,
-                );
+                flagged_members.extend(query.fetch_all(&mut *connection).await.storage()?);
             }
         }
         None => {
-            let rows = sqlx::query("SELECT uid AS member_uid FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND deleted = 1 ORDER BY uid")
+            flagged_members = sqlx::query("SELECT uid AS member_uid, mail_sequence FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND deleted = 1 ORDER BY uid")
                 .bind(&mailbox_id)
                 .fetch_all(&mut *connection)
                 .await
                 .storage()?;
-            candidates = rows
-                .iter()
-                .map(|row| row.try_get::<i64, _>("member_uid"))
-                .collect::<Result<Vec<_>, _>>()
-                .storage()?;
         }
     }
-    let mut removed = candidates
+    let mut members = flagged_members
         .iter()
-        .map(|uid| uid_from(*uid))
-        .collect::<Result<Vec<_>, _>>()?;
-    removed.sort_unstable();
-    removed.dedup();
-    if removed.is_empty() {
-        return Ok(removed);
+        .map(|row| {
+            Ok((
+                row.try_get::<i64, _>("member_uid").storage()?,
+                row.try_get::<i64, _>("mail_sequence").storage()?,
+            ))
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    members.sort_unstable();
+    members.dedup();
+    for (uid, sequence) in &members {
+        organization
+            .remove(connection, *sequence, &source_target)
+            .await?;
+        sqlx::query("DELETE FROM imap_mailbox_messages WHERE mailbox_identifier = ?1 AND uid = ?2")
+            .bind(&mailbox_id)
+            .bind(uid)
+            .execute(&mut *connection)
+            .await
+            .storage()?;
     }
-    match uids {
-        Some(uids) => {
-            for batch in uids.chunks(UID_BATCH_SIZE) {
-                if batch.is_empty() {
-                    continue;
-                }
-                let placeholders = vec!["?"; batch.len()].join(",");
-                let sql = format!(
-                    "INSERT OR IGNORE INTO user_message_deletions(user_identifier, mail_sequence) SELECT ?, mail_sequence FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND deleted = 1 AND uid IN ({placeholders})"
-                );
-                let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
-                    .bind(&owner)
-                    .bind(&mailbox_id);
-                for uid in batch {
-                    query = query.bind(uid);
-                }
-                query.execute(&mut *connection).await.storage()?;
-            }
-        }
-        None => {
-            sqlx::query("INSERT OR IGNORE INTO user_message_deletions(user_identifier, mail_sequence) SELECT ?, mail_sequence FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND deleted = 1")
-                .bind(&owner)
-                .bind(&mailbox_id)
-                .execute(&mut *connection)
-                .await
-                .storage()?;
-        }
+    if !members.is_empty() {
+        organization.invalidate(connection).await?;
+        super::organization::collect_unreferenced_messages(connection).await?;
     }
-    Ok(removed)
+    members.iter().map(|(uid, _)| uid_from(*uid)).collect()
 }
 
 /// Copy or move members between two mailboxes of one account.
@@ -184,23 +164,37 @@ pub(super) async fn copy(
         all_new: true,
         ..ImapCopyResult::default()
     };
-    let (source_kind, source_folder) =
-        placement_target(source_state.source).unwrap_or(("smart", None));
+    let organization = super::organization::organization_for_mailbox(connection, source).await?;
+    let destination_organization =
+        super::organization::organization_for_mailbox(connection, destination).await?;
+    if organization.mirror != destination_organization.mirror {
+        return Err(StorageError::ConstraintViolation(
+            "cannot transfer between organization modes".into(),
+        ));
+    }
+    let source_target = if remove_from_source {
+        organization.target(connection, source_state.source).await?
+    } else {
+        super::organization::Target::fixed("smart")
+    };
+    let destination_target = organization
+        .target(connection, destination_state.source)
+        .await?;
     for (uid, sequence) in &members {
-        let mut copied_occurrence: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imap_message_copies WHERE account_identifier = ?1 AND mail_sequence = ?2 AND target_kind = ?3 AND folder_identifier IS ?4) AND NOT EXISTS(SELECT 1 FROM imap_message_placements WHERE account_identifier = ?1 AND mail_sequence = ?2 AND target_kind = ?3 AND folder_identifier IS ?4)")
-            .bind(source_state.account_identifier.to_string()).bind(sequence)
-            .bind(source_kind).bind(source_folder.as_deref())
-            .fetch_one(&mut *connection).await.storage()?;
-        if remove_from_source && copied_occurrence {
-            copied_occurrence = !is_baseline_occurrence(
-                connection,
-                source_state.account_identifier,
-                *sequence,
-                source_kind,
-                source_folder.as_deref(),
-            )
-            .await?;
+        // Another Mirror credential may have committed the destination occurrence after its
+        // projection was synchronized. Canonical organization is authoritative inside this write.
+        if organization.primary(connection, *sequence).await? == destination_target
+            || organization
+                .copies(connection, *sequence)
+                .await?
+                .contains(&destination_target)
+        {
+            return Err(StorageError::ConstraintViolation(
+                "destination already contains a message".into(),
+            ));
         }
+        let copied_occurrence = remove_from_source
+            && organization.primary(connection, *sequence).await? != source_target;
         sqlx::query("DELETE FROM imap_mailbox_exclusions WHERE mailbox_identifier = ?1 AND mail_sequence = ?2")
             .bind(destination.to_string()).bind(sequence).execute(&mut *connection).await.storage()?;
         let existing: Option<i64> = sqlx::query_scalar("SELECT uid FROM imap_mailbox_messages WHERE mailbox_identifier = ?1 AND mail_sequence = ?2")
@@ -224,17 +218,14 @@ pub(super) async fn copy(
         };
         result.source_uids.push(*uid);
         result.destination_uids.push(uid_from(destination_uid)?);
-        let (target_kind, folder_identifier) = placement_target(destination_state.source)?;
         if remove_from_source && !copied_occurrence {
-            sqlx::query("INSERT INTO imap_message_placements(account_identifier, mail_sequence, target_kind, folder_identifier) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(account_identifier, mail_sequence) DO UPDATE SET target_kind = excluded.target_kind, folder_identifier = excluded.folder_identifier")
-                .bind(destination_state.account_identifier.to_string()).bind(sequence)
-                .bind(target_kind).bind(folder_identifier)
-                .execute(&mut *connection).await.storage()?;
+            organization
+                .place(connection, *sequence, &destination_target)
+                .await?;
         } else {
-            sqlx::query("INSERT OR IGNORE INTO imap_message_copies(account_identifier, mail_sequence, target_kind, folder_identifier) VALUES (?1, ?2, ?3, ?4)")
-                .bind(destination_state.account_identifier.to_string()).bind(sequence)
-                .bind(target_kind).bind(folder_identifier)
-                .execute(&mut *connection).await.storage()?;
+            organization
+                .copy_record(connection, *sequence, &destination_target, true)
+                .await?;
         }
     }
     sqlx::query("UPDATE imap_mailboxes SET uid_next = ?1 WHERE identifier = ?2")
@@ -246,10 +237,9 @@ pub(super) async fn copy(
     if remove_from_source && source != destination {
         for (uid, sequence) in &members {
             // A MOVE removes only the source occurrence, preserving unrelated explicit copies.
-            sqlx::query("DELETE FROM imap_message_copies WHERE account_identifier = ?1 AND mail_sequence = ?2 AND target_kind = ?3 AND folder_identifier IS ?4")
-                .bind(source_state.account_identifier.to_string()).bind(sequence)
-                .bind(source_kind).bind(source_folder.as_deref())
-                .execute(&mut *connection).await.storage()?;
+            organization
+                .copy_record(connection, *sequence, &source_target, false)
+                .await?;
             sqlx::query(
                 "DELETE FROM imap_mailbox_messages WHERE mailbox_identifier = ?1 AND uid = ?2",
             )
@@ -261,45 +251,10 @@ pub(super) async fn copy(
             result.removed_uids.push(*uid);
         }
     }
-    if remove_from_source {
-        sqlx::query(
-            "UPDATE imap_mailboxes SET definition_fingerprint = NULL WHERE account_identifier = ?1",
-        )
-        .bind(source_state.account_identifier.to_string())
-        .execute(connection)
-        .await
-        .storage()?;
+    if !members.is_empty() {
+        organization.invalidate(connection).await?;
     }
     Ok(result)
-}
-
-/// Identify an inherited or general baseline occurrence without an exclusive account override.
-async fn is_baseline_occurrence(
-    connection: &mut SqliteConnection,
-    account: ImapAccountIdentifier,
-    sequence: i64,
-    target_kind: &str,
-    folder: Option<&str>,
-) -> Result<bool, StorageError> {
-    sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM imap_message_placements WHERE account_identifier = ?1 AND mail_sequence = ?2) AND ((?3 = 'inbox' AND NOT EXISTS(SELECT 1 FROM user_message_placements AS placement JOIN web_folder_accounts AS exposure ON exposure.folder_identifier = placement.folder_identifier JOIN imap_accounts AS account ON account.identifier = exposure.account_identifier AND account.owner_identifier = placement.owner_identifier WHERE exposure.account_identifier = ?1 AND placement.mail_sequence = ?2)) OR (?3 = 'folder' AND EXISTS(SELECT 1 FROM user_message_placements AS placement JOIN web_folder_accounts AS exposure ON exposure.folder_identifier = placement.folder_identifier JOIN imap_accounts AS account ON account.identifier = exposure.account_identifier AND account.owner_identifier = placement.owner_identifier WHERE exposure.account_identifier = ?1 AND placement.mail_sequence = ?2 AND exposure.local_folder_identifier IS ?4)))")
-        .bind(account.to_string()).bind(sequence).bind(target_kind).bind(folder)
-        .fetch_one(connection).await.storage()
-}
-
-/// Convert a writable mailbox source into a durable organization target.
-fn placement_target(
-    source: sandpost_core::ImapMailboxSource,
-) -> Result<(&'static str, Option<String>), StorageError> {
-    match source {
-        sandpost_core::ImapMailboxSource::Inbox => Ok(("inbox", None)),
-        sandpost_core::ImapMailboxSource::Trash => Ok(("trash", None)),
-        sandpost_core::ImapMailboxSource::LocalFolder(identifier) => {
-            Ok(("folder", Some(identifier.to_string())))
-        }
-        sandpost_core::ImapMailboxSource::View(_) => Err(StorageError::ConstraintViolation(
-            "smart Views are not placement destinations".into(),
-        )),
-    }
 }
 
 /// Clear legacy account exclusions and reconcile, preserving placements and user deletion tombstones.
@@ -325,15 +280,7 @@ pub(super) async fn member_sequences(
     mailbox: ImapMailboxIdentifier,
     uids: &[u32],
 ) -> Result<Vec<(u32, i64)>, StorageError> {
-    let state = mailbox_state(connection, mailbox)
-        .await?
-        .ok_or(StorageError::NotFound)?;
-    let owner: String =
-        sqlx::query_scalar("SELECT owner_identifier FROM imap_accounts WHERE identifier = ?1")
-            .bind(state.account_identifier.to_string())
-            .fetch_one(&mut *connection)
-            .await
-            .storage()?;
+    let organization = super::organization::organization_for_mailbox(connection, mailbox).await?;
     let mut found = HashMap::with_capacity(uids.len());
     for batch in uids.chunks(UID_BATCH_SIZE) {
         if batch.is_empty() {
@@ -341,14 +288,17 @@ pub(super) async fn member_sequences(
         }
         let placeholders = vec!["?"; batch.len()].join(",");
         let sql = format!(
-            "SELECT member.uid, member.mail_sequence FROM imap_mailbox_messages AS member WHERE member.mailbox_identifier = ? AND member.uid IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM user_message_deletions AS deletion WHERE deletion.user_identifier = ? AND deletion.mail_sequence = member.mail_sequence)"
+            "SELECT member.uid, member.mail_sequence FROM imap_mailbox_messages AS member WHERE member.mailbox_identifier = ? AND member.uid IN ({placeholders}) AND ((? = 1 AND NOT EXISTS (SELECT 1 FROM user_message_deletions AS deletion WHERE deletion.user_identifier = ? AND deletion.mail_sequence = member.mail_sequence)) OR (? = 0 AND EXISTS(SELECT 1 FROM imap_account_messages WHERE account_identifier = ? AND mail_sequence = member.mail_sequence)))"
         );
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(mailbox.to_string());
         for uid in batch {
             query = query.bind(uid);
         }
         let rows = query
-            .bind(&owner)
+            .bind(organization.mirror)
+            .bind(&organization.identifier)
+            .bind(organization.mirror)
+            .bind(&organization.account)
             .fetch_all(&mut *connection)
             .await
             .storage()?;

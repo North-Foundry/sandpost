@@ -1,6 +1,6 @@
 //! Messages storage types.
 use super::FilterExpression;
-use sandpost_core::{Mailbox, MessageIdentifier, MessageSequence};
+use sandpost_core::{ImapMessageFlags, Mailbox, MessageIdentifier, MessageSequence};
 use serde::{Deserialize, Serialize};
 
 /// A bounded, backend-independent message listing request.
@@ -26,6 +26,12 @@ pub struct MessageSummary {
     pub to: Vec<Mailbox>,
     pub envelope_to: Vec<Mailbox>,
     pub preview: String,
+    /// Whether the owning user's shared read status is set.
+    #[serde(default)]
+    pub seen: bool,
+    /// Supported primary flags; physical unscoped summaries use the default flag set.
+    #[serde(default)]
+    pub flags: ImapMessageFlags,
     pub received_at: i64,
     pub size: u64,
     pub attachment_count: u64,

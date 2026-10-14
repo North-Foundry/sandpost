@@ -480,6 +480,8 @@ async fn user_message_deletions_persist_and_clear_owned_imap_memberships() {
             username: "deleting-account".into(),
             password_hash: "hash".into(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Mirror,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 1,
         })
         .await
@@ -491,6 +493,8 @@ async fn user_message_deletions_persist_and_clear_owned_imap_memberships() {
             username: "other-account".into(),
             password_hash: "hash".into(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Mirror,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 1,
         })
         .await
@@ -502,21 +506,28 @@ async fn user_message_deletions_persist_and_clear_owned_imap_memberships() {
             username: "deleting-account-two".into(),
             password_hash: "hash".into(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Mirror,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 1,
         })
         .await
         .expect("create second account for deleting user");
     let definition = ImapMembershipDefinition {
+        expected_mode_generation: None,
         filter: Expression::True,
         fingerprint: "all-mail".into(),
     };
     let deleting_mailbox = storage
-        .reconcile_imap_mailboxes(deleting_account.identifier, &[ImapMailboxSource::Inbox])
+        .reconcile_imap_mailboxes(
+            deleting_account.identifier,
+            &[ImapMailboxSource::Inbox],
+            None,
+        )
         .await
         .expect("create deleting user's mailbox")[0]
         .identifier;
     let other_mailbox = storage
-        .reconcile_imap_mailboxes(other_account.identifier, &[ImapMailboxSource::Inbox])
+        .reconcile_imap_mailboxes(other_account.identifier, &[ImapMailboxSource::Inbox], None)
         .await
         .expect("create other user's mailbox")[0]
         .identifier;
@@ -524,6 +535,7 @@ async fn user_message_deletions_persist_and_clear_owned_imap_memberships() {
         .reconcile_imap_mailboxes(
             deleting_second_account.identifier,
             &[ImapMailboxSource::Inbox],
+            None,
         )
         .await
         .expect("create second mailbox for deleting user")[0]

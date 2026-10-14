@@ -18,7 +18,7 @@ const MEMBER_SELECT: &str = "SELECT member.uid AS member_uid, mail.identifier AS
      FROM imap_mailbox_messages AS member \
      JOIN imap_mailboxes AS box ON box.identifier = member.mailbox_identifier \
      JOIN mail ON mail.sequence = member.mail_sequence \
-     LEFT JOIN imap_message_flags AS flags ON flags.account_identifier = box.account_identifier AND flags.mail_sequence = member.mail_sequence";
+     LEFT JOIN imap_effective_message_flags AS flags ON flags.account_identifier = box.account_identifier AND flags.mail_sequence = member.mail_sequence";
 
 /// Decode one row from [`MEMBER_SELECT`].
 fn decode_member(
@@ -95,7 +95,7 @@ pub(super) async fn counts(
              coalesce(sum(CASE WHEN member.uid > box.recent_through THEN 1 ELSE 0 END), 0) AS recent_count \
              FROM imap_mailbox_messages AS member \
              JOIN imap_mailboxes AS box ON box.identifier = member.mailbox_identifier \
-             LEFT JOIN imap_message_flags AS flags ON flags.account_identifier = box.account_identifier AND flags.mail_sequence = member.mail_sequence \
+             LEFT JOIN imap_effective_message_flags AS flags ON flags.account_identifier = box.account_identifier AND flags.mail_sequence = member.mail_sequence \
              WHERE member.mailbox_identifier = ?1")
         .bind(identifier.to_string()).fetch_one(connection).await.storage()?;
     Ok(Some(ImapMailboxCounts {

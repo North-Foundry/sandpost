@@ -22,6 +22,8 @@ pub async fn imap_account_credentials(storage: &dyn Storage) -> Result<(), Confo
             username: format!("imap-{}-{}", std::process::id(), unique_token()),
             password_hash: "hash".to_owned(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Independent,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 1,
         })
         .await;
@@ -37,6 +39,8 @@ pub async fn imap_account_credentials(storage: &dyn Storage) -> Result<(), Confo
             username: account.username.clone(),
             password_hash: "hash".to_owned(),
             mirror_views: false,
+            mode: sandpost_core::ImapAccountMode::Independent,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 1,
         })
         .await;
@@ -70,6 +74,7 @@ pub async fn imap_account_credentials(storage: &dyn Storage) -> Result<(), Confo
                     name: "Renamed".to_owned(),
                     enabled: false,
                     mirror_views: false,
+                    mode: sandpost_core::ImapAccountMode::Independent,
                 },
             )
             .await,
@@ -207,6 +212,7 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
         "create_imap_local_folder",
         storage
             .create_imap_local_folder(&NewImapLocalFolder {
+                expected_mode_generation: None,
                 account_identifier: account.identifier,
                 name: "Failed Payments".to_owned(),
                 filter: "subject contains \"failed\"".to_owned(),
@@ -217,6 +223,7 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
     )?;
     let duplicate = storage
         .create_imap_local_folder(&NewImapLocalFolder {
+            expected_mode_generation: None,
             account_identifier: account.identifier,
             name: "Failed Payments".to_owned(),
             filter: String::new(),
@@ -236,6 +243,7 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
             .update_imap_local_folder(
                 folder.identifier,
                 &ImapLocalFolderSettings {
+                    expected_mode_generation: None,
                     name: "Password Resets".to_owned(),
                     filter: "subject contains \"reset\"".to_owned(),
                     include_in_inbox: false,
@@ -259,50 +267,65 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
                 username: format!("imap-{}-{}", std::process::id(), unique_token()),
                 password_hash: "hash".to_owned(),
                 mirror_views: false,
+                mode: sandpost_core::ImapAccountMode::Independent,
+                initial_authorization: sandpost_query::Expression::True,
                 created_at: 2,
             })
             .await,
     )?;
-    let sibling_folder = unwrap_storage(
-        CHECK,
-        "shared folder projection",
-        storage.list_imap_local_folders(sibling.identifier).await,
-    )?
-    .into_iter()
-    .next()
-    .ok_or_else(|| failure(CHECK, "new account did not discover owner folders"))?;
     verify(
         CHECK,
-        sibling_folder.name == updated.name && sibling_folder.filter == updated.filter,
-        format!("new account projection differs from owner definition: {sibling_folder:?}"),
+        unwrap_storage(
+            CHECK,
+            "list sibling folders",
+            storage.list_imap_local_folders(sibling.identifier).await,
+        )?
+        .is_empty(),
+        "Independent accounts do not import sibling smart definitions",
     )?;
-    let renamed = unwrap_storage(
+    let sibling_folder = unwrap_storage(
         CHECK,
-        "update shared folder through sibling account",
+        "create sibling smart folder with the same name",
+        storage
+            .create_imap_local_folder(&NewImapLocalFolder {
+                expected_mode_generation: None,
+                account_identifier: sibling.identifier,
+                name: updated.name.clone(),
+                filter: "true".into(),
+                include_in_inbox: true,
+                created_at: 2,
+            })
+            .await,
+    )?;
+    verify(
+        CHECK,
+        sibling_folder.definition_identifier.is_none() && updated.definition_identifier.is_none(),
+        "Independent smart folders have no owner definition",
+    )?;
+    unwrap_storage(
+        CHECK,
+        "update sibling smart folder",
         storage
             .update_imap_local_folder(
                 sibling_folder.identifier,
                 &ImapLocalFolderSettings {
-                    name: "Owner-wide Folder".to_owned(),
-                    filter: "subject contains \"owner-wide\"".to_owned(),
-                    include_in_inbox: true,
+                    expected_mode_generation: None,
+                    name: "Sibling-only folder".into(),
+                    filter: "false".into(),
+                    include_in_inbox: false,
                 },
             )
             .await,
-    )?
-    .ok_or_else(|| failure(CHECK, "shared folder update returned nothing"))?;
-    let first_projection = unwrap_storage(
+    )?;
+    verify_equal(
         CHECK,
-        "read canonical folder from first account",
-        storage.list_imap_local_folders(account.identifier).await,
-    )?
-    .into_iter()
-    .next()
-    .ok_or_else(|| failure(CHECK, "first account lost its folder projection"))?;
-    verify(
-        CHECK,
-        first_projection.name == renamed.name && first_projection.filter == renamed.filter,
-        "updates through one account synchronize every projection",
+        "first account's local definition is unchanged",
+        unwrap_storage(
+            CHECK,
+            "read first folder",
+            storage.get_imap_local_folder(folder.identifier).await,
+        )?,
+        Some(updated.clone()),
     )?;
     unwrap_storage(
         CHECK,
@@ -315,44 +338,53 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
         storage
             .create_imap_account(&NewImapAccount {
                 owner_identifier: account.owner_identifier,
-                name: "Replacement".to_owned(),
+                name: "Replacement".into(),
                 username: format!("imap-{}-{}", std::process::id(), unique_token()),
-                password_hash: "hash".to_owned(),
+                password_hash: "hash".into(),
                 mirror_views: false,
+                mode: sandpost_core::ImapAccountMode::Independent,
+                initial_authorization: sandpost_query::Expression::True,
                 created_at: 3,
             })
             .await,
-    )?;
-    let replacement_folder = unwrap_storage(
-        CHECK,
-        "discover retained owner folder",
-        storage
-            .list_imap_local_folders(replacement.identifier)
-            .await,
-    )?
-    .into_iter()
-    .next()
-    .ok_or_else(|| failure(CHECK, "credential deletion removed the owner definition"))?;
-    verify_equal(
-        CHECK,
-        "listed folders",
-        unwrap_storage(
-            CHECK,
-            "list_imap_local_folders",
-            storage.list_imap_local_folders(account.identifier).await,
-        )?,
-        vec![first_projection],
     )?;
     verify(
         CHECK,
         unwrap_storage(
             CHECK,
-            "delete_imap_local_folder",
+            "replacement folders",
             storage
-                .delete_imap_local_folder(replacement_folder.identifier)
+                .list_imap_local_folders(replacement.identifier)
+                .await,
+        )?
+        .is_empty(),
+        "replacement credentials start without deleted account-local smart folders",
+    )?;
+    verify(
+        CHECK,
+        unwrap_storage(
+            CHECK,
+            "delete local smart folder",
+            storage
+                .delete_imap_local_folder(folder.identifier, None)
                 .await,
         )?,
-        "deleting a folder reports success",
+        "local smart deletion succeeds",
+    )?;
+    verify(
+        CHECK,
+        unwrap_storage(
+            CHECK,
+            "first account after folder deletion",
+            storage.list_imap_local_folders(account.identifier).await,
+        )?
+        .is_empty(),
+        "deleting a local folder affects its account",
+    )?;
+    unwrap_storage(
+        CHECK,
+        "delete replacement account",
+        storage.delete_imap_account(replacement.identifier).await,
     )?;
     unwrap_storage(
         CHECK,

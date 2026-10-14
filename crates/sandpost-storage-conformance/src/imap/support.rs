@@ -13,6 +13,7 @@ use crate::support::{
 /// Build a membership definition from query source, fingerprinted by the source text itself.
 pub(super) fn membership_definition(source: &str) -> ImapMembershipDefinition {
     ImapMembershipDefinition {
+        expected_mode_generation: None,
         filter: sandpost_query::compile(source)
             .expect("conformance definitions are valid")
             .into_expression(),
@@ -25,6 +26,20 @@ pub(super) async fn create_imap_account_fixture(
     storage: &dyn Storage,
     check: &'static str,
 ) -> Result<ImapAccount, ConformanceFailure> {
+    create_imap_account_fixture_with_mode(
+        storage,
+        check,
+        sandpost_core::ImapAccountMode::Independent,
+    )
+    .await
+}
+
+/// Create an isolated user and one account in the requested organization mode.
+pub(super) async fn create_imap_account_fixture_with_mode(
+    storage: &dyn Storage,
+    check: &'static str,
+    mode: sandpost_core::ImapAccountMode,
+) -> Result<ImapAccount, ConformanceFailure> {
     let owner = create_user(storage, check, GlobalRole::Member, &unique_email(check)).await?;
     unwrap_storage(
         check,
@@ -36,6 +51,8 @@ pub(super) async fn create_imap_account_fixture(
                 username: format!("imap-{}-{}", std::process::id(), unique_token()),
                 password_hash: "hash-one".to_owned(),
                 mirror_views: true,
+                mode,
+                initial_authorization: sandpost_query::Expression::True,
                 created_at: 1_700_000_000,
             })
             .await,
@@ -90,7 +107,7 @@ pub(super) async fn reconcile_imap_mailbox(
         check,
         "reconcile_imap_mailboxes",
         storage
-            .reconcile_imap_mailboxes(account.identifier, sources)
+            .reconcile_imap_mailboxes(account.identifier, sources, None)
             .await,
     )?;
     states

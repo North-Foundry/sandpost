@@ -36,6 +36,8 @@ async fn failed_bulk_user_deletion_preserves_messages_and_memberships() {
             username: "reader".into(),
             password_hash: "hash".into(),
             mirror_views: true,
+            mode: sandpost_core::ImapAccountMode::Mirror,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 0,
         })
         .await
@@ -45,10 +47,11 @@ async fn failed_bulk_user_deletion_preserves_messages_and_memberships() {
     storage.insert_message(&first).await.unwrap();
     storage.insert_message(&second).await.unwrap();
     let mailbox = storage
-        .reconcile_imap_mailboxes(account.identifier, &[ImapMailboxSource::Inbox])
+        .reconcile_imap_mailboxes(account.identifier, &[ImapMailboxSource::Inbox], None)
         .await
         .unwrap()[0];
     let definition = ImapMembershipDefinition {
+        expected_mode_generation: None,
         filter: Expression::True,
         fingerprint: "all".into(),
     };

@@ -11,7 +11,7 @@ use super::support::{
 use crate::ConformanceFailure;
 use crate::support::{failure, unique_token, unwrap_storage, verify, verify_equal};
 
-/// Verify account flags, tombstones, recent claims, persistent moves, and refused smart-folder copies.
+/// Verify independent flags, staged expunge, sibling isolation, recent claims, and smart-folder COPY refusal.
 pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "imap_flags_and_expunge";
     let token = format!("flags-{}-{}", std::process::id(), unique_token());
@@ -33,6 +33,8 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
                 username: format!("imap-{}-{}", std::process::id(), unique_token()),
                 password_hash: "hash-two".to_owned(),
                 mirror_views: true,
+                mode: sandpost_core::ImapAccountMode::Independent,
+                initial_authorization: sandpost_query::Expression::True,
                 created_at: 1_700_000_000,
             })
             .await,
@@ -50,6 +52,7 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
         "create_imap_local_folder",
         storage
             .create_imap_local_folder(&NewImapLocalFolder {
+                expected_mode_generation: None,
                 account_identifier: account.identifier,
                 name: "Only one".to_owned(),
                 filter: format!("subject contains \"{token} one\""),
@@ -74,6 +77,7 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
                 .reconcile_imap_mailboxes(
                     other_account.identifier,
                     &[ImapMailboxSource::LocalFolder(folder.identifier)],
+                    None,
                 )
                 .await,
             Err(StorageError::NotFound)
@@ -173,6 +177,7 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
                         ..ImapMessageFlags::default()
                     },
                 },
+                None,
             )
             .await,
     )?;
@@ -236,14 +241,14 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
     let expunged = unwrap_storage(
         CHECK,
         "expunge_imap_members",
-        storage.expunge_imap_members(inbox, Some(&[2])).await,
+        storage.expunge_imap_members(inbox, Some(&[2]), None).await,
     )?;
     verify_equal(CHECK, "expunged UIDs", expunged, vec![2])?;
     verify_equal(
         CHECK,
-        "expunge removes the flagged message from every owner account",
+        "Independent EXPUNGE preserves sibling retention",
         mailbox_member_uids(storage, CHECK, second_inbox).await?,
-        vec![1],
+        vec![1, 2],
     )?;
     unwrap_storage(
         CHECK,
@@ -252,9 +257,14 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
     )?;
     verify_equal(
         CHECK,
-        "a user-deleted message stays out after synchronization",
+        "an expunged Inbox occurrence stays in account Trash",
         mailbox_member_uids(storage, CHECK, inbox).await?,
         vec![1],
+    )?;
+    unwrap_storage(
+        CHECK,
+        "materialize the first-stage Trash occurrence",
+        storage.synchronize_imap_mailbox(trash, &everything).await,
     )?;
     let moved = unwrap_storage(
         CHECK,
@@ -267,7 +277,7 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
     verify(
         CHECK,
         mailbox_member_uids(storage, CHECK, inbox).await?.is_empty()
-            && mailbox_member_uids(storage, CHECK, trash).await? == [1],
+            && mailbox_member_uids(storage, CHECK, trash).await? == [1, 2],
         "a move leaves the message only in the destination",
     )?;
     let cleared = unwrap_storage(
@@ -294,9 +304,9 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
     )?;
     verify_equal(
         CHECK,
-        "Trash placement remains after clearing exclusions",
+        "Trash placements remain after clearing exclusions",
         mailbox_member_uids(storage, CHECK, trash).await?,
-        vec![1],
+        vec![1, 2],
     )?;
     let metadata = unwrap_storage(
         CHECK,
@@ -305,7 +315,7 @@ pub async fn imap_flags_and_expunge(storage: &dyn Storage) -> Result<(), Conform
     )?;
     verify(
         CHECK,
-        metadata.len() == 1
+        metadata.len() == 2
             && metadata
                 .iter()
                 .all(|item| item.size > 0 && item.received_at == 1_700_000_100),

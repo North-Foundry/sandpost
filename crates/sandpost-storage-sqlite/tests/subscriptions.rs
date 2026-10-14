@@ -29,6 +29,8 @@ async fn retain_default_subscriptions_preserves_unsubscribe_exceptions() {
             username: "owner".into(),
             password_hash: "hash".into(),
             mirror_views: true,
+            mode: sandpost_core::ImapAccountMode::Independent,
+            initial_authorization: sandpost_query::Expression::True,
             created_at: 0,
         })
         .await

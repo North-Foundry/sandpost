@@ -4,7 +4,7 @@
 pub(crate) type MigrationScript = (&'static str, &'static str);
 
 /// Apply each script once, in order; append new scripts to evolve existing databases.
-pub(crate) const MIGRATIONS: [MigrationScript; 39] = [
+pub(crate) const MIGRATIONS: [MigrationScript; 56] = [
     (
         "0001_create_migrations_table.sql",
         include_str!("../../migrations/0001_create_migrations_table.sql"),
@@ -160,5 +160,73 @@ pub(crate) const MIGRATIONS: [MigrationScript; 39] = [
     (
         "0039_create_imap_subscribed_mailboxes_table.sql",
         include_str!("../../migrations/0039_create_imap_subscribed_mailboxes_table.sql"),
+    ),
+    (
+        "0040_create_user_message_trash_table.sql",
+        include_str!("../../migrations/0040_create_user_message_trash_table.sql"),
+    ),
+    (
+        "0041_create_user_message_deletions_trash_triggers.sql",
+        include_str!("../../migrations/0041_create_user_message_deletions_trash_triggers.sql"),
+    ),
+    (
+        "0042_add_imap_account_modes.sql",
+        include_str!("../../migrations/0042_add_imap_account_modes.sql"),
+    ),
+    (
+        "0043_add_imap_folder_modes.sql",
+        include_str!("../../migrations/0043_add_imap_folder_modes.sql"),
+    ),
+    (
+        "0044_backfill_imap_mode_folder_projections.sql",
+        include_str!("../../migrations/0044_backfill_imap_mode_folder_projections.sql"),
+    ),
+    (
+        "0045_add_imap_mailbox_modes.sql",
+        include_str!("../../migrations/0045_add_imap_mailbox_modes.sql"),
+    ),
+    (
+        "0046_create_imap_account_messages_table.sql",
+        include_str!("../../migrations/0046_create_imap_account_messages_table.sql"),
+    ),
+    (
+        "0047_backfill_imap_account_messages.sql",
+        include_str!("../../migrations/0047_backfill_imap_account_messages.sql"),
+    ),
+    (
+        "0048_create_mail_independent_references_trigger.sql",
+        include_str!("../../migrations/0048_create_mail_independent_references_trigger.sql"),
+    ),
+    (
+        "0049_create_user_message_copies_table.sql",
+        include_str!("../../migrations/0049_create_user_message_copies_table.sql"),
+    ),
+    (
+        "0050_create_user_message_copies_ownership_triggers.sql",
+        include_str!("../../migrations/0050_create_user_message_copies_ownership_triggers.sql"),
+    ),
+    (
+        "0051_add_users_message_flag_cursor.sql",
+        include_str!("../../migrations/0051_add_users_message_flag_cursor.sql"),
+    ),
+    (
+        "0052_create_user_message_flags_table.sql",
+        include_str!("../../migrations/0052_create_user_message_flags_table.sql"),
+    ),
+    (
+        "0053_create_imap_effective_message_flags_view.sql",
+        include_str!("../../migrations/0053_create_imap_effective_message_flags_view.sql"),
+    ),
+    (
+        "0054_replace_primary_deletion_membership_trigger.sql",
+        include_str!("../../migrations/0054_replace_primary_deletion_membership_trigger.sql"),
+    ),
+    (
+        "0055_backfill_independent_primary_organization.sql",
+        include_str!("../../migrations/0055_backfill_independent_primary_organization.sql"),
+    ),
+    (
+        "0056_invalidate_imap_membership_policies.sql",
+        include_str!("../../migrations/0056_invalidate_imap_membership_policies.sql"),
     ),
 ];

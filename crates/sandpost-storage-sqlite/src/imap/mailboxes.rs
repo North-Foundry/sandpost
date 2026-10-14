@@ -20,16 +20,18 @@ pub(super) async fn reconcile_mailboxes(
     account: ImapAccountIdentifier,
     sources: &[ImapMailboxSource],
 ) -> Result<Vec<ImapMailboxState>, StorageError> {
-    if get_account(connection, account).await?.is_none() {
-        return Err(StorageError::NotFound);
-    }
+    let account_record = get_account(connection, account)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    let mode = account_record.mode.as_str();
     for source in sources {
         if let ImapMailboxSource::LocalFolder(folder) = source {
             let belongs_to_account: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM imap_local_folders WHERE identifier = ?1 AND account_identifier = ?2)",
+                "SELECT EXISTS(SELECT 1 FROM imap_local_folders WHERE identifier = ?1 AND account_identifier = ?2 AND organization_mode = ?3)",
             )
             .bind(folder.to_string())
             .bind(account.to_string())
+            .bind(mode)
             .fetch_one(&mut *connection)
             .await
             .storage()?;
@@ -39,9 +41,10 @@ pub(super) async fn reconcile_mailboxes(
         }
     }
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {MAILBOX_COLUMNS} FROM imap_mailboxes WHERE account_identifier = ?1"
+        "SELECT {MAILBOX_COLUMNS} FROM imap_mailboxes WHERE account_identifier = ?1 AND organization_mode = ?2"
     )))
     .bind(account.to_string())
+    .bind(mode)
     .fetch_all(&mut *connection)
     .await
     .storage()?;
@@ -51,15 +54,12 @@ pub(super) async fn reconcile_mailboxes(
         .collect::<Result<Vec<_>, _>>()
         .storage()?;
     let mut by_source: HashMap<ImapMailboxSource, ImapMailboxState> = HashMap::new();
+    // Catalog planning and this transaction can race with CREATE or a mode switch. Omission
+    // from a plan is not an authoritative deletion: definitions delete their identities through
+    // foreign-key cascades, and unexposed identities never pass the application's live catalog.
     for state in existing {
         if sources.contains(&state.source) {
             by_source.insert(state.source, state);
-        } else {
-            sqlx::query("DELETE FROM imap_mailboxes WHERE identifier = ?1")
-                .bind(state.identifier.to_string())
-                .execute(&mut *connection)
-                .await
-                .storage()?;
         }
     }
     let mut states = Vec::with_capacity(sources.len());
@@ -71,13 +71,14 @@ pub(super) async fn reconcile_mailboxes(
         let identifier = ImapMailboxIdentifier::new();
         let uid_validity = allocate_uid_validity(&mut *connection).await?;
         let (kind, view, folder) = source_columns(*source);
-        sqlx::query("INSERT INTO imap_mailboxes(identifier,account_identifier,source,view_identifier,folder_identifier,uid_validity) VALUES (?1,?2,?3,?4,?5,?6)")
+        sqlx::query("INSERT INTO imap_mailboxes(identifier,account_identifier,source,view_identifier,folder_identifier,uid_validity,organization_mode) VALUES (?1,?2,?3,?4,?5,?6,?7)")
             .bind(identifier.to_string())
             .bind(account.to_string())
             .bind(kind)
             .bind(view)
             .bind(folder)
             .bind(uid_validity)
+            .bind(mode)
             .execute(&mut *connection)
             .await
             .map_err(|error| match crate::error::sqlite_error(error) {
@@ -160,9 +161,8 @@ pub(super) async fn synchronize_mailbox(
                  WHERE mail.sequence > ? AND mail.sequence <= ? AND ({}) \
                  AND ({}) \
                  AND NOT EXISTS (SELECT 1 FROM imap_mailbox_messages AS member WHERE member.mailbox_identifier = ? AND member.mail_sequence = mail.sequence) \
-                 AND NOT EXISTS (SELECT 1 FROM imap_mailbox_exclusions AS exclusion WHERE exclusion.mailbox_identifier = ? AND exclusion.mail_sequence = mail.sequence) \
-                 AND NOT EXISTS (SELECT 1 FROM user_message_deletions AS deletion JOIN imap_mailboxes AS box ON box.identifier = ? JOIN imap_accounts AS account ON account.identifier = box.account_identifier WHERE deletion.user_identifier = account.owner_identifier AND deletion.mail_sequence = mail.sequence) \
-                 ORDER BY mail.sequence",
+                 AND (box.source = 'view' OR local.kind = 'smart' OR NOT EXISTS (SELECT 1 FROM imap_mailbox_exclusions AS exclusion WHERE exclusion.mailbox_identifier = ? AND exclusion.mail_sequence = mail.sequence)) \
+                                  ORDER BY mail.sequence",
                 compiled.sql, placement_policy
             );
             let query = sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -172,7 +172,6 @@ pub(super) async fn synchronize_mailbox(
                 .bind(start)
                 .bind(latest_sequence);
             let inserted = bind_query(query, &compiled.parameters)
-                .bind(identifier.to_string())
                 .bind(identifier.to_string())
                 .bind(identifier.to_string())
                 .execute(&mut *connection)
@@ -196,37 +195,14 @@ pub(super) async fn synchronize_mailbox(
     mailbox_state(connection, identifier).await
 }
 
-/// Return SQL membership rules for account overrides, inherited Web placements, and copies.
+/// Return SQL membership rules for account overrides, inherited Web placements and Trash, and copies.
 async fn membership_policy(
     connection: &mut SqliteConnection,
     state: ImapMailboxState,
 ) -> Result<String, StorageError> {
-    let folder_kind: Option<String> =
-        sqlx::query_scalar("SELECT kind FROM imap_local_folders WHERE identifier = ?1")
-            .bind(match state.source {
-                ImapMailboxSource::LocalFolder(identifier) => Some(identifier.to_string()),
-                _ => None,
-            })
-            .fetch_optional(&mut *connection)
-            .await
-            .storage()?;
-    let override_exists = "EXISTS (SELECT 1 FROM imap_message_placements AS placement WHERE placement.account_identifier = box.account_identifier AND placement.mail_sequence = mail.sequence)";
-    let override_matches = "EXISTS (SELECT 1 FROM imap_message_placements AS placement WHERE placement.account_identifier = box.account_identifier AND placement.mail_sequence = mail.sequence AND placement.target_kind = box.source AND placement.folder_identifier IS box.folder_identifier)";
-    let copy_matches = "EXISTS (SELECT 1 FROM imap_message_copies AS copy WHERE copy.account_identifier = box.account_identifier AND copy.mail_sequence = mail.sequence AND copy.target_kind = box.source AND copy.folder_identifier IS box.folder_identifier)";
-    let inherited = "EXISTS (SELECT 1 FROM user_message_placements AS placement JOIN web_folder_accounts AS exposure ON exposure.folder_identifier = placement.folder_identifier JOIN imap_accounts AS account ON account.identifier = exposure.account_identifier WHERE placement.owner_identifier = account.owner_identifier AND placement.mail_sequence = mail.sequence AND exposure.account_identifier = box.account_identifier)";
-    let inherited_matches = "EXISTS (SELECT 1 FROM user_message_placements AS placement JOIN web_folder_accounts AS exposure ON exposure.folder_identifier = placement.folder_identifier JOIN imap_accounts AS account ON account.identifier = exposure.account_identifier WHERE placement.owner_identifier = account.owner_identifier AND placement.mail_sequence = mail.sequence AND exposure.account_identifier = box.account_identifier AND exposure.local_folder_identifier = box.folder_identifier)";
-    Ok(match (state.source, folder_kind.as_deref()) {
-        (ImapMailboxSource::LocalFolder(_), Some("manual")) => format!(
-            "({override_matches}) OR ({copy_matches}) OR (NOT ({override_exists}) AND ({inherited_matches}))"
-        ),
-        (ImapMailboxSource::LocalFolder(_), Some("private")) | (ImapMailboxSource::Trash, _) => {
-            format!("({override_matches}) OR ({copy_matches})")
-        }
-        (ImapMailboxSource::Inbox, _) => format!(
-            "({override_matches}) OR ({copy_matches}) OR (NOT ({override_exists}) AND NOT ({inherited}))"
-        ),
-        _ => format!("NOT ({override_exists}) AND NOT ({inherited})"),
-    })
+    let organization =
+        super::organization::organization_for_mailbox(connection, state.identifier).await?;
+    Ok(organization.membership_policy(state.source))
 }
 
 /// Load one mailbox identity by identifier.

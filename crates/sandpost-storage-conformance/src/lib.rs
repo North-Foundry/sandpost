@@ -17,8 +17,9 @@ mod users;
 mod views;
 
 pub use imap::{
-    imap_account_configuration, imap_account_credentials, imap_flags_and_expunge,
-    imap_mailbox_identities, imap_membership_synchronization, web_manual_folders_and_placements,
+    imap_account_configuration, imap_account_credentials, imap_copy_then_expunge_transfers,
+    imap_flags_and_expunge, imap_mailbox_identities, imap_membership_synchronization,
+    web_manual_folders_and_placements, web_trash,
 };
 pub use messages::{
     index_messages_revisions, message_deletion, message_filter_equivalence,
@@ -100,6 +101,8 @@ pub async fn run_all(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     imap_membership_synchronization(storage).await?;
     imap_flags_and_expunge(storage).await?;
     web_manual_folders_and_placements(storage).await?;
+    imap_copy_then_expunge_transfers(storage).await?;
+    web_trash(storage).await?;
     Ok(())
 }
 
