@@ -18,7 +18,7 @@ The product name is **Sandpost**, one word with only the initial **S** capitaliz
 
 ## Build and run
 
-Requirements: Rust 1.89+, Cargo, a C compiler (bundled SQLite), Node.js 22.12+, and Yarn 4. Install JavaScript dependencies at the repository root; Rust crates share the root workspace and lockfile.
+Requirements: Rust 1.99+, Cargo, a C compiler (bundled SQLite), Node.js 22.12+, and Yarn 4. Install JavaScript dependencies at the repository root; Rust crates share the root workspace and lockfile.
 
 ```sh
 yarn install
@@ -113,6 +113,17 @@ Vue sends viewport rectangles over `sandpost:preview:*` IPC, validating the owne
 CLI's new data default does not migrate existing relative `data/`; set `SANDPOST_DATA_DIR=data` or move the complete directory. Desktop uses the platform app-data path only when `SANDPOST_DATA_DIR` is unset; explicit data/database paths and other shared runtime configuration are honored.
 
 Malformed configuration, invalid persisted topology/filter, failed migrations, missing configured frontend index, removed SMTP endpoint variables, search writer-lock conflicts, HTTP/IMAP bind errors, unusable IMAP certificates, non-loopback IMAP without TLS (unless explicitly disabled), and an SMTP override bind error stop startup. An unbindable persisted SMTP address does not stop startup; it is reported on SMTP Access. SQLite is authoritative; Tantivy is recovered/rebuilt as a derived index.
+
+The embedded runtime revalidates configuration before opening storage or binding
+listeners, including settings edited after environment parsing. Both entry paths
+enforce the same TLS requirements, network IMAP plaintext opt-in, IMAP connection
+limits, and advertised-host validation.
+
+Shutdown cancels pending HTTP handlers and active response streams, including SSE.
+Transport draining and search-writer cleanup share a six-second host deadline.
+Cleanup runs on a separate thread; if retained work or synchronous disposal exceeds
+the deadline, shutdown returns a timeout and cleanup continues in the background,
+retaining writer ownership until release is safe.
 
 SMTP is a bounded capture server with selected RFC behavior, not universal compliance: SMTP command/reply (RFC 5321), SIZE (1870), 8BITMIME (6152), AUTH framing (4954), PLAIN (4616), LOGIN, STARTTLS (3207), implicit TLS (8314), enhanced status codes (2034), and trace fields (3848). EHLO advertises PIPELINING, SIZE, 8BITMIME, ENHANCEDSTATUSCODES, configured STARTTLS, and permitted AUTH. Unknown commands return 500, unsupported standard commands 502, malformed commands 501, and VRFY 252 without mailbox confirmation.
 

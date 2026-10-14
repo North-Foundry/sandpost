@@ -79,8 +79,17 @@ failing under sustained acknowledgement churn.
 Refresh events/SSE `ready` wait for a captured committed watermark via a watch
 channel, then recheck visibility/session validity. SMTP waits only for SQL; direct
 reads remain immediate. Index-worker failure stops supervised listeners. Shutdown
-releases installation/Tantivy writer locks even with surviving readers, allowing
+releases installation/Tantivy writer locks on successful completion even with surviving readers, allowing
 native restart; closed writers reject mutations and wake pending waits.
+During shutdown, supervision observes transport and indexing task completions
+concurrently under one six-second drain deadline. A stalled HTTP event stream
+cannot hide a sibling failure that finishes before the deadline.
+HTTP shutdown cancels pending handlers and ends active response streams, including
+SSE, so accepted connections do not retain application work after listeners stop.
+Writer cleanup shares that absolute deadline and runs outside the async executor.
+If independently retained work delays cleanup, shutdown reports a timeout; the
+cleanup thread continues and retains installation ownership until the writer can
+close safely. Synchronous work cannot be forcibly interrupted.
 CLI `sandpost search status` reads SQL without the lock; offline `sandpost search
 rebuild` requires it and fails during live runtime. Administrator HTTP rebuild
 uses the running coordinator's writer gate. Full lifecycle: [storage.md](storage.md).
@@ -115,6 +124,21 @@ pre-deployment formats require recreation; startup never resets them automatical
 See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 
 ## Runtime and clients
+
+The `sandpost` runtime keeps service assembly in `lifecycle/mod.rs`, HTTP request/stream
+cancellation in `lifecycle/http/mod.rs`, search scheduling in `lifecycle/indexing/mod.rs`,
+and coordinated task draining and cleanup in `lifecycle/supervision/mod.rs`.
+Configuration, startup reporting, SMTP delivery/listener control, and the IMAP
+adapter/listener each retain their own modules. Modules with child files keep their
+implementation in `<module>/mod.rs` and unit tests alongside it in `tests.rs`;
+test modules with children use `tests/mod.rs`. Real IMAP scenarios are grouped under
+`imap_runtime_tests/` by capture, authorization, mailbox organization, modes,
+subscriptions, smart-mailbox rights, and retention, with shared wire helpers.
+
+Environment parsing and runtime startup share typed configuration validation.
+Embedding hosts can edit configuration values, but startup rechecks TLS requirements,
+network IMAP plaintext opt-in, connection limits, and advertised hosts before opening
+storage or binding listeners.
 
 Setup is available iff SQLite has no Owner, regardless of non-owner accounts or
 `instance.json`. Atomic owner creation preserves accounts/unique email, creates no

@@ -7,13 +7,23 @@ license.workspace = true
 
 [dependencies]
 sandpost-core.workspace = true
-sandpost-match.workspace = true
-sandpost-mail.workspace = true
+sandpost-query.workspace = true
+sandpost-smtp.workspace = true
+sandpost-imap.workspace = true
 sandpost-storage.workspace = true
+sandpost-storage-sqlite.workspace = true
 sandpost-web-api.workspace = true
+sandpost-application.workspace = true
 axum.workspace = true
+async-trait.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+rcgen.workspace = true
+tower.workspace = true

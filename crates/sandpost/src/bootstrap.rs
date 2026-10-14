@@ -1,40 +1,32 @@
-//! Initialize persistent storage and the immutable matching policy snapshot.
-
+//! Open authoritative SQL and validate persisted security query definitions.
 use crate::configuration::Configuration;
-use sandpost_core::{Scope, ScopeIdentifier, ScopeTree};
-use sandpost_match::Matcher;
+use sandpost_core::ScopeTree;
 use sandpost_storage::Storage;
-use std::{error::Error, sync::Arc};
+use sandpost_storage_sqlite::SqliteStorage;
+use std::error::Error;
+use std::sync::Arc;
 
-/// Open storage, seed an empty installation, and compile its persisted scope policies.
-pub(crate) fn initialize(
-    application_configuration: &Configuration,
-) -> Result<(Storage, Arc<Matcher>), Box<dyn Error + Send + Sync>> {
-    std::fs::create_dir_all(&application_configuration.data_directory)?;
-    if let Some(parent) = application_configuration
+/// Open storage without evaluating scopes or constructing message-membership materialization.
+pub(crate) async fn initialize(
+    configuration: &Configuration,
+) -> Result<Arc<dyn Storage>, Box<dyn Error + Send + Sync>> {
+    std::fs::create_dir_all(&configuration.data_directory)
+        .map_err(sandpost_application::InstanceError::CreateDirectory)?;
+    if let Some(parent) = configuration
         .database_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
     {
         std::fs::create_dir_all(parent)?;
     }
-    let storage = Storage::open(&application_configuration.database_path)?;
-    let mut scopes = storage.load_scopes()?;
-    if scopes.is_empty() {
-        let root_scope = Scope {
-            // Stable bootstrap identifier across restarts and fresh installations.
-            identifier: ScopeIdentifier(uuid::Uuid::from_u128(1)),
-            parent: None,
-            name: "All Mail".into(),
-            description: Some("Local development capture root".into()),
-            filter: String::new(),
-            position: 0,
-            policy_version: 1,
-        };
-        storage.save_scope(&root_scope)?;
-        scopes.push(root_scope);
+    let storage: Arc<dyn Storage> =
+        Arc::new(SqliteStorage::open(&configuration.database_path).await?);
+    let tree = ScopeTree::new(
+        storage.list_scopes().await?,
+        configuration.maximum_scope_depth,
+    )?;
+    for scope in tree.scopes() {
+        sandpost_query::compile(&scope.filter)?;
     }
-    let scope_tree = ScopeTree::new(scopes, application_configuration.maximum_scope_depth)?;
-    let matcher = Arc::new(Matcher::new(&scope_tree)?);
-    Ok((storage, matcher))
+    Ok(storage)
 }
