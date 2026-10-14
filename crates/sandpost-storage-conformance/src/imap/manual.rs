@@ -556,12 +556,30 @@ pub async fn imap_copy_then_expunge_transfers(
         matches!(refused, Err(StorageError::ConstraintViolation(_))),
         "same-mailbox COPY cannot create a duplicate occurrence",
     )?;
-    unwrap_storage(
+    let trash_copy = unwrap_storage(
         CHECK,
         "copy into Trash",
         storage
             .copy_imap_members(inbox, &[trashed_uid], trash, Some(&all), false)
             .await,
+    )?;
+    let repeated_trash_copy = unwrap_storage(
+        CHECK,
+        "coalesce existing Trash copy",
+        storage
+            .copy_imap_members(inbox, &[trashed_uid], trash, Some(&all), false)
+            .await,
+    )?;
+    verify(
+        CHECK,
+        !repeated_trash_copy.all_new,
+        "retained Trash UIDs must not be advertised as newly assigned",
+    )?;
+    verify_equal(
+        CHECK,
+        "repeated Trash COPY preserves destination UIDs",
+        repeated_trash_copy.destination_uids,
+        trash_copy.destination_uids,
     )?;
     flag_imap_member_deleted(storage, CHECK, inbox, filed_uid).await?;
     flag_imap_member_deleted(storage, CHECK, inbox, trashed_uid).await?;

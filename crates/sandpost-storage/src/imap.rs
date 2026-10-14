@@ -369,8 +369,10 @@ pub trait ImapStorage: Send + Sync {
     ///
     /// Smart destinations are refused. Writable destinations require a current authorization
     /// definition when source members exist. Refused operations change nothing. Successful copies
-    /// allocate fresh destination UIDs and preserve flags. Existing destination occurrences are
-    /// refused with ConstraintViolation. MOVE changes only the source account organization; moving
+    /// allocate fresh destination UIDs and preserve flags. Cross-mailbox Trash transfers coalesce
+    /// existing occurrences, preserving their UIDs and setting `all_new` false so no COPYUID is
+    /// advertised for a coalesced result. Other existing destination occurrences are refused with
+    /// ConstraintViolation. MOVE changes only the source account organization; moving
     /// an additional COPY occurrence preserves the unrelated primary placement and other copies.
     async fn copy_imap_members(
         &self,

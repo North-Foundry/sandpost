@@ -74,7 +74,7 @@ Source: [RFC 3501](https://www.rfc-editor.org/rfc/rfc3501),
 | RFC | Requirement / policy | Evidence |
 | --- | --- | --- |
 | [2177 IDLE](https://www.rfc-editor.org/rfc/rfc2177) | `+` continuation, EXISTS/RECENT/EXPUNGE/FETCH pushed from change notifications without polling, DONE ends with tagged OK, other input ends with BAD, keepalives, a time limit, revocation and shutdown during IDLE. Failed or timed-out refreshes send BYE [UNAVAILABLE] and require reconnection. | [idle_pushes_changes_until_done](tests/idle.rs), [idle_requires_done](tests/idle.rs), [keepalives_and_idle_time_limit](tests/idle.rs), [revocation_during_idle_ends_the_session](tests/idle.rs), [concurrent_sessions_all_receive_updates](tests/idle.rs), [shutdown_during_idle](tests/idle.rs), [idle_validation_failure_requires_reconnect](tests/idle.rs), [idle_synchronization_failure_requires_reconnect](tests/idle.rs), [idle_validation_timeout_requires_reconnect](tests/idle.rs) |
-| [4315 UIDPLUS](https://www.rfc-editor.org/rfc/rfc4315) | UID EXPUNGE restricted to a UID set; COPYUID in tagged OK with positionally matching sets. APPENDUID is never sent because APPEND is refused. Successful copies allocate fresh UIDs. Destinations already containing the message are refused with NO [CANNOT]. | [expunge_and_uid_expunge](tests/messages.rs), [copy_reports_copyuid](tests/messages.rs), [ordered_sets_collapse_ascending_runs](src/protocol/sequence.rs) |
+| [4315 UIDPLUS](https://www.rfc-editor.org/rfc/rfc4315) | UID EXPUNGE restricted to a UID set; COPYUID in tagged OK with positionally matching fresh UID sets. APPENDUID is never sent because APPEND is refused. Duplicate destinations return NO [CANNOT], except cross-mailbox Trash transfers coalesce existing occurrences and omit COPYUID for the batch. | [expunge_and_uid_expunge](tests/messages.rs), [copy_reports_copyuid](tests/messages.rs), [ordered_sets_collapse_ascending_runs](src/protocol/sequence.rs) |
 | [6851 MOVE](https://www.rfc-editor.org/rfc/rfc6851) | MOVE and UID MOVE: untagged OK with COPYUID, then EXPUNGE responses, then the tagged OK; refused on read-only mailboxes. MOVE changes mailbox membership only and does not trigger Sandpost user deletion. COPY followed by STORE/EXPUNGE of the primary source transfers like MOVE when the copy survives; expunging a copy preserves unrelated occurrences, and a final normal occurrence enters active-view Trash. | [move_expunges_from_source](tests/messages.rs), [mirror_move_and_trash_expunge_preserve_other_views_and_normal_copies](../sandpost-application/src/imap/tests.rs) |
 | [3691 UNSELECT](https://www.rfc-editor.org/rfc/rfc3691) | Deselect without expunging. | [unselect_and_close](tests/mailboxes.rs) |
 | [2342 NAMESPACE](https://www.rfc-editor.org/rfc/rfc2342) | One personal namespace with the `/` delimiter. | [any_state_commands_and_logout](tests/session.rs) |
@@ -118,7 +118,10 @@ with those clients is made.
 - APPEND is refused because Sandpost captures incoming mail. CREATE, DELETE, and RENAME
   operate on active-view normal folders; smart structures are protected.
 - One occurrence of a captured message is stored per mailbox. COPY/MOVE to a mailbox
-  already containing it (including the selected mailbox) returns NO [CANNOT].
+  already containing it (including the selected mailbox) returns NO [CANNOT], except
+  cross-mailbox Trash transfers retain existing occurrences/UIDs and omit COPYUID for
+  coalesced batches. This application policy supports repeated Apple Mail deletion;
+  it does not implement general duplicate IMAP copies.
 - EXPUNGE/CLOSE/UID EXPUNGE remove active-view occurrences with two-stage Trash retention. MOVE only
   changes the source account organization. Clients using COPY then EXPUNGE of the
   source (Apple Mail) transfer without user deletion, because a surviving COPY occurrence

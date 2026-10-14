@@ -209,7 +209,9 @@ Implement the complete view ownership, mailbox identity and lifecycle contract i
   Results ignore normal placement, exclude Trash, and permit only Seen updates over
   IMAP. Smart membership changes are refused atomically.
 - COPY preserves source and shares content, MOVE changes only source occurrence/view,
-  and duplicate destination occurrences are refused. EXPUNGE removes flagged occurrences;
+  and duplicate destination occurrences are refused except cross-mailbox Trash transfers.
+  Those retain the existing occurrence/UID and return `all_new = false`; fresh members
+  in the same transaction still receive new UIDs. EXPUNGE removes flagged occurrences;
   a surviving copy is promoted, a final normal occurrence enters Trash, and expunging
   final Trash releases the view. Return source UIDs; Independent never tombstones primary.
 - Normal-folder deletion trashes otherwise-unfiled occurrences and preserves copies.

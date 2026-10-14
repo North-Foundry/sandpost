@@ -28,7 +28,7 @@ was not governed by durable Independent references.
 | 4. Initial history | Account creation atomically snapshots currently authorized primary history, normal folders, copies, Trash and flags. Primary tombstones exclude mail retained only elsewhere. Smart definitions are not imported. Snapshot tests check historical organization and later independence. |
 | 5. Deletion | Web Delete moves the underlying primary message to Trash; second Delete/Empty Trash releases that view. IMAP Deleted is occurrence-local. EXPUNGE removes marked occurrences, promotes surviving normal copies, sends a final normal occurrence to Trash, and releases a final Trash occurrence. Independent never tombstones primary or peers. COPY then source EXPUNGE preserves its destination. |
 | 6. Retention | Durable Independent references survive dormant mode and permission loss. Primary untombstoned references conservatively retain content. Final release/account cleanup collects raw mail and cascading facts/attachment metadata in the same transaction as durable search-deletion enqueueing. A service test checks removal of the actual global Tantivy document after catch-up. |
-| 7. Copies/flags | COPY adds memberships without duplicating physical content. Seen, Answered, Flagged, Draft and bounded keywords are shared within a view. Deleted stays occurrence-local. Primary Web and Mirror share flags; Independent flags remain local. Duplicate destinations fail atomically with CANNOT, preserving UID identity. |
+| 7. Copies/flags | COPY adds memberships without duplicating physical content. Seen, Answered, Flagged, Draft and bounded keywords are shared within a view. Deleted stays occurrence-local. Primary Web and Mirror share flags; Independent flags remain local. Duplicate destinations fail atomically with CANNOT except cross-mailbox Trash transfers, which retain existing occurrences/UIDs and omit COPYUID for coalesced batches. |
 | 8. Smart folders | Dynamic query results ignore normal placement and legacy manual exclusions. Active-view Trash is excluded. Mirror uses primary smart definitions; Independent settings provide account-local CRUD and canonical query editing. Smart SELECT allows Seen only; EXAMINE is read-only. Membership mutations and other flag writes are refused, COPY out is allowed. Web deletion acts on the underlying primary message. |
 | 9. Folder deletion | Normal-folder deletion removes that definition and sends otherwise-unfiled messages to the relevant Trash. Surviving normal copies are preserved/promoted. Hierarchical rename preserves descendant IDs and UIDs; implicit parents are nonselectable LIST entries. |
 | 10. Imports | APPEND remains rejected before accepting uploaded content. Existing-mail COPY/MOVE remain supported. |
@@ -128,6 +128,23 @@ artifacts rather than committed project dependencies.
 
 ## Compatibility policies and limits
 
+On 14 October 2026, Apple Mail connection logs showed bulk `UID COPY ... Trash`
+refused with `CANNOT` because one selected Inbox message already had a Trash copy.
+The client restored the selection instead of proceeding to Deleted/EXPUNGE. The
+Trash-only coalescing policy fixes this without allocating another occurrence or
+advertising reused UIDs as fresh COPYUID mappings. Focused real-runtime COPY and
+MOVE regressions cover both modes and both primary/copy arrangements, retries,
+reconnection, preserved destination UIDs and UIDNEXT. All 17 runtime IMAP tests,
+10 storage mode tests, 7 atomicity tests, and the storage conformance suite passed.
+
+The rebuilt macOS ARM64 desktop was manually verified through Apple Mail using
+Select All and Delete on 73 Inbox messages, including the existing Trash copy.
+Inbox became empty and stayed empty after selecting Trash and returning; Trash
+contained all 73 messages among 100 total occurrences. A before/after SQLite
+comparison confirmed the physical mail count remained 723 and the preexisting
+Trash UID was preserved. This verifies that deletion scenario, not full GUI
+interoperability certification.
+
 - Existing credentials upgrade to Independent; new credentials default to Mirror.
   Legacy `mirror_views`, linked/exposure inputs remain accepted for compatibility,
   but the UI presents explicit mode. Independent never imports primary smart folders.
@@ -137,8 +154,10 @@ artifacts rather than committed project dependencies.
   the final normal occurrence. Protocol EXPUNGE removes the selected occurrence;
   other normal copies survive. Web Delete/Empty Trash operates on the underlying
   primary message. This distinction is intentional and documented.
-- COPY into an already-present destination is rejected atomically with CANNOT.
-  There is at most one occurrence of a physical message per mailbox.
+- COPY into an already-present destination is rejected atomically with CANNOT except
+  cross-mailbox Trash transfers, which retain existing occurrences/UIDs and omit COPYUID
+  for coalesced batches. There is at most one occurrence of a physical message per mailbox;
+  Trash coalescing is a compatibility policy rather than general duplicate IMAP copies.
 - Smart SELECT advertises only Seen in PERMANENTFLAGS; EXAMINE is fully read-only.
   Some clients may not support updating Seen in such virtual mailboxes. No mailbox
   membership is sacrificed to force client behavior.

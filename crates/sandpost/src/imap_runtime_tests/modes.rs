@@ -421,6 +421,230 @@ async fn mirror_wire_mutations_share_web_organization_and_preserve_independent_s
     running.shutdown().await.unwrap();
 }
 
+/// Coalesce an existing Trash occurrence during an Apple Mail style bulk COPY in both modes.
+#[tokio::test]
+async fn bulk_copy_to_trash_coalesces_existing_occurrence_in_both_modes() {
+    for mode in [ImapAccountMode::Mirror, ImapAccountMode::Independent] {
+        let (configuration, _directory) = configuration();
+        let running = SandpostRuntime::start(configuration).await.unwrap();
+        let owner = owner(&running).await;
+        let issued = create_account(&running, &owner, "Trash bulk copy", mode).await;
+        let smtp = running.mail_listen_address.unwrap();
+        for subject in ["Bulk delete one", "Bulk delete two", "Bulk delete three"] {
+            send_mail(smtp, "dev@example.test", subject).await;
+        }
+        wait_for_mail(&running, 3).await;
+
+        let mut client = Client::login(imap_address(&running), &issued).await;
+        client.command("s", "SELECT INBOX").await;
+        let initial_copy = client.command("c", "UID COPY 1 Trash").await;
+        assert!(
+            initial_copy.last().unwrap().starts_with("c OK"),
+            "{initial_copy:?}"
+        );
+        assert!(
+            initial_copy
+                .iter()
+                .any(|line| line.contains("[COPYUID ") && line.contains(" 1 1]")),
+            "the initial copy establishes Trash UID 1: {initial_copy:?}"
+        );
+
+        for tag in ["b", "r"] {
+            let copied = client.command(tag, "UID COPY 1:3 Trash").await;
+            assert!(
+                copied.last().unwrap().starts_with(&format!("{tag} OK")),
+                "{copied:?}"
+            );
+            assert!(
+                copied.iter().all(|line| !line.contains("[COPYUID ")),
+                "a coalesced batch must not report a partial COPYUID mapping: {copied:?}"
+            );
+        }
+
+        let marked = client
+            .command("d", "UID STORE 1:3 +FLAGS (\\Deleted)")
+            .await;
+        assert!(marked.last().unwrap().starts_with("d OK"), "{marked:?}");
+        let expunged = client.command("e", "UID EXPUNGE 1:3").await;
+        assert!(expunged.last().unwrap().starts_with("e OK"), "{expunged:?}");
+        drop(client);
+
+        let mut client = Client::login(imap_address(&running), &issued).await;
+        let inbox = client.command("i", "SELECT INBOX").await;
+        assert!(inbox.contains(&"* OK [UIDNEXT 4] Predicted next UID\r\n".to_owned()));
+        assert_eq!(
+            client.command("q", "UID SEARCH ALL").await[0],
+            "* SEARCH\r\n"
+        );
+
+        let trash = client.command("t", "SELECT Trash").await;
+        assert!(trash.contains(&"* 3 EXISTS\r\n".to_owned()), "{trash:?}");
+        assert!(trash.contains(&"* OK [UIDNEXT 4] Predicted next UID\r\n".to_owned()));
+        let messages = client.command("f", "UID FETCH 1:3 (UID)").await;
+        for uid in 1..=3 {
+            assert!(
+                messages
+                    .iter()
+                    .any(|line| line.contains(&format!("UID {uid}"))),
+                "Trash must retain original UID {uid}: {messages:?}"
+            );
+        }
+
+        let copied_back = client.command("x", "UID COPY 1 INBOX").await;
+        assert!(
+            copied_back.last().unwrap().starts_with("x OK"),
+            "{copied_back:?}"
+        );
+        assert!(
+            copied_back
+                .iter()
+                .any(|line| line.contains("[COPYUID ") && line.contains(" 1 4]")),
+            "the additional Inbox occurrence must receive UID 4: {copied_back:?}"
+        );
+        client.command("j", "SELECT INBOX").await;
+        let coalesced = client.command("k", "UID COPY 4 Trash").await;
+        assert!(
+            coalesced.last().unwrap().starts_with("k OK"),
+            "{coalesced:?}"
+        );
+        assert!(
+            coalesced.iter().all(|line| !line.contains("[COPYUID ")),
+            "coalescing into canonical Trash must suppress COPYUID: {coalesced:?}"
+        );
+        let marked = client.command("l", "UID STORE 4 +FLAGS (\\Deleted)").await;
+        assert!(marked.last().unwrap().starts_with("l OK"), "{marked:?}");
+        let expunged = client.command("n", "UID EXPUNGE 4").await;
+        assert!(expunged.last().unwrap().starts_with("n OK"), "{expunged:?}");
+        drop(client);
+
+        let mut client = Client::login(imap_address(&running), &issued).await;
+        let inbox = client.command("o", "SELECT INBOX").await;
+        assert!(inbox.contains(&"* OK [UIDNEXT 5] Predicted next UID\r\n".to_owned()));
+        assert_eq!(
+            client.command("p", "UID SEARCH ALL").await[0],
+            "* SEARCH\r\n"
+        );
+        let trash = client.command("q", "SELECT Trash").await;
+        assert!(trash.contains(&"* 3 EXISTS\r\n".to_owned()), "{trash:?}");
+        assert!(trash.contains(&"* OK [UIDNEXT 4] Predicted next UID\r\n".to_owned()));
+        let messages = client.command("r", "UID FETCH 1:3 (UID)").await;
+        for uid in 1..=3 {
+            assert!(
+                messages
+                    .iter()
+                    .any(|line| line.contains(&format!("UID {uid}"))),
+                "Trash must retain original UID {uid}: {messages:?}"
+            );
+        }
+        drop(client);
+        running.shutdown().await.unwrap();
+    }
+}
+
+/// Coalesce an existing Trash occurrence during a MOVE batch in both organization modes.
+#[tokio::test]
+async fn bulk_move_to_trash_coalesces_existing_occurrence_in_both_modes() {
+    for mode in [ImapAccountMode::Mirror, ImapAccountMode::Independent] {
+        let (configuration, _directory) = configuration();
+        let running = SandpostRuntime::start(configuration).await.unwrap();
+        let owner = owner(&running).await;
+        let issued = create_account(&running, &owner, "Trash bulk move", mode).await;
+        let smtp = running.mail_listen_address.unwrap();
+        for subject in ["Bulk move one", "Bulk move two", "Bulk move three"] {
+            send_mail(smtp, "dev@example.test", subject).await;
+        }
+        wait_for_mail(&running, 3).await;
+
+        let mut client = Client::login(imap_address(&running), &issued).await;
+        client.command("s", "SELECT INBOX").await;
+        let initial_copy = client.command("c", "UID COPY 1 Trash").await;
+        assert!(
+            initial_copy.last().unwrap().starts_with("c OK"),
+            "{initial_copy:?}"
+        );
+        assert!(
+            initial_copy
+                .iter()
+                .any(|line| line.contains("[COPYUID ") && line.contains(" 1 1]")),
+            "the initial copy establishes Trash UID 1: {initial_copy:?}"
+        );
+
+        let moved = client.command("m", "UID MOVE 1:3 Trash").await;
+        assert!(moved.last().unwrap().starts_with("m OK"), "{moved:?}");
+        assert!(
+            moved.iter().all(|line| !line.contains("[COPYUID ")),
+            "a coalesced MOVE batch must not report a partial COPYUID mapping: {moved:?}"
+        );
+        drop(client);
+
+        let mut client = Client::login(imap_address(&running), &issued).await;
+        let inbox = client.command("i", "SELECT INBOX").await;
+        assert!(inbox.contains(&"* OK [UIDNEXT 4] Predicted next UID\r\n".to_owned()));
+        assert_eq!(
+            client.command("q", "UID SEARCH ALL").await[0],
+            "* SEARCH\r\n"
+        );
+
+        let trash = client.command("t", "SELECT Trash").await;
+        assert!(trash.contains(&"* 3 EXISTS\r\n".to_owned()), "{trash:?}");
+        assert!(trash.contains(&"* OK [UIDNEXT 4] Predicted next UID\r\n".to_owned()));
+        let messages = client.command("f", "UID FETCH 1:3 (UID)").await;
+        for uid in 1..=3 {
+            assert!(
+                messages
+                    .iter()
+                    .any(|line| line.contains(&format!("UID {uid}"))),
+                "Trash must retain original UID {uid}: {messages:?}"
+            );
+        }
+
+        let copied_back = client.command("x", "UID COPY 1 INBOX").await;
+        assert!(
+            copied_back.last().unwrap().starts_with("x OK"),
+            "{copied_back:?}"
+        );
+        assert!(
+            copied_back
+                .iter()
+                .any(|line| line.contains("[COPYUID ") && line.contains(" 1 4]")),
+            "the additional Inbox occurrence must receive UID 4: {copied_back:?}"
+        );
+        client.command("j", "SELECT INBOX").await;
+        let coalesced = client.command("k", "UID MOVE 4 Trash").await;
+        assert!(
+            coalesced.last().unwrap().starts_with("k OK"),
+            "{coalesced:?}"
+        );
+        assert!(
+            coalesced.iter().all(|line| !line.contains("[COPYUID ")),
+            "coalescing into canonical Trash must suppress COPYUID: {coalesced:?}"
+        );
+        drop(client);
+
+        let mut client = Client::login(imap_address(&running), &issued).await;
+        let inbox = client.command("o", "SELECT INBOX").await;
+        assert!(inbox.contains(&"* OK [UIDNEXT 5] Predicted next UID\r\n".to_owned()));
+        assert_eq!(
+            client.command("p", "UID SEARCH ALL").await[0],
+            "* SEARCH\r\n"
+        );
+        let trash = client.command("q", "SELECT Trash").await;
+        assert!(trash.contains(&"* 3 EXISTS\r\n".to_owned()), "{trash:?}");
+        assert!(trash.contains(&"* OK [UIDNEXT 4] Predicted next UID\r\n".to_owned()));
+        let messages = client.command("r", "UID FETCH 1:3 (UID)").await;
+        for uid in 1..=3 {
+            assert!(
+                messages
+                    .iter()
+                    .any(|line| line.contains(&format!("UID {uid}"))),
+                "Trash must retain original UID {uid}: {messages:?}"
+            );
+        }
+        drop(client);
+        running.shutdown().await.unwrap();
+    }
+}
+
 /// Concurrent Mirror COPYs create one shared membership, and Seen follows that copy across primary state.
 #[tokio::test]
 async fn concurrent_mirror_copy_is_atomic_and_seen_is_shared() {

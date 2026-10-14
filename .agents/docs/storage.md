@@ -111,7 +111,8 @@ ordered sequence of migration scripts.
   Smart results ignore normal placement and exclude primary/account Trash. Normal
   copies share physical content, Seen and supported flags; Deleted is per occurrence.
   COPY/MOVE cannot insert into smart results. Repeated destination occurrences fail
-  atomically rather than reusing UIDs. EXPUNGE removes the selected occurrence, promotes
+  atomically, except cross-mailbox Trash transfers retain an existing occurrence and UID
+  and report `all_new = false`. EXPUNGE removes the selected occurrence, promotes
   a surviving copy, otherwise moves final normal membership into Trash, and finally
   releases a last Trash occurrence. Independent operations stay account-local.
 - **Garbage collection.** Reference release/account deletion collects a physical
@@ -322,7 +323,9 @@ acknowledgement churn.
 Mailbox COPY targets persist for INBOX, Trash, manual and private folders. Moving an
 additional COPY occurrence changes that occurrence and preserves its independent primary
 placement. A duplicate destination membership is refused atomically, including same-mailbox
-COPY/MOVE. Explicit subscriptions and observed default subscriptions persist by name even after
+COPY/MOVE. Cross-mailbox Trash transfers instead coalesce an existing destination occurrence
+without consuming another UID; mixed/coalesced batches omit COPYUID. Explicit subscriptions
+and observed default subscriptions persist by name even after
 the catalog entry disappears. Retaining observed defaults atomically respects unsubscribe
 exceptions and never overwrites a concurrent UNSUBSCRIBE.
 Ownership checks cover inserts and updates to placement and exposure relationships.

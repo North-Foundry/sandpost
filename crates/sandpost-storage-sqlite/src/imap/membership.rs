@@ -180,26 +180,33 @@ pub(super) async fn copy(
     let destination_target = organization
         .target(connection, destination_state.source)
         .await?;
+    // Apple Mail deletes through COPY to Trash followed by STORE/EXPUNGE. A retained Trash
+    // copy must not reject an entire selection; coalesce only cross-mailbox Trash transfers.
+    let coalesce_trash = source != destination && destination_target.kind == "trash";
     for (uid, sequence) in &members {
         // Another Mirror credential may have committed the destination occurrence after its
         // projection was synchronized. Canonical organization is authoritative inside this write.
-        if organization.primary(connection, *sequence).await? == destination_target
+        let primary = organization.primary(connection, *sequence).await?;
+        let destination_present = primary == destination_target
             || organization
                 .copies(connection, *sequence)
                 .await?
-                .contains(&destination_target)
-        {
+                .contains(&destination_target);
+        if !coalesce_trash && destination_present {
             return Err(StorageError::ConstraintViolation(
                 "destination already contains a message".into(),
             ));
         }
-        let copied_occurrence = remove_from_source
-            && organization.primary(connection, *sequence).await? != source_target;
+        let copied_occurrence = remove_from_source && primary != source_target;
         sqlx::query("DELETE FROM imap_mailbox_exclusions WHERE mailbox_identifier = ?1 AND mail_sequence = ?2")
             .bind(destination.to_string()).bind(sequence).execute(&mut *connection).await.storage()?;
         let existing: Option<i64> = sqlx::query_scalar("SELECT uid FROM imap_mailbox_messages WHERE mailbox_identifier = ?1 AND mail_sequence = ?2")
             .bind(destination.to_string()).bind(sequence).fetch_optional(&mut *connection).await.storage()?;
         let destination_uid = match existing {
+            Some(existing) if coalesce_trash && destination_present => {
+                result.all_new = false;
+                existing
+            }
             Some(_) => {
                 return Err(StorageError::ConstraintViolation(
                     "destination already contains a message".into(),
@@ -220,9 +227,12 @@ pub(super) async fn copy(
         result.destination_uids.push(uid_from(destination_uid)?);
         if remove_from_source && !copied_occurrence {
             organization
+                .copy_record(connection, *sequence, &destination_target, false)
+                .await?;
+            organization
                 .place(connection, *sequence, &destination_target)
                 .await?;
-        } else {
+        } else if primary != destination_target {
             organization
                 .copy_record(connection, *sequence, &destination_target, true)
                 .await?;

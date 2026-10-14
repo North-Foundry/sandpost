@@ -70,7 +70,12 @@ fingerprinted; changes reconcile membership transactionally. Source identities b
 to credential, mode, and source. A stale catalog omission never deletes a still-valid identity;
 actual definition deletion cascades the identity, while hidden sources cannot pass the live catalog. Each mailbox contains at most one occurrence per
 physical message; COPY/MOVE to a destination already containing it is refused atomically
-with CANNOT instead of reusing a UID. UIDNEXT, sequence numbers and COPYUID stay mailbox-local.
+with CANNOT, except cross-mailbox transfers into Trash. Those transfers retain an existing
+Trash occurrence and its UID so one previously copied message cannot block Apple Mail's
+bulk COPY/Deleted/EXPUNGE deletion. A coalesced batch omits COPYUID; fresh occurrences
+still allocate ascending UIDs. Same-mailbox transfers remain refused. This Trash policy
+coalesces copies rather than implementing general IMAP duplicate occurrences.
+UIDNEXT, sequence numbers and COPYUID stay mailbox-local.
 
 Seen, Answered, Flagged, Draft and bounded keywords are shared per physical message
 within the active view. Mirror uses primary user flags; Independent uses account flags.
