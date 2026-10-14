@@ -6,6 +6,27 @@
 use crate::{ImapAccountIdentifier, ImapFolderIdentifier, UserIdentifier, ViewIdentifier};
 use serde::{Deserialize, Serialize};
 
+/// The organization and lifecycle state exposed by an IMAP login.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImapAccountMode {
+    /// Share the primary user's folder organization, flags, and deletion state.
+    #[default]
+    Mirror,
+    /// Preserve account-local organization independently of the primary user.
+    Independent,
+}
+
+impl ImapAccountMode {
+    /// The stable persisted representation of this organization mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mirror => "mirror",
+            Self::Independent => "independent",
+        }
+    }
+}
+
 /// One IMAP login of a Sandpost user, with its mailbox configuration.
 ///
 /// The password exists only as a one-way hash in storage and is deliberately absent here.
@@ -20,8 +41,12 @@ pub struct ImapAccount {
     pub username: String,
     /// Disabled accounts neither authenticate nor keep running sessions.
     pub enabled: bool,
-    /// Expose every saved View the owner can see; otherwise only the linked selection.
+    /// Deprecated compatibility representation of mode; prefer `mode`.
     pub mirror_views: bool,
+    /// The active view; switching preserves the dormant independent state.
+    pub mode: ImapAccountMode,
+    /// Changes on every mode transition, invalidating authenticated sessions.
+    pub mode_generation: u64,
     /// Unix seconds, UTC.
     pub created_at: i64,
     /// Unix seconds, UTC.
@@ -42,14 +67,14 @@ pub struct ImapLinkedView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImapLocalFolder {
     pub identifier: ImapFolderIdentifier,
-    /// The credential exposing this projection; the canonical definition belongs to its owner.
+    /// The credential exposing this active-mode folder; Independent definitions are private.
     pub account_identifier: ImapAccountIdentifier,
     pub name: String,
     /// Whether this account mailbox is dynamic, manually organized, or private to the account.
     pub kind: ImapFolderKind,
-    /// Owner-managed definition identity; private folders have no definition.
+    /// Primary definition identity for Mirror projections; Independent folders have no link.
     pub definition_identifier: Option<ImapFolderIdentifier>,
-    /// Canonical query-language source evaluated over the owner's visible mail.
+    /// Canonical query source bounded by owner authorization and active-view retention.
     pub filter: String,
     /// Whether the folder's messages also appear in the account's INBOX when the account does
     /// not mirror the owner's Views.
@@ -109,8 +134,7 @@ impl ImapMailboxSource {
 /// Persistent IMAP flags of one message in one mailbox.
 ///
 /// `seen`, `answered`, `flagged`, `draft`, and the keywords are shared by every mailbox of the
-/// account; `deleted` is reversible per membership until standalone expunge permanently
-/// hides the message for the owning user across every interface.
+/// active view; `deleted` is reversible per occurrence until expunge removes it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImapMessageFlags {
     pub seen: bool,

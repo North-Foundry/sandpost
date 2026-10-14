@@ -11,8 +11,8 @@ pub use identifiers::{
     ViewIdentifier,
 };
 pub use imap::{
-    ImapAccount, ImapFolderKind, ImapLinkedView, ImapLocalFolder, ImapMailboxSource,
-    ImapMessageFlags, WebFolder,
+    ImapAccount, ImapAccountMode, ImapFolderKind, ImapLinkedView, ImapLocalFolder,
+    ImapMailboxSource, ImapMessageFlags, WebFolder,
 };
 pub use messages::{Attachment, Mailbox, Message, MessageFacts};
 pub use scopes::{Scope, ScopeTree, TreeError};
