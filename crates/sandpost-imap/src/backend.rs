@@ -130,6 +130,8 @@ pub struct MailboxSnapshot<Handle> {
     pub uid_next: Uid,
     /// Every message in ascending UID order.
     pub messages: Vec<MessageState>,
+    /// Whether this mailbox permits only reads and changes to `\\Seen`.
+    pub seen_only: bool,
     /// A cursor identifying the flag state included in this snapshot.
     pub cursor: u64,
 }

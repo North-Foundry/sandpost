@@ -25,6 +25,7 @@ pub(crate) struct Entry {
 pub(crate) struct SelectedMailbox<Handle> {
     pub(crate) handle: Handle,
     pub(crate) read_only: bool,
+    pub(crate) seen_only: bool,
     pub(crate) uid_validity: u32,
     pub(crate) uid_next: Uid,
     pub(crate) entries: Vec<Entry>,
@@ -47,6 +48,7 @@ impl<Handle> SelectedMailbox<Handle> {
         let mut mailbox = Self {
             handle: snapshot.handle,
             read_only,
+            seen_only: snapshot.seen_only,
             uid_validity: snapshot.uid_validity,
             uid_next: snapshot.uid_next,
             entries: snapshot
@@ -71,6 +73,8 @@ impl<Handle> SelectedMailbox<Handle> {
         output.raw("* FLAGS ").raw(&self.flags_list()).end_line();
         let permanent = if self.read_only {
             "()".to_owned()
+        } else if self.seen_only {
+            "(\\Seen)".to_owned()
         } else {
             let mut list = self.flags_list();
             list.pop();
@@ -265,7 +269,7 @@ impl<Handle> SelectedMailbox<Handle> {
         }
         self.keywords = combined.keywords().to_vec();
         output.raw("* FLAGS ").raw(&self.flags_list()).end_line();
-        if !self.read_only {
+        if !self.read_only && !self.seen_only {
             let mut list = self.flags_list();
             list.pop();
             list.push_str(" \\*)");
@@ -376,6 +380,7 @@ mod tests {
                         recent: true,
                     },
                 ],
+                seen_only: false,
                 cursor: 1,
             },
             false,
@@ -490,6 +495,7 @@ mod tests {
                 uid_validity: 1,
                 uid_next: 1,
                 messages: vec![],
+                seen_only: false,
                 cursor: 0,
             },
             true,

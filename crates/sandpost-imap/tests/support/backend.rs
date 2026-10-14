@@ -290,6 +290,7 @@ impl Account for MemoryAccount {
                     recent: *uid > recent_through,
                 })
                 .collect(),
+            seen_only: false,
             cursor: modification,
         })
     }

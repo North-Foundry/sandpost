@@ -3,7 +3,7 @@ use super::{Next, Session, bounded, selected::Resolution};
 use crate::{
     backend::{Account, ImapBackend, MailboxError, Uid},
     protocol::{
-        flags::FlagChange,
+        flags::{FlagChange, FlagOperation, SystemFlag},
         response::{ResponseCode, Status},
         sequence::{SequenceSet, format_ordered_set},
     },
@@ -52,6 +52,33 @@ where
                 .status(Some(tag), Status::No, None, "Mailbox is read-only");
             return Ok(Next::Continue);
         }
+        let seen_only = self.selected.as_ref().expect("selected").seen_only;
+        let mut permitted_change;
+        let change = if seen_only {
+            if change.flags.system_bits() & !SystemFlag::Seen.bit() != 0
+                || !change.flags.keywords().is_empty()
+            {
+                self.no(
+                    tag,
+                    ResponseCode::Cannot,
+                    "Smart mailboxes permit only \\Seen changes",
+                );
+                return Ok(Next::Continue);
+            }
+            permitted_change = change.clone();
+            if permitted_change.operation == FlagOperation::Replace {
+                let seen = permitted_change.flags.contains(SystemFlag::Seen);
+                permitted_change.operation = if seen {
+                    FlagOperation::Add
+                } else {
+                    FlagOperation::Remove
+                };
+                permitted_change.flags.insert(SystemFlag::Seen);
+            }
+            &permitted_change
+        } else {
+            change
+        };
         let Some(indexes) = self.resolve_set(tag, set, uid) else {
             return Ok(Next::Continue);
         };
@@ -113,10 +140,19 @@ where
         tag: &str,
         uids: Option<&SequenceSet>,
     ) -> std::io::Result<Next> {
-        if self.selected.as_ref().expect("selected").read_only {
+        let selected = self.selected.as_ref().expect("selected");
+        if selected.read_only {
             self.connection
                 .output
                 .status(Some(tag), Status::No, None, "Mailbox is read-only");
+            return Ok(Next::Continue);
+        }
+        if selected.seen_only {
+            self.no(
+                tag,
+                ResponseCode::Cannot,
+                "Smart mailboxes do not permit expunge",
+            );
             return Ok(Next::Continue);
         }
         let restriction: Option<Vec<Uid>> = match uids {
@@ -168,10 +204,19 @@ where
         remove_from_source: bool,
     ) -> std::io::Result<Next> {
         let command = if remove_from_source { "MOVE" } else { "COPY" };
-        if remove_from_source && self.selected.as_ref().expect("selected").read_only {
+        let selected = self.selected.as_ref().expect("selected");
+        if remove_from_source && selected.read_only {
             self.connection
                 .output
                 .status(Some(tag), Status::No, None, "Mailbox is read-only");
+            return Ok(Next::Continue);
+        }
+        if remove_from_source && selected.seen_only {
+            self.no(
+                tag,
+                ResponseCode::Cannot,
+                "Smart mailboxes do not permit MOVE",
+            );
             return Ok(Next::Continue);
         }
         let Some(indexes) = self.resolve_set(tag, set, uid) else {

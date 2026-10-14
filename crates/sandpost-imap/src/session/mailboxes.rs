@@ -215,8 +215,7 @@ where
 
     /// Answer LIST or LSUB with matching mailboxes (RFC 3501 sections 6.3.8 and 6.3.9).
     ///
-    /// The namespace is flat: every mailbox is a top-level name without children. An empty
-    /// pattern returns the hierarchy delimiter.
+    /// List selectable mailboxes and implicit hierarchy parents; an empty pattern reports the delimiter.
     pub(super) async fn list(
         &mut self,
         tag: &str,
@@ -236,15 +235,42 @@ where
             return Ok(Next::Continue);
         }
         let limit = self.limits().backend_timeout;
-        let listings = match bounded(limit, self.account().mailboxes()).await {
+        let mut listings = match bounded(limit, self.account().mailboxes()).await {
             Ok(Ok(listings)) => listings,
             Ok(Err(error)) | Err(error) => {
                 return self.mailbox_failure(tag, MailboxError::Backend(error));
             }
         };
+        let original = listings.clone();
+        for listing in original.iter().filter(|listing| listing.selectable) {
+            for (offset, _) in listing.name.match_indices(HIERARCHY_DELIMITER) {
+                let parent = &listing.name[..offset];
+                if !listings.iter().any(|existing| existing.name == parent) {
+                    listings.push(crate::backend::MailboxListing {
+                        name: parent.to_owned(),
+                        selectable: false,
+                        special_use: None,
+                        subscribed: original.iter().any(|child| {
+                            child.subscribed && child.name.starts_with(&format!("{parent}/"))
+                        }),
+                    });
+                }
+            }
+        }
+        let parents: std::collections::HashSet<String> = original
+            .iter()
+            .filter(|listing| listing.selectable)
+            .flat_map(|listing| {
+                listing
+                    .name
+                    .match_indices(HIERARCHY_DELIMITER)
+                    .map(|(offset, _)| listing.name[..offset].to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let full_pattern = format!("{reference}{pattern}");
         for listing in listings {
-            if !subscribed_only && !listing.selectable {
+            if !subscribed_only && !listing.selectable && !parents.contains(&listing.name) {
                 continue;
             }
             if subscribed_only && !listing.subscribed {
@@ -254,7 +280,13 @@ where
                 continue;
             }
             let mut attributes = if listing.selectable {
-                vec!["\\HasNoChildren"]
+                vec![if parents.contains(&listing.name) {
+                    "\\HasChildren"
+                } else {
+                    "\\HasNoChildren"
+                }]
+            } else if parents.contains(&listing.name) {
+                vec!["\\Noselect", "\\HasChildren"]
             } else {
                 vec!["\\Noselect"]
             };
@@ -313,10 +345,10 @@ where
         Ok(Next::Continue)
     }
 
-    /// Expunge silently unless read-only, then return to the authenticated state.
+    /// Expunge silently for writable manual mailboxes, then return to the authenticated state.
     pub(super) async fn close(&mut self, tag: &str) -> std::io::Result<Next> {
         let selected = self.selected.take().expect("selected");
-        if !selected.read_only {
+        if !selected.read_only && !selected.seen_only {
             let limit = self.limits().backend_timeout;
             let result = bounded(limit, self.account().expunge(&selected.handle, None)).await;
             match result {
