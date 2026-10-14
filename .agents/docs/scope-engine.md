@@ -20,13 +20,13 @@ Personal Views are visible to their owner; shared Views have no owner and remain
 
 The application authorization module is the single composition boundary. Search and lists pass its structured plan to the search layer. Direct SQL reads, including identifier-check metadata, apply the same plan to authoritative current SQL facts and payload in one snapshot. This covers detail, raw message, attachment, and event delivery; indexed documents and UIDs are never final authority checks.
 
-User deletion is a separate visibility condition. Lists, search, direct/raw/attachment reads, and event delivery exclude that user's tombstones. Physical mail and the global index remain available to other authorized users. Single deletion requires current authorization; bulk deletion affects only currently visible mail and counts only new tombstones. Repeating a single deletion returns not found.
+User deletion is a separate visibility condition. Lists, search, direct/raw/attachment reads, and event delivery exclude that user's tombstones. Independent accounts retain their own references; physical mail and the global index remain until every primary user and Independent view releases the message. Single deletion requires current authorization; bulk deletion affects only currently visible mail and counts only new tombstones. Repeating a single deletion returns not found.
 
 ## IMAP and placement
 
 An IMAP mailbox's membership is its owner's current authorization (mail access plus personal filter; no restriction for owners) AND the mailbox's own filter: linked View, local-folder filter, or INBOX aggregate. Storage reconciles against authoritative SQL facts, never the search index. Definitions are canonicalized and fingerprinted; changes to scopes, assignments, personal filter, role, mail access, or Views trigger synchronization that removes no-longer-authorized members. After such changes commit, `ApplicationChange::Visibility` notifies idling clients so they receive resulting EXPUNGE responses. See [imap.md](imap.md).
 
-Placement is independent of authorization. Exclusive account placement takes precedence over exposed Web manual placement, then smart/general baseline. Recalculation preserves placement records, but stale placements never grant access. Web baseline lists omit manually filed messages; global search and authorized direct reads still find them. Deleting a folder restores organization without clearing tombstones.
+Placement is independent of authorization. Mirror shares primary Web placement and copies; Independent uses only its own retained history and placement. Recalculation preserves private organization but never grants access. Web Inbox omits filed primary occurrences, while smart results/global search ignore normal placement. Normal-folder deletion moves otherwise-unfiled occurrences to Trash without clearing tombstones. See [imap.md](imap.md).
 
 ## Administration and preview
 

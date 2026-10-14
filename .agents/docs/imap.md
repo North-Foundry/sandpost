@@ -1,89 +1,136 @@
-# Sandpost IMAP accounts and virtual mailboxes
+# IMAP
 
-Sandpost runs one installation-wide IMAP service. Every user, regardless of global role, can own multiple personal accounts and connect an IMAP4rev1 client. IMAP mailboxes are virtual views over the single captured-mail pool: an account never reads beyond its owner's current Sandpost authorization.
+Sandpost serves captured mail through user-owned IMAP credentials. Physical message
+content is shared; the owner’s current mail access, scopes, role and personal filter
+bound every account. Materialized memberships and retained references never grant access.
 
-## Components
+## Accounts and organization modes
 
-```text
-sandpost-imap protocol (framing, session, rendering)  crates/sandpost-imap
-    | ImapBackend / Account / ChangeWatch
-runtime adapter                                       crates/sandpost/src/imap_backend.rs
-    | ImapService / ImapAccountSession
-application IMAP (accounts, catalog, auth, changes)   crates/sandpost-application/src/imap/
-storage contract                                      crates/sandpost-storage/src/imap.rs
-SQLite implementation                                crates/sandpost-storage-sqlite/src/imap/
-```
+Accounts have `mode: mirror | independent`. New accounts default to Mirror; old
+credentials migrate to Independent to preserve their former account-local organization.
+Legacy `mirror_views` remains an API compatibility input only: when no explicit mode
+is supplied, true selects Mirror and false selects Independent. Linked View selections
+are retained as compatibility data; Independent does not inherit primary smart Views.
 
-The protocol crate owns sequence numbers, `\Recent`, deferred EXPUNGE, MIME sections, ENVELOPE, BODYSTRUCTURE, and SEARCH evaluation. The application owns credentials, account ownership, mailbox planning, authorization, and notifications. Storage owns identities, UIDs, membership, and flags. See `crates/sandpost-imap/RFC-COVERAGE.md` for protocol coverage.
+Mirror exposes the primary user’s current normal folders, Trash, smart Views, flags,
+COPY memberships, and permanent removals. Folder CREATE/RENAME/DELETE and message
+COPY/MOVE/Seen updates act on the same primary state used by Web and every Mirror
+credential. Independent owns its folder paths, placements, copies, flags, Trash,
+retained history and smart definitions. Web and other credentials never overwrite it.
 
-## Accounts and credentials
+Creating any credential snapshots the primary user’s currently authorized, untombstoned
+history, normal organization and flags into its dormant Independent state. Primary
+smart definitions are not copied. Every later arrival adds an Independent reference
+even while the credential is in Mirror. A new credential never recovers primary-deleted
+mail retained only by an older Independent account.
 
-An account stores identifier, Sandpost owner, display name, unique installation-wide username, Argon2id password hash, enabled and mirror settings, timestamps, and last use. Generated passwords are 32 characters (about 185 bits), use the SMTP credential helpers in `sandpost-application/src/credentials.rs`, and are returned only on create/regenerate with HTTP `Cache-Control: no-store`. Listings expose neither password nor hash; credentials are not logged.
+Mode changes preserve Independent folders, memberships, flags and mailbox identities.
+Each mode has distinct mailbox identity/UID state. A monotonic session generation advances on mode changes, disabling and password rotation; it revokes
+existing sessions with BYE at validation/IDLE refresh, including a switch away and back
+between commands. Clients reconnect and SELECT the active mode’s UIDVALIDITY. Dormant
+state does not bypass changed owner permissions. Session mutations supply the expected generation
+and validate it inside their storage transaction, including an away-and-back switch.
 
-Authentication verifies hashes off the async executor, with at most four concurrent verifications and a dummy hash for unknown usernames. Disabled accounts and accounts with missing owners are refused. Throttling blocks verification after 20 failures per client address or 50 per username in 15 minutes (`NO [UNAVAILABLE]`); the protocol adds a two-second delay per failure and closes after three failures.
+A credential has a generated password shown only on issuance; only Argon2id hashes
+are stored. Disable, password rotation and owner/account deletion revoke sessions.
+One user may own 25 accounts; management is caller-owned, including for administrators.
+Deleting a credential cascades both mode catalogs and its Independent references,
+folders, flags, smart definitions and subscriptions. Primary organization survives.
+The UI requires destructive confirmation.
 
-Every post-login command revalidates that the account exists, remains enabled, belongs to the same existing owner, and retains the verified hash. Disable, password regeneration, or account/owner deletion ends sessions with `BYE`, including IDLE sessions. A user may own at most 25 accounts. Management is caller-owned only; another user's account is not found even for an Owner or Admin.
+## Normal folders and smart mailboxes
 
-## Mailboxes and authorization
+Normal folders support `/` hierarchy paths. Explicit parent renames rename descendants
+transactionally while retaining folder IDs and UIDs. LIST reports HasChildren and
+nonselectable implicit parents. DELETE removes the named folder, retaining children;
+messages whose only normal occurrence belonged to it enter the relevant Trash.
+Other normal copies survive and may become primary placement. INBOX and Trash are
+protected fixed mailboxes. Smart folder names remain flattened and collision-resolved.
 
-LIST order is:
+Mirror lists primary personal/shared Views and legacy owner smart definitions. Independent
+smart definitions are managed in that credential’s Web settings through `/folders`.
+They evaluate its retained, currently authorized messages independently of normal
+placement. Filing a message never excludes it from a matching smart result. Primary
+and account Trash are excluded from ordinary smart results; explicit Trash-inclusive
+queries are not currently supported by the facts-only query language.
 
-1. `INBOX`: authorized general fallback, unless inherited Web or account placement files mail elsewhere.
-2. `Trash` (`\Trash`): messages explicitly copied or moved there.
-3. Linked Sandpost Views: all visible personal/shared Views when mirroring is enabled, otherwise selected still-visible Views; aliases may rename them.
-4. Legacy owner-shared smart folders (maximum 100): canonical-query filters managed through any owner account. They are separate from Views. One owner definition is authoritative; account projections retain identity/UID state, edits update all projections, credential deletion removes only its projection, and new credentials project existing folders. Canonical definitions and projection persistence are described in [storage.md](storage.md).
-5. Web manual folders explicitly exposed to the account. Web owns definitions/exposure; only that account organizes their IMAP content.
-6. Account-private manual folders. CREATE/RENAME/DELETE affect only these; deleting one never deletes mail.
+Smart SELECT is writable only for Seen: PERMANENTFLAGS reports `(\\Seen)`;
+STORE of other flags, MOVE from smart results, COPY/MOVE into smart results and
+EXPUNGE are refused. FETCH may set Seen; EXAMINE remains fully read-only. Seen-only
+STORE replacement changes Seen without clearing other underlying flags. COPY out of
+a smart result preserves its dynamic membership. Some clients may not expose read
+updates for restricted virtual mailboxes.
 
-Names are derived on each request from alias, View, or folder name. `/` and controls become `-`; sorting and collision checks are case-insensitive. Collisions (including `INBOX`/`Trash`) gain ` (2)`, ` (3)`, etc. Renaming a View preserves mailbox identity and UIDVALIDITY.
+## Membership, UIDs and flags
 
-Authorization, organization, and deletion are separate. Account placement wins over exposed Web placement, then smart/filter baseline. Moves do not alter another account, Web placement, or scopes. INBOX is the fallback for all authorized unfiled mail, including with no selected smart folders. COPY into a manual folder adds account-local membership; MOVE of a baseline or primary occurrence sets exclusive account placement; moving an additional COPY occurrence relocates only that copy.
+SQL membership assigns ascending UIDs in physical-message insertion order. Existing
+members keep UIDs; reentry receives a higher UID. Each identity receives UIDVALIDITY
+from a persistent increasing allocator. Filters/authorization are canonicalized and
+fingerprinted; changes reconcile membership transactionally. Source identities belong
+to credential, mode, and source. A stale catalog omission never deletes a still-valid identity;
+actual definition deletion cascades the identity, while hidden sources cannot pass the live catalog. Each mailbox contains at most one occurrence per
+physical message; COPY/MOVE to a destination already containing it is refused atomically
+with CANNOT instead of reusing a UID. UIDNEXT, sequence numbers and COPYUID stay mailbox-local.
 
-Each mailbox definition composes the owner's current `authorization::compose` result (mail access, assigned scopes with ancestors, personal filter; no restrictions for owners) with its own filter:
+Seen, Answered, Flagged, Draft and bounded keywords are shared per physical message
+within the active view. Mirror uses primary user flags; Independent uses account flags.
+Deleted remains a reversible marker on one mailbox occurrence. Web COPY preserves sources;
+primary flag editing supports the same non-Deleted flags and bounded keywords. Web Seen updates and
+opening a Web message use the primary state and notify Mirror clients. Read-state
+changes are reflected in Web summaries and unread counts.
 
-| Mailbox | Definition |
-| --- | --- |
-| INBOX, mirroring | `true`: all mail the owner can read, like Sandpost Inbox |
-| INBOX, selected Views | General authorized fallback, independent of smart-folder selection |
-| Trash | `true`, with explicit copied/moved membership and current-authorization check |
-| Linked View | View's current filter |
-| Local folder | Folder's filter |
+## Deletion and retention
 
-A stored filter that no longer compiles matches nothing. Definitions are canonicalized and fingerprinted with `Expression::into_canonical_with_fingerprint`.
+Web Delete moves an underlying message to primary Trash, removing its normal placements
+and copies. Delete in Trash and Empty Trash permanently release the primary view.
+Legacy explicit permanent-deletion API calls remain permanent. Deleting a Web smart
+result uses the same underlying Trash action, never a query exclusion.
 
-## Membership, UIDs, and flags
+IMAP STORE Deleted changes only the selected occurrence. EXPUNGE/CLOSE/UID EXPUNGE
+remove flagged occurrences in the active view: additional copies disappear independently;
+a surviving copy is promoted if the primary occurrence is removed. A final normal
+occurrence enters Trash; expunging the final Trash occurrence permanently releases the
+view. COPY followed by source EXPUNGE transfers organization for clients without MOVE.
+MOVE never tombstones the view. Independent EXPUNGE never deletes primary/peer state.
+This Trash-retention policy extends the product beyond mailbox-local protocol deletion;
+protocol responses still remove the source occurrence and preserve UID mappings.
 
-Membership is materialized in SQL (`imap_mailbox_messages`), independent of search positions/index results. `synchronize_imap_mailbox` runs transactionally: a changed fingerprint fully removes nonmatching members; dynamic mailboxes add matching messages above the last examined sequence (or scan all after definition change), excluding existing and expunged members, with ascending UIDs in message order. Trash and COPY targets restore membership only while authorized. With an unchanged definition and no new mail, synchronization only reads. Filters use the shared SQL compiler and authoritative facts.
+Physical content survives every retained Independent reference, including dormant and
+currently unauthorized state. Primary users conservatively retain untombstoned mail,
+including temporarily inaccessible scopes. After every primary user has tombstoned a
+message and all Independent references disappear, deletion/account cleanup collects it
+transactionally. Foreign keys remove facts, attachment metadata and memberships; the
+existing durable outbox queues search deletion. Physical raw MIME contains attachments,
+so deleting the parent removes attachment bytes too. Conservative primary retention can
+delay collection until another primary user releases a message. Privileged physical
+maintenance methods remain separate from user-facing logical deletion.
 
-UIDs are never renumbered or reused; re-entry gets a higher UID. Each mailbox identity gets UIDVALIDITY from a persistent, always-increasing allocator (preferring current time); an existing identity retains it, while deletion/recreation gets a new value. `\Recent` uses a per-mailbox watermark claimed by a read-write SELECT or synchronization.
+## Authorization, subscriptions and synchronization
 
-| Change | Result |
-| --- | --- |
-| New mail matches a dynamic mailbox | Added at next synchronization with next UID; IDLE clients receive EXISTS/RECENT. |
-| Filter, scope, personal filter, role, or mail access stops matching | Membership removed; clients receive EXPUNGE; other UIDs stay fixed. |
-| Definition change makes mail match | Added with a new higher UID. |
-| Sandpost deletion | Membership cascades away and clients receive EXPUNGE. |
-| View unexposed (deleted, unselected, mirroring off) or local folder deleted | Identity and members deleted; selected sessions get EXPUNGE for each message; LIST removes it. Re-exposure creates a new identity/UIDVALIDITY. |
-| View/folder renamed | Identity and UIDVALIDITY persist. |
-| Account disabled, password changed, or account/owner deleted | Sessions receive BYE; disabled accounts cannot log in. |
+Each command reloads credentials and current owner authorization. FETCH, SEARCH, SELECT,
+COPY/MOVE, smart queries and IDLE refresh reconcile against authoritative facts. Previously
+issued UIDs and mode switches never grant access. Permission loss removes visible
+memberships while preserving account organization internally; reauthorization may reenter
+with new higher UIDs.
 
-`\Seen`, `\Answered`, `\Flagged`, `\Draft`, and keywords (maximum 32 per message, 64 characters each) are per account/message, so Seen is shared across that account's mailboxes. `\Deleted` is a removable per-mailbox-membership flag until expunge. An account-wide modification counter is the change cursor.
+Subscription names survive deletion/renaming; absent subscribed names appear in LSUB
+with Noselect and cannot SELECT. Default subscription observations never overwrite
+explicit unsubscribe exceptions. Mode-specific catalogs share credential subscriptions.
 
-## COPY, MOVE, expunge, and subscriptions
+Post-commit primary mutations publish Visibility; Independent mutations publish the
+credential’s change. Physical and permanent deletion publish Mail. New arrivals use
+MessageEvent. Both HTTP SSE and the native desktop event stream turn committed changes
+into resync hints; open message lists and unread counts reload automatically after
+Mirror Seen changes, including reads in external IMAP clients. Native hints revalidate
+the session and remain cancellable without polling. IDLE coalesces updates for 50 ms and then rereads state, without polling;
+failed/timed-out refresh ends the connection with BYE UNAVAILABLE. Foreign EXPUNGE
+responses are deferred during sequence-based FETCH/STORE/COPY/MOVE and SEARCH to
+preserve sequence targets. SQLite immediate transactions serialize mutation, UID
+allocation, folder rename/delete, mode changes and garbage collection.
 
-IMAP never physically deletes Sandpost mail. EXPUNGE, CLOSE, and UID EXPUNGE tombstone flagged messages for the owner; a database trigger removes them from all that user's accounts/mailboxes and reconciliation/COPY cannot restore them. Other users' access is independent. Genuine MOVE updates membership without a tombstone and is the non-deleting transfer. New COPY/MOVE destination memberships, including Trash, receive fresh ascending UIDs and COPYUID mappings; COPY preserves the source.
-
-COPY/MOVE into any smart folder is refused with `NO [CANNOT]`, even for matching mail. CREATE makes an empty account-private folder; RENAME/DELETE cannot target Web folders, Views, legacy smart folders, or Trash (`NO [CANNOT]`). Each mailbox holds at most one occurrence per physical message: a destination that already has it, including the same mailbox, refuses COPY/MOVE atomically instead of reusing a UID. Moving an additional COPY changes only that occurrence; primary placement and other copies remain. Explicit subscriptions survive deletion/exposure removal. APPEND is unsupported and hierarchy is flat.
-
-Account placements survive filter/scope changes but do not grant access. Deleting a destination folder or removing its exposure clears placements targeting it and restores filtered/INBOX fallback. Tombstones persist. “Restore hidden messages” clears legacy account-local exclusions only, not placement overrides or tombstones.
-
-COPY followed by `STORE +FLAGS (\Deleted)` and EXPUNGE follows standalone-expunge policy and deletes for the owner. Clients must use MOVE for a non-deleting transfer.
-
-Subscriptions are per account and stored by mailbox name. Live mailboxes default to subscribed unless explicitly unsubscribed. Listing records newly observed defaults without overwriting unsubscribe exceptions, including concurrent UNSUBSCRIBE. Default observations and explicit names survive delete/rename/unexposure: LSUB returns the old name with `\Noselect`, while LIST contains current names only. Retained names cannot SELECT/STATUS absent mailboxes. UNSUBSCRIBE removes the name; recreating/exposing it makes it selectable again without duplicate listing. Migration cannot infer names deleted before retention existed; defaults become durable when live names are first listed after upgrade.
-
-## Changes and IDLE
-
-After commit, `Application` publishes `Mail` (message deletion), `Visibility` (users, roles, mail access, scopes, assignments, personal filters, Views), and `ImapAccount(identifier)` (settings, credentials, linked Views, folders, flags, expunges, copies). New mail uses the existing post-commit `MessageEvent`. `ImapChangeWatch` merges both channels and ignores other accounts' IMAP events; lag counts as a change. IDLE notifications coalesce for 50 ms, then trigger revalidation and synchronization; there is no polling. A failed or timed-out IDLE refresh ends the connection with `BYE [UNAVAILABLE]`, requiring reconnection so a consumed notification cannot leave the client silently stale. Commands synchronize selected state where needed; sequence-based FETCH/STORE/COPY/MOVE and all SEARCH commands defer foreign EXPUNGE responses until a safe command, preserving the client's sequence targets.
+APPEND/import is unsupported and returns protocol errors. COPY/MOVE of existing mail
+remain supported. The operation matrix and original audit are in
+[imap-operation-matrix.md](imap-operation-matrix.md).
 
 ## Configuration
 
@@ -100,7 +147,7 @@ After commit, `Application` publishes `Mail` (message deletion), `Visibility` (u
 
 ## Management API and limits
 
-All routes require a session. Account routes operate on the caller's accounts; folder routes manage owner-shared folder definitions through one of them:
+All routes require a session. Account routes operate on the caller's accounts; folder routes manage the active mode’s smart definitions:
 
 ```text
 GET /api/v1/imap/server
@@ -114,8 +161,8 @@ PUT/DELETE /api/v1/imap/accounts/<id>/folders/<folder>
 
 Folder filters compile before save and linked Views must be visible. Request/response fields are in [project.md](project.md).
 
-Web manual folders use `GET/POST /api/v1/folders`, `PUT/DELETE /api/v1/folders/<id>`, and `GET /api/v1/folders/<id>/messages`. Requests carry `{ name, exposedAccounts }`; responses include owner and selected account IDs. `POST /api/v1/messages/placement` accepts `{ identifiers, folderIdentifier }` (null restores baseline), at most 256 messages. Exposure grants no authorization. The deletion dialog lists affected account names and says mail is retained.
+Web manual folders use `GET/POST /api/v1/folders`, `PUT/DELETE /api/v1/folders/<id>`, and `GET /api/v1/folders/<id>/messages`. Requests carry `{ name }` (legacy `exposedAccounts` is accepted); responses include owner and selected account IDs. `POST /api/v1/messages/placement` accepts `{ identifiers, folderIdentifier }` (null restores baseline), at most 256 messages. Exposure grants no authorization. The deletion dialog explains moving otherwise unfiled messages to Trash.
 
-SEARCH content criteria scan the selected mailbox's messages rather than Tantivy; full reconciliation after a definition change scans the mail pool once in SQL. There is no CONDSTORE/QRESYNC, LIST-EXTENDED, or IMAP4rev2; folders are flat and clients cannot store drafts or sent copies. SQLite writes serialize through one connection, with four read-only connections under WAL; in-memory storage uses one connection for reads and writes. See [storage.md](storage.md) for persistence and migration contracts.
+SEARCH content criteria scan the selected mailbox's messages rather than Tantivy; full reconciliation after a definition change scans the mail pool once in SQL. There is no CONDSTORE/QRESYNC, LIST-EXTENDED, or IMAP4rev2; normal folder paths support hierarchy and clients cannot upload drafts or sent copies. SQLite writes serialize through one connection, with four read-only connections under WAL; in-memory storage uses one connection for reads and writes. See [storage.md](storage.md) for persistence and migration contracts.
 
 IMAP4rev1 content FETCH refuses captured messages containing NUL with `NO [CANNOT]`; metadata-only requests remain available and captured octets are unchanged. FETCH and SEARCH share a MIME tree bounded to depth 32 and 2,048 entities. Composite content exceeding those bounds, or an embedded message requiring transfer decoding before section addressing, becomes an opaque `application/octet-stream` leaf. Raw FETCH remains available, while nested sections and body searches inside that fallback are unavailable.

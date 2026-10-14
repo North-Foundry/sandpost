@@ -18,6 +18,8 @@ source of conventions/contracts; read applicable documents before editing:
   placement/Trash, membership/UIDs/flags/user deletion, IDLE, configuration and limits.
 - `.agents/docs/code-style.md` — complete Rust/SQL naming and documentation rules
   for functions, helpers and tests.
+- `.agents/docs/imap-operation-matrix.md` — IMAP lifecycle audit, operation matrix and mode ownership decisions.
+- `.agents/docs/imap-implementation-report.md` — completed specification review, implementation changes, test evidence and compatibility limits.
 - `.agents/docs/commits.md` — commit format and workflow.
 
 When changing `.agents/docs/`, check that this index's paths/descriptions match

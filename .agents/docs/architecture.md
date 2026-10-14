@@ -14,11 +14,11 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
   never authoritative for access, and stores no raw MIME or attachment binaries.
 - **SMTP access:** global administrator-managed submission credential for an
   external application; unrelated to users, scopes, or mail visibility.
-- **IMAP account:** user-owned read credential bounded by current owner access.
-  Mailboxes project the pool; COPY/MOVE never duplicate physical mail. Standalone
-  EXPUNGE hides mail for that user across interfaces; MOVE changes account-local
-  placement. Account overrides precede exposed Web placement, then filter/INBOX
-  fallback. See [imap.md](imap.md).
+- **IMAP account:** user-owned credential bounded by current owner access. Mirror
+  shares primary organization, flags, copies and deletion; Independent retains its own
+  organization and history. COPY/MOVE share physical content. Mode switching preserves
+  dormant Independent state and revokes old sessions. EXPUNGE removes an occurrence;
+  a final normal occurrence enters the active view's Trash. See [imap.md](imap.md).
 - **Roles** grant authority; **mail access** (`All`/`Scoped`) grants visibility.
   Scope assignments are role-less inherited query restrictions. Personal/shared
   **Views** organize/filter mail, never grant access.
@@ -99,16 +99,18 @@ invalidate old/racing logins after password changes. Administrators cannot grant
 reset credentials or delete accounts beyond their own authority; owner-only actions
 require Owner. Full composition/admin contracts: [scope-engine.md](scope-engine.md).
 
-Ordinary deletion inserts a user tombstone and removes membership across that
-user's accounts while retaining physical mail/global index. No automatic physical
-collector or active message-to-scope ingest materialization exists.
+Web deletion enters primary Trash; permanent deletion inserts a primary tombstone.
+Independent references and other primary users retain physical mail. Reference-safe
+collection follows final release, with cascades and durable index-outbox deletion.
+Permission checks remain separate from retained organization. No active
+message-to-scope ingest materialization exists.
 
 File SQLite uses WAL, four read-only connections and one writer; in-memory storage
 shares one connection. Initialization is async. Ordered migration names in
 `migrations` must form an exact prefix matching physical schema; missing scripts
 apply atomically, fresh databases apply all. Future changes append scripts;
 unknown names/gaps/schema mismatches fail. No version batches/`PRAGMA user_version`.
-Scripts 0026–0039 add deletions/folders/exposures/placement/COPY membership. Older
+Scripts 0026–0056 add deletions/folders/exposures/placement/COPY membership. Older
 pre-deployment formats require recreation; startup never resets them automatically.
 See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 

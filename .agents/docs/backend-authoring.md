@@ -59,11 +59,11 @@ operations:
   attachments) atomically, and atomically with its search-outbox operation.
 - `delete_message` and `delete_message_at_revision` remove the message, its child facts, and the
   corresponding search-outbox operation atomically.
-- `delete_user_messages` evaluates the composed authorization filter and optional identifier
-  restriction atomically, inserts only new user-message deletion relationships, and removes
-  their memberships from every IMAP account belonging to that user. Return the newly inserted
-  count; repeated calls are idempotent. Preserve physical contents, revisions, and global
-  search-outbox state. Physical deletion methods are for explicit privileged maintenance.
+- `delete_user_messages` inserts primary tombstones atomically under current authorization;
+  Mirror memberships disappear, while Independent references survive. Repeated calls
+  count only new tombstones. Physical collection is allowed only after every primary
+  user and Independent reference releases the content; child facts and search-outbox
+  deletion must be atomic with physical removal.
 - `create_first_owner` atomically refuses if an Owner already exists. It may create the first
   Owner when non-Owner users remain, preserving those users and enforcing unique email.
 - `update_user`/`delete_user` atomically preserve the "at least one owner" invariant.
@@ -191,53 +191,36 @@ and atomic upgrades; do not introduce feature-wide migration bundles or a second
 
 ## 11.1 IMAP state
 
-- `create_imap_account` fails with `DuplicateImapUsername` for a taken username and `NotFound`
-  for an unknown owner. Deleting the owner deletes its accounts and everything below them;
-  deleting an account never deletes mail. Only `ImapAccountCredential` reads return the hash.
-- `set_imap_linked_views` replaces the selection atomically and fails with `NotFound` for an
-  unknown View; deleting a View removes it from every selection and deletes its mailbox
-  identities. Folder definitions belong to the Sandpost user and appear in every credential of
-  that user. The existing account-scoped folder methods manage those shared definitions through
-  account-specific projections, preserving compatibility identifiers. New folder names are
-  unique per owner (`DuplicateImapFolderName`); preserved legacy duplicates receive deterministic
-  catalog names. Edits/deletion affect every projection, deleting an account retains definitions,
-  and newly created accounts discover them. Definitions and mail never belong to credentials.
-- Every mailbox identity receives a UIDVALIDITY greater than every value handed out before.
-  `reconcile_imap_mailboxes` returns identities in the order of the given sources, creating
-  missing ones and deleting unlisted ones with their membership.
-- `synchronize_imap_mailbox` evaluates the supplied canonical filter with the query language's
-  exact semantics (the same as `list_messages`). After a fingerprint change it removes members
-  that no longer match. Dynamic mailboxes (all but Trash) then gain every matching message that is
-  neither a member nor excluded, in ascending message sequence order, with UIDs from `uid_next`.
-  Existing members keep their UIDs; UIDs are never reused. User tombstones always exclude
-  membership, including after unchanged fingerprints or restoring mailbox exclusions.
-- Flags other than `deleted` are per account and message; `deleted` is per membership. Every flag
-  change advances the account cursor reported by `imap_flag_changes`.
-- Subscription names belong to the account and survive mailbox deletion or renaming.
-  `list_imap_subscribed` returns retained explicit and observed default names, including absent
-  mailboxes; `list_imap_unsubscribed` returns explicit exceptions. `retain_imap_subscriptions`
-  inserts missing observed defaults atomically and idempotently only when no unsubscribe
-  exception exists. It must never undo a concurrent `set_imap_subscription(..., false)`.
-- `expunge_imap_members` records owner-level tombstones for flagged selected messages and
-  atomically removes them from every mailbox of every account belonging to that owner. Return
-  source UIDs for protocol responses. MOVE changes account placement,
-  never user tombstones. `clear_imap_exclusions` forgets mailbox exclusions and forces full
-  reconciliation, but never clears user deletions. Synchronization always excludes owner
-  tombstones, including with unchanged fingerprints. `copy_imap_members` refuses every smart-folder insertion. Manual/private insertion checks
-  current authorization, and a refused operation changes nothing.
+Implement the complete view ownership, mailbox identity and lifecycle contract in
+[imap.md](imap.md) and [storage.md](storage.md):
 
-### Manual organization contract
+- Mirror shares primary folders, memberships, flags, Trash and deletions. Independent
+  owns durable private state bounded by the current owner's permissions.
+- Account creation snapshots current authorized primary history and organization,
+  excluding primary tombstones and smart definitions. Future arrivals add dormant
+  Independent references too. Mode switches preserve both state sets and invalidate
+  old sessions through a monotonic generation.
+- Mailbox identities include mode; dormant identity and ascending UID state survive
+  toggles. Reconciliation returns sources in request order, never reuses a UID, and
+  verifies current authorization independently of retained references.
+- Seen and supported flags share one physical message state within the view; Deleted
+  is mailbox-occurrence local. Web Seen and Mirror flags share primary storage/cursors.
+- Smart definitions are primary-owned in Mirror and account-owned in Independent.
+  Results ignore normal placement, exclude Trash, and permit only Seen updates over
+  IMAP. Smart membership changes are refused atomically.
+- COPY preserves source and shares content, MOVE changes only source occurrence/view,
+  and duplicate destination occurrences are refused. EXPUNGE removes flagged occurrences;
+  a surviving copy is promoted, a final normal occurrence enters Trash, and expunging
+  final Trash releases the view. Return source UIDs; Independent never tombstones primary.
+- Normal-folder deletion trashes otherwise-unfiled occurrences and preserves copies.
+  Hierarchy renames preserve identifiers and descendants atomically.
+- Credential deletion cascades only private state; final-reference collection removes
+  raw content, facts/attachment metadata, memberships and derived search state safely.
+- Retained subscription names and explicit unsubscribe exceptions survive catalog
+  changes. Observing defaults must not undo concurrent unsubscribe.
 
-`create_web_folder` and `update_web_folder` validate every exposure belongs to the owner and
-replace projections atomically. `create_imap_private_folder` affects only one account.
-`place_user_messages` checks the canonical authorization and tombstones in the write transaction,
-accepts at most 256 identifiers, and never changes account overrides. `list_web_mailbox_messages`
-selects manual placement or the unfiled baseline before keyset pagination.
-Reconciliation uses account override > exposed Web placement > smart/general baseline and always
-applies authorization. Additional manual COPY memberships preserve sources. Target deletion or
-exposure removal clears only associated placement and forces fallback reconciliation; scope loss
-does not discard overrides. Tombstones remain independent. Copies into a destination already
-containing a message are refused rather than reporting success with a reused UID.
+Legacy linked/exposure fields remain compatibility data; they do not authorize messages
+or provide live primary organization inheritance to Independent accounts.
 
 ## 12. Testing your backend
 

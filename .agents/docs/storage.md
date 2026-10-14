@@ -81,52 +81,52 @@ ordered sequence of migration scripts.
   mail and never grant access.
 - **Mail.** One pool of messages with normalized recipient/header/attachment facts, raw MIME in
   the mail row, and search synchronization state. Mail records no destination or SMTP access.
-- **User deletion.** `user_message_deletions` is a deletion-only relationship keyed by
-  `(user_identifier, mail_sequence)`, with cascading foreign keys to users and physical mail
-  and a reverse message index. Tombstone insertion atomically removes the message from every
-  mailbox of every account belonging to that user. Scope changes, account restore, and index
-  rebuilds never clear tombstones. Other users and future users retain independent access.
-  There is no automatic garbage collector.
-- **IMAP accounts.** `ImapAccount { identifier, owner_identifier, name, username, enabled,
-  mirror_views, created_at, updated_at, last_used_at }` plus a password hash that only
-  `ImapAccountCredential` reads return (`DuplicateImapUsername` for a taken username). Deleting the
-  owner deletes the account; deleting an account never deletes mail. Linked Views
-  (`ImapLinkedView { view_identifier, alias }`) are replaced as a whole and disappear with their
-  View. Folder definitions belong to the user and hold a query-language filter and an
-  `include_in_inbox` flag. New names are unique per owner (`DuplicateImapFolderName`); duplicate
-  legacy names are preserved and disambiguated in the mailbox catalog. SQLite stores canonical
-  definitions in `imap_user_folders` and links them through `imap_user_folder_accounts` to
-  disposable `imap_local_folders` projections. The compatibility DTO still returns each account's
-  projection identifier and account identifier. Listing and retrieval read canonical definition
-  fields. Edits and deletion affect every projection; deleting a credential retains definitions,
-  and a new credential projects every existing owner folder. Other users never share these definitions.
-- **Mailbox organization.** `WebFolder` definitions belong to one user and expose manual
-  projections only to explicitly selected owned IMAP accounts. New accounts never automatically
-  inherit manual exposure. `ImapFolderKind` distinguishes Smart, Manual, and account-private
-  folders; legacy smart definitions/projections retain their identifiers. Web placement is keyed
-  by user/message. Exclusive IMAP placement and additional COPY membership are keyed by
-  account/message and target local folder, INBOX, or Trash.
-  Resolution is account override, then exposed Web placement, then filter/general fallback.
-  Current authorization and owner tombstones apply independently at every reconciliation.
-  Folder deletion/exposure removal cascades target placements and invalidates membership
-  fingerprints so old messages reenter fallback with new UIDs. No mail is duplicated.
-- **IMAP mailboxes and membership.** One identity per account and `ImapMailboxSource` (Inbox, Trash,
-  View, LocalFolder) with a UIDVALIDITY from an always-increasing allocator, `uid_next`, and a recent
-  watermark. `reconcile_imap_mailboxes` creates missing identities and deletes unlisted ones (with
-  their membership). `synchronize_imap_mailbox` receives a complete `ImapMembershipDefinition`
-  (canonical filter and fingerprint, already including owner authorization) and atomically removes
-  members that no longer match after a fingerprint change, then gives dynamic mailboxes every
-  matching message above the last examined sequence that is neither a member nor expunged from it,
-  with ascending UIDs in message order. Trash and COPY occurrences use durable targets and are restored when authorization permits them again. Synchronization always
-  excludes owner tombstones, including with unchanged definition fingerprints. UIDs are never renumbered or
-  reused. `\Seen`, `\Answered`, `\Flagged`, `\Draft`, and keywords are stored per account and
-  message; `\Deleted` per membership; an account flag counter is the change cursor. Standalone expunge records owner-level tombstones; MOVE records account placement without
-  deleting for the user. All smart-folder insertions are refused. Manual insertion checks current
-  authorization transactionally. See [imap.md](imap.md).
+- **Primary state.** `user_message_deletions` permanently removes a message from the
+  primary user's view and every Mirror projection, while Independent references survive.
+  `user_message_placements`, `user_message_copies`, `user_message_trash` and
+  `user_message_flags` hold primary organization. Seen and supported flags share a
+  primary modification cursor. Tombstones cannot be cleared through account restore.
+- **IMAP accounts.** Credentials carry `mode` (Mirror/Independent) and an increasing
+  `mode_generation`; mode transitions revoke authenticated sessions without overwriting
+  dormant state. Account deletion cascades private state and may collect unreferenced
+  mail. New credentials snapshot current authorized, untombstoned primary history and
+  normal organization using `NewImapAccount.initial_authorization` in the creation
+  transaction. New arrival triggers add Independent references while any mode is active.
+- **Independent retention.** `imap_account_messages` records the physical messages
+  retained by each account. Presence is independent of current authorization and mode;
+  permission loss hides content but preserves internal organization. Permanent removal
+  releases the account's reference without primary/peer deletion. No historical rescan
+  recreates released references. Dormant references prevent premature collection.
+- **Folders.** Primary Web definitions automatically project through Mirror accounts.
+  Independent normal folders and smart definitions have no primary definition link;
+  new accounts snapshot normal folders only. Legacy owner smart definitions remain
+  Mirror-compatible; old projections become separate Independent definitions during
+  upgrade. `/` paths form normal folder hierarchies; explicit parent renames change
+  descendants transactionally while retaining identifiers. Deleting a normal folder
+  trashes only otherwise-unfiled occurrences and preserves other normal copies.
+- **Membership identities.** Identity is keyed by credential, mode and source. Dormant
+  identities remain stored. UIDs are ascending, never reused, and each new identity
+  receives increasing UIDVALIDITY. Synchronization combines canonical authorization,
+  the smart definition where applicable, active-view retention and organization.
+  Smart results ignore normal placement and exclude primary/account Trash. Normal
+  copies share physical content, Seen and supported flags; Deleted is per occurrence.
+  COPY/MOVE cannot insert into smart results. Repeated destination occurrences fail
+  atomically rather than reusing UIDs. EXPUNGE removes the selected occurrence, promotes
+  a surviving copy, otherwise moves final normal membership into Trash, and finally
+  releases a last Trash occurrence. Independent operations stay account-local.
+- **Garbage collection.** Reference release/account deletion collects a physical
+  message only when every primary user tombstoned it and no Independent reference
+  remains. This deliberately conservative rule retains primary mail temporarily
+  outside current scopes. Cascading child facts/attachment metadata and raw MIME bytes
+  disappear with the message; the existing mail-delete trigger queues search removal.
+  Search rebuilding remains derived and never authorizes access. Privileged physical
+  maintenance methods remain distinct from user-facing lifecycle operations.
+
+Full behavior, protocol decisions, subscriptions, and notifications: [imap.md](imap.md).
 
 ## SQLite backend, startup, and migrations
 
-`sandpost-storage-sqlite` keeps one ordered sequence of SQL scripts (currently 0001-0039),
+`sandpost-storage-sqlite` keeps one ordered sequence of SQL scripts (currently 0001-0041),
 with table/index definitions and trigger groups in separate files. The `migrations` table records
 only the applied script names. There is no separate schema version or version batch, and startup
 neither reads nor writes `PRAGMA user_version`. To evolve the schema, append a script to the
@@ -141,12 +141,14 @@ Unknown scripts (including scripts from a newer build), gaps, missing history in
 and schema mismatches fail startup; there is no automatic repair or reset.
 
 The sequence includes canonical users, global SMTP configuration and authentication rules, scopes,
-Views, shared mail and normalized facts, the search outbox, and IMAP state. Scripts 0026-0039 add
+Views, shared mail and normalized facts, the search outbox, and IMAP state. Scripts 0026-0041 add
 user-message tombstones, owner folder definitions/projections, Web manual folders and selected
-exposures, durable Web/account placement and COPY membership, folder kinds, and retained subscription
-names. Each new table and its indexes, the folder-kind update, the Trash data backfill, and each
+exposures, durable Web/account placement and COPY membership, folder kinds, retained subscription
+names, and the per-user Web Trash with the trigger that clears it on permanent deletion. Each new table and its indexes, the folder-kind update, the Trash data backfill, and each
 ownership-trigger group have separate scripts. Incremental application preserves existing folder
-identifiers, mailbox UIDs, and tombstones.
+identifiers, mailbox UIDs, and tombstones. Scripts 0042–0056 separate mode catalogs, private retention,
+primary copies/flags and effective flags, preserve inherited organization during upgrade, and invalidate
+old membership fingerprints so the new smart and placement policy is reconciled.
 
 The pre-deployment history format was simplified to remove its batch column. Databases created with
 that earlier format or the previous pre-release sequence are unsupported and must be recreated;
