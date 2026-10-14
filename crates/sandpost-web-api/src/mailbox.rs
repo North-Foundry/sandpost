@@ -1,4 +1,4 @@
-//! Manual Web folder definitions, selected IMAP exposures, and user mailbox placement.
+//! Manual Web folder definitions, selected IMAP exposures, user mailbox placement, and Trash.
 
 use crate::{
     ApplicationState,
@@ -134,4 +134,98 @@ pub(super) async fn move_messages(
         .await
         .map_err(map_application_error)?;
     Ok(Json(MovedMessages { moved }))
+}
+
+/// A COPY destination, with null or omission selecting Inbox.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CopyRequest {
+    identifiers: Vec<MessageIdentifier>,
+    folder_identifier: Option<ImapFolderIdentifier>,
+}
+
+/// The number of new primary destination occurrences.
+#[derive(Serialize)]
+pub(super) struct CopiedMessages {
+    copied: u64,
+}
+
+/// Copy into an owned normal folder or Inbox without changing the source occurrence.
+pub(super) async fn copy_messages(
+    State(state): State<ApplicationState>,
+    Extension(user): Extension<SessionUser>,
+    Json(request): Json<CopyRequest>,
+) -> Result<Json<CopiedMessages>, HttpError> {
+    let copied = state
+        .authorized(&user)
+        .copy_web_messages(request.identifiers, request.folder_identifier)
+        .await
+        .map_err(map_application_error)?;
+    Ok(Json(CopiedMessages { copied }))
+}
+
+/// A bounded batch of messages to move to the caller's Web Trash.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TrashRequest {
+    identifiers: Vec<MessageIdentifier>,
+}
+
+/// The number of authorized messages now in the caller's Web Trash.
+#[derive(Serialize)]
+pub(super) struct TrashedMessages {
+    trashed: u64,
+}
+
+/// Move messages to the caller's Web Trash; moving them to a folder or Inbox restores them.
+pub(super) async fn trash_messages(
+    State(state): State<ApplicationState>,
+    Extension(user): Extension<SessionUser>,
+    Json(request): Json<TrashRequest>,
+) -> Result<Json<TrashedMessages>, HttpError> {
+    let trashed = state
+        .authorized(&user)
+        .trash_web_messages(request.identifiers)
+        .await
+        .map_err(map_application_error)?;
+    Ok(Json(TrashedMessages { trashed }))
+}
+
+/// List currently authorized, non-deleted messages in the caller's Web Trash.
+pub(super) async fn trash_messages_page(
+    State(state): State<ApplicationState>,
+    Extension(user): Extension<SessionUser>,
+    Query(page): Query<FolderPage>,
+) -> Result<Json<Vec<MessageSummary>>, HttpError> {
+    Ok(Json(
+        state
+            .authorized(&user)
+            .query_web_trash(QueryOptions {
+                query: page.q,
+                before: page.before.map(MessageSequence),
+                limit: page.limit.unwrap_or(50),
+                ..QueryOptions::default()
+            })
+            .await
+            .map_err(map_application_error)?,
+    ))
+}
+
+/// The number of messages permanently deleted by emptying the Trash.
+#[derive(Serialize)]
+pub(super) struct EmptiedTrash {
+    deleted: u64,
+}
+
+/// Permanently delete every message in the caller's Web Trash.
+pub(super) async fn empty_trash(
+    State(state): State<ApplicationState>,
+    Extension(user): Extension<SessionUser>,
+) -> Result<Json<EmptiedTrash>, HttpError> {
+    let deleted = state
+        .authorized(&user)
+        .empty_web_trash()
+        .await
+        .map_err(map_application_error)?;
+    Ok(Json(EmptiedTrash { deleted }))
 }
