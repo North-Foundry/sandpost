@@ -1,6 +1,13 @@
-//! Parse typed application settings from environment values.
+//! Load shared file settings and environment overrides with platform data defaults.
 
 use std::{net::SocketAddr, path::PathBuf};
+
+mod file;
+
+/// Environment variable naming the configuration file to read.
+const CONFIGURATION_PATH_SETTING: &str = "SANDPOST_CONFIG";
+/// Shared home configuration file, used when the variable is absent.
+const SHARED_CONFIGURATION_FILE: &str = ".sandpost/config.toml";
 
 /// When SMTP sessions must authenticate with an SMTP access before submitting mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,11 +103,14 @@ pub struct Configuration {
     pub database_path: PathBuf,
     pub maximum_scope_depth: Option<usize>,
     pub log_level: String,
-    pub frontend_directory: Option<PathBuf>,
+    /// The configuration file that was read; absent while defaults and environment alone apply.
+    pub configuration_path: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigurationError {
+    #[error("invalid configuration file {}: {reason}", path.display())]
+    File { path: PathBuf, reason: String },
     #[error("invalid {setting_name}: {reason}")]
     Invalid {
         setting_name: &'static str,
@@ -161,9 +171,47 @@ impl Configuration {
         Ok(())
     }
 
-    /// Build application configuration from the process environment.
+    /// Read the configured file, then apply environment overrides and platform defaults.
+    ///
+    /// `SANDPOST_CONFIG` names an explicit file that must exist; without it the shared home file
+    /// is read when present.
     pub fn from_environment() -> Result<Self, ConfigurationError> {
-        Self::from_values(|setting_name| std::env::var(setting_name).ok())
+        Self::from_environment_values(|setting_name| std::env::var(setting_name).ok())
+    }
+
+    /// Resolve the configuration file from a supplied lookup, which keeps tests off the process environment.
+    fn from_environment_values(
+        environment_value: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, ConfigurationError> {
+        let configuration_file = configuration_file(&environment_value)?;
+        Self::from_sources(environment_value, configuration_file)
+    }
+
+    /// Merge an optional file's settings below environment values without changing the process.
+    fn from_sources(
+        environment_value: impl Fn(&str) -> Option<String>,
+        configuration_file: Option<ConfigurationFile>,
+    ) -> Result<Self, ConfigurationError> {
+        let mut configuration = Self::from_values(&environment_value)?;
+        let Some(configuration_file) = configuration_file else {
+            return Ok(configuration);
+        };
+        let Some(file) =
+            file::FileConfiguration::read(&configuration_file.path, configuration_file.required)?
+        else {
+            return Ok(configuration);
+        };
+        configuration.configuration_path = Some(configuration_file.path.clone());
+        if environment_value("SANDPOST_DATA_DIRECTORY").is_none()
+            && let Some(directory) = file.data_directory(&configuration_file.path)
+        {
+            configuration.data_directory = directory;
+            configuration.database_path = configuration.data_directory.join(
+                environment_value("SANDPOST_DATABASE_PATH")
+                    .unwrap_or_else(|| "sandpost.sqlite3".into()),
+            );
+        }
+        Ok(configuration)
     }
     /// Parse settings from a supplied lookup closure, using local defaults when absent.
     pub(crate) fn from_values(
@@ -181,18 +229,13 @@ impl Configuration {
                     },
                 )
         };
-        let data_directory = environment_value("SANDPOST_DATA_DIR")
+        let data_directory = environment_value("SANDPOST_DATA_DIRECTORY")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                environment_value("HOME")
-                    .filter(|value| !value.is_empty())
-                    .or_else(|| environment_value("USERPROFILE").filter(|value| !value.is_empty()))
-                    .map(|home_directory| PathBuf::from(home_directory).join(".sandpost"))
-                    .unwrap_or_else(|| PathBuf::from("data"))
-            });
-        let database_path = environment_value("SANDPOST_DATABASE_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| data_directory.join("sandpost.sqlite3"));
+            .unwrap_or_else(default_data_directory);
+        let database_path = data_directory.join(
+            environment_value("SANDPOST_DATABASE_PATH")
+                .unwrap_or_else(|| "sandpost.sqlite3".into()),
+        );
         let maximum_scope_depth = environment_value("SANDPOST_MAX_SCOPE_DEPTH")
             .map(|value| {
                 value
@@ -289,11 +332,68 @@ impl Configuration {
             database_path,
             maximum_scope_depth,
             log_level: environment_value("SANDPOST_LOG_LEVEL").unwrap_or_else(|| "info".into()),
-            frontend_directory: environment_value("SANDPOST_FRONTEND_DIR").map(PathBuf::from),
+            configuration_path: None,
         };
         configuration.validate()?;
         Ok(configuration)
     }
+}
+
+/// The configuration file to read, and whether its absence stops startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigurationFile {
+    path: PathBuf,
+    /// An explicit `SANDPOST_CONFIG` path must exist; the shared home file may be absent.
+    required: bool,
+}
+
+impl ConfigurationFile {
+    /// An explicit file named by `SANDPOST_CONFIG`; a missing file stops startup.
+    fn explicit(path: PathBuf) -> Self {
+        Self {
+            path,
+            required: true,
+        }
+    }
+
+    /// The shared home file, read only when it exists.
+    fn shared(path: PathBuf) -> Self {
+        Self {
+            path,
+            required: false,
+        }
+    }
+}
+
+/// Resolve the configuration file from `SANDPOST_CONFIG`, defaulting to the shared home file.
+fn configuration_file(
+    environment_value: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<ConfigurationFile>, ConfigurationError> {
+    let Some(setting_value) = environment_value(CONFIGURATION_PATH_SETTING) else {
+        return Ok(dirs::home_dir().map(|home_directory| {
+            ConfigurationFile::shared(home_directory.join(SHARED_CONFIGURATION_FILE))
+        }));
+    };
+    let path = PathBuf::from(setting_value.trim());
+    if path.as_os_str().is_empty() {
+        return Err(ConfigurationError::Invalid {
+            setting_name: CONFIGURATION_PATH_SETTING,
+            reason: "expected a file path".into(),
+        });
+    }
+    Ok(Some(ConfigurationFile::explicit(path)))
+}
+
+/// Use native Application Support/RoamingAppData or XDG data storage, with a relative fallback.
+fn default_data_directory() -> PathBuf {
+    let application_directory = if cfg!(any(target_os = "macos", target_os = "windows")) {
+        "Sandpost"
+    } else {
+        "sandpost"
+    };
+    dirs::data_dir()
+        .map(|directory| directory.join(application_directory))
+        .unwrap_or_else(|| PathBuf::from("data"))
 }
 
 /// Default IMAP listener: loopback on an unprivileged port, like the SMTP default.

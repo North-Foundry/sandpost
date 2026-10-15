@@ -24,7 +24,7 @@ pub(super) fn configuration() -> (Configuration, TestDirectory) {
     let directory =
         TestDirectory(std::env::temp_dir().join(format!("sandpost-imap-{}", uuid::Uuid::new_v4())));
     let configuration = Configuration::from_values(|name| match name {
-        "SANDPOST_DATA_DIR" => Some(directory.0.to_string_lossy().into_owned()),
+        "SANDPOST_DATA_DIRECTORY" => Some(directory.0.to_string_lossy().into_owned()),
         "SANDPOST_HTTP_LISTEN" | "SANDPOST_SMTP_LISTEN" | "SANDPOST_IMAP_LISTEN" => {
             Some("127.0.0.1:0".into())
         }

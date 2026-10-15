@@ -20,7 +20,7 @@ fn test_configuration() -> (Configuration, TestDirectory) {
         std::env::temp_dir().join(format!("sandpost-runtime-{}", uuid::Uuid::new_v4())),
     );
     let configuration = Configuration::from_values(|name| match name {
-        "SANDPOST_DATA_DIR" => Some(directory.0.to_string_lossy().into_owned()),
+        "SANDPOST_DATA_DIRECTORY" => Some(directory.0.to_string_lossy().into_owned()),
         "SANDPOST_HTTP_LISTEN" | "SANDPOST_SMTP_LISTEN" | "SANDPOST_IMAP_LISTEN" => {
             Some("127.0.0.1:0".into())
         }
@@ -138,13 +138,42 @@ async fn shutdown_allows_restart_with_a_retained_application_handle() {
     restarted.shutdown().await.unwrap();
 }
 
-/// Fail incomplete static frontend configuration before creating persistent data.
+/// Serve the compiled frontend publicly when present, while unknown API routes remain empty.
 #[tokio::test]
-async fn missing_frontend_build_fails_before_runtime_start() {
-    let (mut configuration, directory) = test_configuration();
-    configuration.frontend_directory = Some(directory.0.join("missing-dist"));
-    assert!(SandpostRuntime::start(configuration).await.is_err());
-    assert!(!directory.0.exists());
+async fn runtime_serves_the_compiled_frontend_and_preserves_api_misses() {
+    let (configuration, _directory) = test_configuration();
+    let running = SandpostRuntime::start(configuration).await.unwrap();
+    for path in ["/", "/mail/deep/link", "/api/v1/not-a-route"] {
+        let mut stream = tokio::net::TcpStream::connect(running.web_listen_address)
+            .await
+            .unwrap();
+        stream
+            .write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_string(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        if sandpost_web_api::EMBEDDED_FRONTEND && !path.starts_with("/api/") {
+            assert!(
+                response.starts_with("HTTP/1.1 200 OK\r\n"),
+                "{path}: {response}"
+            );
+            assert!(response.contains("text/html; charset=utf-8"), "{path}");
+        } else {
+            assert!(
+                response.starts_with("HTTP/1.1 404 Not Found\r\n"),
+                "{path}: {response}"
+            );
+            assert!(response.ends_with("\r\n\r\n"), "{path}: {response}");
+        }
+    }
+    running.shutdown().await.unwrap();
 }
 
 mod smtp;

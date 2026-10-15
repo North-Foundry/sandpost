@@ -16,10 +16,7 @@ fn row_value<'output>(output: &'output str, label: &str) -> &'output str {
 /// Render configured defaults without duplicating their values in the renderer.
 #[test]
 fn default_configuration_reports_current_transport_and_storage_capabilities() {
-    let configuration = Configuration::from_values(|setting_name| {
-        (setting_name == "HOME").then(|| "/home/test".into())
-    })
-    .unwrap();
+    let configuration = Configuration::from_values(|_| None).unwrap();
     let output = StartupSummary {
         mail_listen_address: Some("127.0.0.1:1025".parse().unwrap()),
         mail_authentication_required: false,
@@ -42,14 +39,26 @@ fn default_configuration_reports_current_transport_and_storage_capabilities() {
         row_value(&output, "API"),
         "http://127.0.0.1:8025/api/v1/messages"
     );
+    if sandpost_web_api::EMBEDDED_FRONTEND {
+        assert_eq!(row_value(&output, "Web UI"), "http://127.0.0.1:8025");
+    } else {
+        assert!(!output.contains("Web UI"));
+    }
     assert_eq!(
         row_value(&output, "Database"),
-        "SQLite · /home/test/.sandpost/sandpost.sqlite3"
+        format!("SQLite · {}", configuration.database_path.display())
     );
-    assert_eq!(row_value(&output, "Data"), "/home/test/.sandpost");
+    assert_eq!(
+        row_value(&output, "Data"),
+        configuration.data_directory.display().to_string()
+    );
     assert_eq!(
         row_value(&output, "Attachments"),
         "in original messages (SQLite)"
+    );
+    assert_eq!(
+        row_value(&output, "Configuration"),
+        "defaults and environment"
     );
     assert_eq!(output.matches("Ready to receive mail.").count(), 1);
     assert!(!output.contains('\u{1b}'));
@@ -58,6 +67,27 @@ fn default_configuration_reports_current_transport_and_storage_capabilities() {
         "disabled (SANDPOST_IMAP_LISTEN=off)"
     );
     assert!(!output.contains("Inbox"));
+}
+
+/// Report the configuration file that was read in the storage section.
+#[test]
+fn storage_section_reports_the_configuration_file() {
+    let mut configuration = Configuration::from_values(|_| None).unwrap();
+    configuration.configuration_path = Some(std::path::PathBuf::from("/etc/sandpost/config.toml"));
+    let output = StartupSummary {
+        mail_listen_address: Some("127.0.0.1:1025".parse().unwrap()),
+        mail_authentication_required: false,
+        mail_encryption: MailListenerEncryption::None,
+        web_listen_address: configuration.web_listen_address,
+        configuration: &configuration,
+        imap: None,
+        bootstrap_secret: None,
+    }
+    .to_string();
+    assert_eq!(
+        row_value(&output, "Configuration"),
+        "/etc/sandpost/config.toml"
+    );
 }
 
 /// Report the IMAP service's host, port, security, and bound address.
@@ -94,7 +124,7 @@ fn environment_overrides_are_reflected_without_printing_unrelated_settings() {
     let configuration = Configuration::from_values(|setting_name| match setting_name {
         "SANDPOST_SMTP_LISTEN" => Some("192.0.2.10:2525".into()),
         "SANDPOST_HTTP_LISTEN" => Some("192.0.2.11:8080".into()),
-        "SANDPOST_DATA_DIR" => Some("/srv/mail-data".into()),
+        "SANDPOST_DATA_DIRECTORY" => Some("/srv/mail-data".into()),
         "SANDPOST_DATABASE_PATH" => Some("/srv/custom/capture.sqlite3".into()),
         "SANDPOST_LOG_LEVEL" => Some("private-filter-value".into()),
         _ => None,
@@ -151,6 +181,9 @@ fn bound_listener_addresses_take_precedence_over_requested_addresses() {
         row_value(&output, "API"),
         "http://127.0.0.1:45678/api/v1/messages"
     );
+    if sandpost_web_api::EMBEDDED_FRONTEND {
+        assert_eq!(row_value(&output, "Web UI"), "http://127.0.0.1:45678");
+    }
     assert!(output.contains("127.0.0.1:34567"));
     assert!(!output.contains("127.0.0.1:0"));
 }
@@ -190,6 +223,12 @@ fn wildcard_and_specific_ipv6_addresses_have_usable_client_representations() {
         .to_string();
         assert_eq!(row_value(&output, "Host"), expected_host);
         assert_eq!(row_value(&output, "API"), expected_url);
+        if sandpost_web_api::EMBEDDED_FRONTEND {
+            assert_eq!(
+                row_value(&output, "Web UI"),
+                expected_url.strip_suffix("/api/v1/messages").unwrap()
+            );
+        }
         assert!(output.contains(listen_address));
     }
 }
@@ -199,7 +238,7 @@ fn wildcard_and_specific_ipv6_addresses_have_usable_client_representations() {
 fn bootstrap_summary_prints_secret_once_and_labels_local_setup_url() {
     let configuration = Configuration::from_values(|name| match name {
         "SANDPOST_HTTP_LISTEN" => Some("0.0.0.0:8025".into()),
-        "SANDPOST_DATA_DIR" => Some("/data".into()),
+        "SANDPOST_DATA_DIRECTORY" => Some("/data".into()),
         _ => None,
     })
     .unwrap();

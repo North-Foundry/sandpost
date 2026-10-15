@@ -1,60 +1,320 @@
 use super::*;
 
-/// Resolve the home default, platform fallback, and independent storage overrides.
+/// Preserve environment directory and database overrides above platform defaults.
 #[test]
-fn home_directory_defaults_and_storage_overrides() {
-    for (values, expected_directory, expected_database) in [
-        (
-            vec![("HOME", "/home/test user")],
-            "/home/test user/.sandpost",
-            "/home/test user/.sandpost/sandpost.sqlite3",
-        ),
-        (
-            vec![("USERPROFILE", "/users/test")],
-            "/users/test/.sandpost",
-            "/users/test/.sandpost/sandpost.sqlite3",
-        ),
-        (
-            vec![("HOME", ""), ("USERPROFILE", "/users/test")],
-            "/users/test/.sandpost",
-            "/users/test/.sandpost/sandpost.sqlite3",
-        ),
-        (
-            vec![("HOME", "/home/test"), ("USERPROFILE", "/users/test")],
-            "/home/test/.sandpost",
-            "/home/test/.sandpost/sandpost.sqlite3",
-        ),
-        (
-            vec![("HOME", "/home/test"), ("SANDPOST_DATA_DIR", "/srv/mail")],
-            "/srv/mail",
-            "/srv/mail/sandpost.sqlite3",
-        ),
-        (
-            vec![
-                ("HOME", "/home/test"),
-                ("SANDPOST_DATABASE_PATH", "/srv/custom.sqlite3"),
-            ],
-            "/home/test/.sandpost",
-            "/srv/custom.sqlite3",
-        ),
-        (vec![], "data", "data/sandpost.sqlite3"),
+fn storage_environment_overrides() {
+    let configuration = Configuration::from_values(|setting_name| match setting_name {
+        "SANDPOST_DATA_DIRECTORY" => Some("custom data".into()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(configuration.data_directory, PathBuf::from("custom data"));
+    assert_eq!(
+        configuration.database_path,
+        PathBuf::from("custom data/sandpost.sqlite3")
+    );
+
+    let configuration = Configuration::from_values(|setting_name| match setting_name {
+        "SANDPOST_DATABASE_PATH" => Some("custom.sqlite3".into()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(configuration.data_directory, default_data_directory());
+    assert_eq!(
+        configuration.database_path,
+        default_data_directory().join("custom.sqlite3")
+    );
+
+    let configuration = Configuration::from_values(|setting_name| match setting_name {
+        "SANDPOST_DATA_DIRECTORY" => Some("custom data".into()),
+        "SANDPOST_DATABASE_PATH" => Some("db/mail.sqlite3".into()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(
+        configuration.database_path,
+        PathBuf::from("custom data/db/mail.sqlite3")
+    );
+}
+
+/// Own a temporary configuration directory without touching the user's real home or environment.
+struct ConfigurationDirectory(PathBuf);
+
+impl ConfigurationDirectory {
+    /// Create a unique directory for real file-loading tests.
+    fn new() -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("sandpost-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        Self(directory)
+    }
+
+    /// Return the shared filename within the isolated configuration directory.
+    fn configuration_path(&self) -> PathBuf {
+        self.0.join("config.toml")
+    }
+}
+
+impl Drop for ConfigurationDirectory {
+    /// Remove only the temporary files created by this test.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Select the shared home file for tests; it is read only when it exists.
+fn shared_file(configuration_path: impl Into<PathBuf>) -> ConfigurationFile {
+    ConfigurationFile::shared(configuration_path.into())
+}
+
+/// Missing files, missing fields, and blank strings select platform defaults without writing files.
+#[test]
+fn optional_storage_file_defaults() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    let configuration =
+        Configuration::from_sources(|_| None, Some(shared_file(configuration_path.clone())))
+            .unwrap();
+    assert_eq!(configuration.data_directory, default_data_directory());
+    assert!(configuration.configuration_path.is_none());
+    assert!(!configuration_path.exists());
+    for contents in [
+        "",
+        "[storage]",
+        "[storage]\ndata_directory = \"\"",
+        "[storage]\ndata_directory = \"   \"",
     ] {
-        let configuration = Configuration::from_values(|setting_name| {
-            values
-                .iter()
-                .find(|(name, _)| *name == setting_name)
-                .map(|(_, value)| (*value).to_owned())
-        })
-        .unwrap();
-        assert_eq!(
-            configuration.data_directory,
-            PathBuf::from(expected_directory)
-        );
+        std::fs::write(&configuration_path, contents).unwrap();
+        let configuration =
+            Configuration::from_sources(|_| None, Some(shared_file(configuration_path.clone())))
+                .unwrap();
+        assert_eq!(configuration.data_directory, default_data_directory());
         assert_eq!(
             configuration.database_path,
-            PathBuf::from(expected_database)
+            configuration.data_directory.join("sandpost.sqlite3")
+        );
+        assert_eq!(
+            configuration.configuration_path.as_deref(),
+            Some(configuration_path.as_path())
         );
     }
+}
+
+/// Anchor relative file paths to the config folder and preserve absolute paths and spaces.
+#[test]
+fn storage_file_paths_and_environment_precedence() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    std::fs::write(
+        &configuration_path,
+        "[storage]\ndata_directory = \"mail data\"",
+    )
+    .unwrap();
+    let configuration =
+        Configuration::from_sources(|_| None, Some(shared_file(configuration_path.clone())))
+            .unwrap();
+    assert_eq!(configuration.data_directory, directory.0.join("mail data"));
+    assert_eq!(
+        configuration.database_path,
+        directory.0.join("mail data/sandpost.sqlite3")
+    );
+    assert!(!configuration.data_directory.exists());
+
+    let configuration = Configuration::from_sources(
+        |setting_name| match setting_name {
+            "SANDPOST_DATA_DIRECTORY" => Some("environment data".into()),
+            _ => None,
+        },
+        Some(shared_file(configuration_path.clone())),
+    )
+    .unwrap();
+    assert_eq!(
+        configuration.data_directory,
+        PathBuf::from("environment data")
+    );
+    assert_eq!(
+        configuration.database_path,
+        PathBuf::from("environment data/sandpost.sqlite3")
+    );
+
+    let configuration = Configuration::from_sources(
+        |setting_name| match setting_name {
+            "SANDPOST_DATABASE_PATH" => Some("independent.sqlite3".into()),
+            _ => None,
+        },
+        Some(shared_file(configuration_path.clone())),
+    )
+    .unwrap();
+    assert_eq!(configuration.data_directory, directory.0.join("mail data"));
+    assert_eq!(
+        configuration.database_path,
+        directory.0.join("mail data/independent.sqlite3")
+    );
+
+    let absolute_database = directory.0.join("external.sqlite3");
+    for data_directory in [None, Some("environment data")] {
+        let configuration = Configuration::from_sources(
+            |setting_name| match setting_name {
+                "SANDPOST_DATA_DIRECTORY" => data_directory.map(str::to_owned),
+                "SANDPOST_DATABASE_PATH" => Some(absolute_database.to_string_lossy().into_owned()),
+                _ => None,
+            },
+            Some(shared_file(configuration_path.clone())),
+        )
+        .unwrap();
+        assert_eq!(configuration.database_path, absolute_database);
+    }
+
+    let absolute_directory = directory.0.join("absolute mail data");
+    let escaped_directory = absolute_directory.to_str().unwrap().replace('\\', "\\\\");
+    std::fs::write(
+        &configuration_path,
+        format!("[storage]\ndata_directory = \"{escaped_directory}\"\n"),
+    )
+    .unwrap();
+    let configuration =
+        Configuration::from_sources(|_| None, Some(shared_file(configuration_path.clone())))
+            .unwrap();
+    assert_eq!(configuration.data_directory, absolute_directory);
+}
+
+/// Refuse invalid TOML, unsupported keys/types, and unreadable files even with an environment override.
+#[test]
+fn invalid_storage_files_report_the_path() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    for contents in [
+        "[storage]\ndata_directory =",
+        "[storage]\ndata_directory = null",
+        "[storage]\ndata_directory = 42",
+        "[storage]\ndata_directory = false",
+        "[storage]\ndirectory = \"mail\"",
+        "[storage]\ndata_directory = \"mail\"\ndata_directory = \"other\"",
+        "[http]\nlisten_address = \"127.0.0.1:8025\"",
+        "storage = \"mail\"",
+    ] {
+        std::fs::write(&configuration_path, contents).unwrap();
+        let error = Configuration::from_sources(
+            |name| (name == "SANDPOST_DATA_DIRECTORY").then(|| "override".into()),
+            Some(shared_file(configuration_path.clone())),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, ConfigurationError::File { ref path, .. } if path == &configuration_path),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&configuration_path.display().to_string())
+        );
+    }
+    std::fs::remove_file(&configuration_path).unwrap();
+    std::fs::create_dir(&configuration_path).unwrap();
+    assert!(
+        Configuration::from_sources(|_| None, Some(shared_file(configuration_path.clone())))
+            .is_err()
+    );
+}
+
+/// Select the configuration file with `SANDPOST_CONFIG`, refusing a blank setting.
+#[test]
+fn configuration_file_selection() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    let selected = configuration_file(&|setting_name: &str| {
+        (setting_name == "SANDPOST_CONFIG").then(|| configuration_path.display().to_string())
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(selected.path, configuration_path);
+    assert!(selected.required);
+
+    let error = configuration_file(&|setting_name: &str| {
+        (setting_name == "SANDPOST_CONFIG").then(|| "   ".into())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ConfigurationError::Invalid {
+                setting_name: "SANDPOST_CONFIG",
+                ..
+            }
+        ),
+        "{error}"
+    );
+
+    let shared = configuration_file(&|_: &str| None).unwrap().unwrap();
+    assert!(!shared.required);
+    if let Some(home_directory) = dirs::home_dir() {
+        assert_eq!(shared.path, home_directory.join(".sandpost/config.toml"));
+    }
+}
+
+/// Read the file named by `SANDPOST_CONFIG`, keep environment precedence, and refuse a missing path.
+#[test]
+fn explicit_configuration_file_is_required_and_effective() {
+    let directory = ConfigurationDirectory::new();
+    let explicit_path = directory.0.join("sandpost.toml");
+    std::fs::write(
+        &explicit_path,
+        "[storage]\ndata_directory = \"mail data\"\n",
+    )
+    .unwrap();
+    let explicit_value = explicit_path.display().to_string();
+
+    let configuration = Configuration::from_environment_values(|setting_name| {
+        (setting_name == "SANDPOST_CONFIG").then(|| explicit_value.clone())
+    })
+    .unwrap();
+    assert_eq!(
+        configuration.configuration_path.as_deref(),
+        Some(explicit_path.as_path())
+    );
+    assert_eq!(configuration.data_directory, directory.0.join("mail data"));
+
+    let configuration = Configuration::from_environment_values(|setting_name| match setting_name {
+        "SANDPOST_CONFIG" => Some(explicit_value.clone()),
+        "SANDPOST_DATA_DIRECTORY" => Some("environment data".into()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(
+        configuration.data_directory,
+        PathBuf::from("environment data")
+    );
+    assert_eq!(
+        configuration.database_path,
+        PathBuf::from("environment data/sandpost.sqlite3")
+    );
+
+    let missing_path = directory.0.join("missing.toml");
+    let missing_value = missing_path.display().to_string();
+    let error = Configuration::from_environment_values(|setting_name| {
+        (setting_name == "SANDPOST_CONFIG").then(|| missing_value.clone())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(error, ConfigurationError::File { ref path, .. } if path == &missing_path),
+        "{error}"
+    );
+    assert!(error.to_string().contains("SANDPOST_CONFIG"), "{error}");
+
+    let error = Configuration::from_environment_values(|setting_name| {
+        (setting_name == "SANDPOST_CONFIG").then(|| "  ".into())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ConfigurationError::Invalid {
+                setting_name: "SANDPOST_CONFIG",
+                ..
+            }
+        ),
+        "{error}"
+    );
 }
 
 /// Verify defaults, environment overrides, and invalid setting errors.
@@ -67,7 +327,7 @@ fn defaults_overrides_and_invalid_values() {
     );
     assert_eq!(
         configuration.database_path,
-        PathBuf::from("data/sandpost.sqlite3")
+        default_data_directory().join("sandpost.sqlite3")
     );
     assert!(configuration.maximum_scope_depth.is_none());
     assert!(configuration.mail_listen_address.is_none());
@@ -76,7 +336,7 @@ fn defaults_overrides_and_invalid_values() {
         MailAuthenticationSetting::Automatic
     );
     let configuration = Configuration::from_values(|setting_name| match setting_name {
-        "SANDPOST_DATA_DIR" => Some("/tmp/test".into()),
+        "SANDPOST_DATA_DIRECTORY" => Some("/tmp/test".into()),
         "SANDPOST_MAX_SCOPE_DEPTH" => Some("0".into()),
         "SANDPOST_SMTP_LISTEN" => Some("127.0.0.1:2525".into()),
         _ => None,

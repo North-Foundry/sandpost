@@ -99,19 +99,25 @@ impl Display for StartupSummary<'_> {
             None => vec![("Status", "disabled (SANDPOST_IMAP_LISTEN=off)".into())],
         };
         write_section(formatter, "IMAP", &imap_rows)?;
-        write_section(
-            formatter,
-            "HTTP",
-            &[
-                // Link to an implemented resource; the API prefix itself has no route.
-                ("API", format!("{web_url}/api/v1/messages")),
-                ("Listening", self.web_listen_address.to_string()),
-            ],
-        )?;
+        let mut web_rows = Vec::new();
+        if sandpost_web_api::EMBEDDED_FRONTEND {
+            web_rows.push(("Web UI", web_url.clone()));
+        }
+        // Link to an implemented resource; the API prefix itself has no route.
+        web_rows.push(("API", format!("{web_url}/api/v1/messages")));
+        web_rows.push(("Listening", self.web_listen_address.to_string()));
+        write_section(formatter, "HTTP", &web_rows)?;
         write_section(
             formatter,
             "Storage",
             &[
+                (
+                    "Configuration",
+                    match &self.configuration.configuration_path {
+                        Some(path) => path.display().to_string(),
+                        None => "defaults and environment".into(),
+                    },
+                ),
                 (
                     "Data",
                     self.configuration.data_directory.display().to_string(),

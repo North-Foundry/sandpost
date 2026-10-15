@@ -48,15 +48,6 @@ impl SandpostRuntime {
     /// No process signals or global tracing subscriber are installed by this operation.
     pub async fn start(configuration: Configuration) -> Result<RunningSandpost, RuntimeError> {
         configuration.validate()?;
-        if let Some(directory) = &configuration.frontend_directory
-            && !directory.join("index.html").is_file()
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "SANDPOST_FRONTEND_DIR must contain a built index.html",
-            )
-            .into());
-        }
         // Load the certificate before touching storage, so a bad path fails fast.
         let mail_encryption = MailEncryption::load(&configuration)?;
         let storage = bootstrap::initialize(&configuration).await?;
@@ -104,11 +95,10 @@ impl SandpostRuntime {
             |listener| mail_encryption.describe(listener.address),
         );
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-        let application_router = match configuration.frontend_directory {
-            Some(directory) => {
-                sandpost_web_api::router_with_frontend(application.clone(), directory)
-            }
-            None => sandpost_web_api::router(application.clone()),
+        let application_router = if sandpost_web_api::EMBEDDED_FRONTEND {
+            sandpost_web_api::router_with_embedded_frontend(application.clone())
+        } else {
+            sandpost_web_api::router(application.clone())
         }
         .layer(axum::middleware::from_fn_with_state(
             shutdown_receiver.clone(),
