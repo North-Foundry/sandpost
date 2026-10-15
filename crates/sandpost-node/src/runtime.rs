@@ -5,21 +5,15 @@ use crate::boundary::{instance_error, native_error};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 use sandpost::{Configuration, SandpostRuntime, StartupSummary};
-use std::{io::Write, path::PathBuf};
+use std::io::Write;
 use tokio::sync::{Mutex, watch};
 
 #[napi]
 impl NativeRuntime {
-    /// Start the shared HTTP/SMTP/IMAP runtime using environment settings and a platform data default.
+    /// Start the shared HTTP/SMTP/IMAP runtime using shared environment and file configuration.
     #[napi(factory)]
-    pub async fn start(default_data_directory: String) -> Result<Self> {
-        let mut configuration = Configuration::from_environment().map_err(native_error)?;
-        if std::env::var_os("SANDPOST_DATA_DIR").is_none() {
-            configuration.data_directory = PathBuf::from(default_data_directory);
-            if std::env::var_os("SANDPOST_DATABASE_PATH").is_none() {
-                configuration.database_path = configuration.data_directory.join("sandpost.sqlite3");
-            }
-        }
+    pub async fn start() -> Result<Self> {
+        let configuration = Configuration::from_environment().map_err(native_error)?;
         let filter = tracing_subscriber::EnvFilter::try_new(&configuration.log_level)
             .map_err(native_error)?;
         let _ = tracing_subscriber::fmt()
