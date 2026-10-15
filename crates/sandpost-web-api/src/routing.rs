@@ -39,6 +39,17 @@ pub fn router_with_frontend(state: ApplicationState, directory: PathBuf) -> Rout
         ))
 }
 
+/// Build the API router serving the frontend embedded at compile time, with the same fallback.
+pub fn router_with_embedded_frontend(state: ApplicationState) -> Router {
+    api_router()
+        .fallback(crate::embedded::serve_asset)
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state,
+            authentication::authenticate,
+        ))
+}
+
 /// Build versioned API routes, including a non-HTML fallback for unknown API paths.
 fn api_router() -> Router<ApplicationState> {
     Router::new()

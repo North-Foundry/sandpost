@@ -1,5 +1,7 @@
 //! Shared fixtures and external imports for HTTP unit tests.
-use crate::{ApplicationState, MessageEvent, router, router_with_frontend};
+use crate::{
+    ApplicationState, MessageEvent, router, router_with_embedded_frontend, router_with_frontend,
+};
 use axum::{
     Router,
     body::Body,

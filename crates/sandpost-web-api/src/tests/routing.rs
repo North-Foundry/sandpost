@@ -100,3 +100,87 @@ async fn frontend_router_serves_assets_and_spa_without_falling_back_for_api() {
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// Serve the embedded frontend when the build included one, keeping API misses empty.
+#[tokio::test]
+async fn embedded_frontend_serves_the_entry_point_and_keeps_api_misses_empty() {
+    if !crate::EMBEDDED_FRONTEND {
+        // The build had no frontend directory, so there is nothing embedded to serve.
+        return;
+    }
+    let (state, token) = initialized_state(
+        memory_storage().await,
+        tokio::sync::broadcast::channel(16).0,
+    )
+    .await;
+    let application = with_test_auth(router_with_embedded_frontend(state), token);
+    let embedded_asset = |name: &str| {
+        crate::embedded::FRONTEND_ASSETS
+            .iter()
+            .find_map(|(path, bytes)| (*path == name).then_some(*bytes))
+    };
+    let entry_point =
+        embedded_asset("index.html").expect("the embedded frontend has an entry point");
+    let script = crate::embedded::FRONTEND_ASSETS
+        .iter()
+        .map(|(path, _)| *path)
+        .find(|path| path.ends_with(".js"))
+        .expect("the embedded frontend has a script");
+
+    for path in ["", "deep/link"] {
+        let response = application
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8",
+            "{path}"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], entry_point, "{path}");
+    }
+
+    let response = application
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/{script}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/javascript; charset=utf-8"
+    );
+
+    let response = application
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/not-a-route")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .is_empty()
+    );
+}
