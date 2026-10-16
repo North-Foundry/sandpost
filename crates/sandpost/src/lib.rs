@@ -6,6 +6,7 @@ mod imap_backend;
 mod imap_listener;
 mod lifecycle;
 mod maintenance;
+mod network;
 mod smtp_delivery;
 mod smtp_listener;
 mod startup;

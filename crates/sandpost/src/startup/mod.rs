@@ -1,10 +1,11 @@
 //! Render a plain-text startup summary from resolved settings and bound listeners.
 
 use crate::configuration::Configuration;
+use crate::network::{connection_address, connection_host};
 use sandpost_application::{ImapSecurity, ImapServerDetails, MailListenerEncryption};
 use std::{
     fmt::{self, Display, Formatter},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::SocketAddr,
 };
 
 /// Operator-facing state after storage initialization and successful listener binds.
@@ -140,29 +141,6 @@ impl Display for StartupSummary<'_> {
             )?;
         }
         writeln!(formatter, "\nReady to receive mail.\n")
-    }
-}
-
-/// Replace wildcard binds with matching-family loopback addresses for local clients.
-fn connection_address(listen_address: SocketAddr) -> SocketAddr {
-    match listen_address.ip() {
-        IpAddr::V4(address) if address.is_unspecified() => {
-            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listen_address.port())
-        }
-        IpAddr::V6(address) if address.is_unspecified() => {
-            SocketAddr::new(Ipv6Addr::LOCALHOST.into(), listen_address.port())
-        }
-        _ => listen_address,
-    }
-}
-
-/// Format an SMTP hostname without URL brackets, retaining an IPv6 scope if present.
-fn connection_host(connection_address: SocketAddr) -> String {
-    match connection_address {
-        SocketAddr::V6(address) if address.scope_id() != 0 => {
-            format!("{}%{}", address.ip(), address.scope_id())
-        }
-        _ => connection_address.ip().to_string(),
     }
 }
 

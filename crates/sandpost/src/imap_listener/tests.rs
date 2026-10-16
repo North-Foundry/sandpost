@@ -73,7 +73,6 @@ fn transport_security_policy() {
         describe(Disabled, Implicit, Some(paths), network),
         ImapSecurity::None
     );
-    assert_eq!(connection_host(network), "127.0.0.1");
     let _ = std::fs::remove_dir_all(directory);
 }
 

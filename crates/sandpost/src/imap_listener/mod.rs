@@ -7,9 +7,10 @@
 use crate::configuration::{ImapConfiguration, ImapEncryptionMode, ImapEncryptionSetting};
 use crate::imap_backend::ImapAccounts;
 use crate::lifecycle::RuntimeError;
+use crate::network::{connection_address, connection_host};
 use sandpost_application::{Application, ImapSecurity, ImapServerDetails};
 use sandpost_imap::{ImapServer, Limits, TlsConfiguration, TransportSecurity};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
 /// A bound IMAP listener ready to serve.
@@ -59,15 +60,6 @@ fn transport_security(
     })
 }
 
-/// Replace wildcard binds with the matching loopback address for local clients.
-fn connection_host(address: SocketAddr) -> String {
-    match address.ip() {
-        IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
-        IpAddr::V6(ip) if ip.is_unspecified() => Ipv6Addr::LOCALHOST.to_string(),
-        ip => ip.to_string(),
-    }
-}
-
 /// Bind the IMAP listener when configured and describe it to the application.
 pub(crate) async fn bind(
     configuration: &ImapConfiguration,
@@ -88,7 +80,7 @@ pub(crate) async fn bind(
             configuration
                 .advertised_host
                 .clone()
-                .unwrap_or_else(|| connection_host(bound)),
+                .unwrap_or_else(|| connection_host(connection_address(bound))),
         ),
         port: Some(bound.port()),
         security,
