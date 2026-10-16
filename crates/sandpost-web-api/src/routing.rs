@@ -114,10 +114,7 @@ fn api_router() -> Router<ApplicationState> {
             "/api/v1/search/rebuild",
             axum::routing::post(management::rebuild_search),
         )
-        .route(
-            "/api/v1/smtp/server",
-            get(smtp::smtp_server).put(smtp::save_smtp_server),
-        )
+        .route("/api/v1/smtp/server", get(smtp::smtp_server))
         .route(
             "/api/v1/smtp/accesses",
             get(smtp::list_smtp_accesses).post(smtp::create_smtp_access),

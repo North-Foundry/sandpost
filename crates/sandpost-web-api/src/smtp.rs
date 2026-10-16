@@ -15,7 +15,6 @@ use axum::{
 };
 use sandpost_application::{
     IssuedSmtpCredentials, NewSmtpAccessRequest, SessionUser, SmtpAccessUpdate, SmtpServerDetails,
-    SmtpServerUpdate,
 };
 use sandpost_core::{SmtpAccess, SmtpAccessIdentifier};
 
@@ -28,21 +27,6 @@ pub(super) async fn smtp_server(
         state
             .authorized(&user)
             .smtp_server()
-            .await
-            .map_err(map_application_error)?,
-    ))
-}
-
-/// Persist the global SMTP server address and rebind its listener immediately.
-pub(super) async fn save_smtp_server(
-    State(state): State<ApplicationState>,
-    Extension(user): Extension<SessionUser>,
-    Json(update): Json<SmtpServerUpdate>,
-) -> Result<Json<SmtpServerDetails>, HttpError> {
-    Ok(Json(
-        state
-            .authorized(&user)
-            .save_smtp_server(update)
             .await
             .map_err(map_application_error)?,
     ))

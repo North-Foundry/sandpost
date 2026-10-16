@@ -84,7 +84,7 @@ async fn administrators_manage_smtp_accesses_and_read_no_secrets() {
             .unwrap()
             .starts_with("laravel-development-")
     );
-    assert_eq!(created["server"]["listen_address"], "127.0.0.1:1025");
+    assert!(created["server"]["listen_address"].is_null());
     assert!(created["access"].get("password_hash").is_none());
 
     for uri in ["/api/v1/smtp/accesses", "/api/v1/smtp/server"] {
@@ -187,11 +187,6 @@ async fn members_and_viewers_cannot_use_smtp_administration_routes() {
                 None,
             ),
             ("GET", "/api/v1/smtp/server".to_owned(), None),
-            (
-                "PUT",
-                "/api/v1/smtp/server".to_owned(),
-                Some(serde_json::json!({ "listen_address": null })),
-            ),
         ] {
             let (status, _, body) = exchange(&application, method, &uri, body).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{role:?} {method} {uri}");
@@ -288,4 +283,25 @@ async fn smtp_access_rules_round_trip_through_http() {
         defaults["access"]["allowed_mechanisms"],
         serde_json::json!(["plain", "login"])
     );
+}
+
+/// The SMTP listener is readable but has no HTTP mutation operation.
+#[tokio::test]
+async fn smtp_server_configuration_is_read_only() {
+    let application = initialized_router(memory_storage().await).await;
+    let (status, _, before) = exchange(&application, "GET", "/api/v1/smtp/server", None).await;
+    assert_eq!(status, StatusCode::OK);
+    for address in [serde_json::json!("0.0.0.0:2525"), serde_json::Value::Null] {
+        let (status, _, _) = exchange(
+            &application,
+            "PUT",
+            "/api/v1/smtp/server",
+            Some(serde_json::json!({ "listen_address": address })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+    let (status, _, after) = exchange(&application, "GET", "/api/v1/smtp/server", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(after, before);
 }
