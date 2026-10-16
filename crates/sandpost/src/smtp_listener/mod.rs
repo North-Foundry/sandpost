@@ -14,7 +14,7 @@
 use crate::configuration::{
     Configuration, MailAuthenticationSetting, MailEncryptionMode, MailEncryptionSetting,
 };
-use crate::ingestion::MailDelivery;
+use crate::smtp_delivery::MailDelivery;
 use crate::lifecycle::RuntimeError;
 use async_trait::async_trait;
 use sandpost_application::{

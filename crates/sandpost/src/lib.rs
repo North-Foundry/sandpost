@@ -4,9 +4,9 @@ mod bootstrap;
 pub mod configuration;
 mod imap_backend;
 mod imap_listener;
-mod ingestion;
 mod lifecycle;
-mod mail_listeners;
+mod smtp_delivery;
+mod smtp_listener;
 mod startup;
 
 pub use configuration::{Configuration, ConfigurationError};

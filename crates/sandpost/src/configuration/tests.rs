@@ -1127,14 +1127,14 @@ fn mail_security_file_key_loads_a_real_certificate() {
         assert_eq!(paths.certificate_chain, certificate_path);
         assert_eq!(paths.private_key, key_path);
         assert_eq!(configuration.imap.certificate.as_ref(), Some(paths));
-        let encryption = crate::mail_listeners::MailEncryption::load(&configuration).unwrap();
+        let encryption = crate::smtp_listener::MailEncryption::load(&configuration).unwrap();
         assert_eq!(
             encryption.describe("127.0.0.1:1025".parse().unwrap()),
             sandpost_application::MailListenerEncryption::StartTlsRequired
         );
         std::fs::remove_file(&key_path).unwrap();
         assert!(
-            crate::mail_listeners::MailEncryption::load(&configuration)
+            crate::smtp_listener::MailEncryption::load(&configuration)
                 .err()
                 .unwrap()
                 .to_string()

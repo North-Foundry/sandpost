@@ -1,7 +1,7 @@
 //! Bind, supervise, and drain shared HTTP, SMTP, and IMAP transports without owning signals.
 
-use crate::ingestion::MailDelivery;
-use crate::mail_listeners::{DesiredListener, MailEncryption, MailServer, authentication_policy};
+use crate::smtp_delivery::MailDelivery;
+use crate::smtp_listener::{DesiredListener, MailEncryption, MailServer, authentication_policy};
 use crate::{Configuration, bootstrap};
 use sandpost_application::{
     Application, Instance, MailListenerSource, SearchCoordinator, SmtpAuthenticator,
