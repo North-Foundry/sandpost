@@ -1,10 +1,11 @@
 //! Configure tracing and host the shared runtime until a process termination signal.
 
-use sandpost::{Configuration, RuntimeError, SandpostRuntime, StartupSummary};
+use sandpost::{Configuration, MaintenanceCommand, RuntimeError, SandpostRuntime, StartupSummary};
 use std::io::{IsTerminal, Write};
 use tracing_subscriber::EnvFilter;
 
-/// Start the catcher, report bound listeners, and drain on signals or service failure.
+/// Run a maintenance command, or start the catcher, report bound listeners, and drain on
+/// signals or service failure.
 #[tokio::main]
 async fn main() -> Result<(), RuntimeError> {
     let configuration = Configuration::from_environment()?;
@@ -14,34 +15,8 @@ async fn main() -> Result<(), RuntimeError> {
         .with_ansi(std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
         .try_init()?;
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if !arguments.is_empty() {
-        if arguments != ["search", "rebuild"] && arguments != ["search", "status"] {
-            return Err(
-                std::io::Error::other("usage: sandpost [search rebuild|search status]").into(),
-            );
-        }
-        std::fs::create_dir_all(&configuration.data_directory)?;
-        if let Some(parent) = configuration.database_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let storage: std::sync::Arc<dyn sandpost_storage::Storage> = std::sync::Arc::new(
-            sandpost_storage_sqlite::SqliteStorage::open(&configuration.database_path).await?,
-        );
-        let status = if arguments[1] == "status" {
-            storage.search_status().await?
-        } else {
-            let coordinator = sandpost_application::SearchCoordinator::open(
-                storage,
-                configuration.data_directory.join("search"),
-            )
-            .await?;
-            coordinator.rebuild().await?
-        };
-        println!(
-            "search: latest={} indexed={} pending={}",
-            status.latest_sequence, status.indexed_sequence, status.pending_operations
-        );
-        return Ok(());
+    if let Some(command) = MaintenanceCommand::parse(&arguments)? {
+        return command.run(&configuration).await;
     }
     let mut running = SandpostRuntime::start(configuration.clone()).await?;
     let bootstrap_secret = running

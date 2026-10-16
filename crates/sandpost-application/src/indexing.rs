@@ -44,6 +44,18 @@ struct SearchState {
 }
 
 impl SearchCoordinator {
+    /// Create the search directory and open, without locking, its process-exclusive installation
+    /// lock file. Offline maintenance locks the same file to refuse running beside a live runtime.
+    pub fn open_installation_lock(directory: &Path) -> std::io::Result<File> {
+        fs::create_dir_all(directory)?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join("writer.lock"))
+    }
+
     /// Build an isolated derived index for embedded tests and storage-only callers.
     pub async fn memory(storage: Arc<dyn Storage>) -> Result<Self, ApplicationError> {
         let coordinator = Self(Arc::new(SearchState {
@@ -68,13 +80,7 @@ impl SearchCoordinator {
         storage: Arc<dyn Storage>,
         directory: PathBuf,
     ) -> Result<Self, ApplicationError> {
-        fs::create_dir_all(&directory)?;
-        let installation_lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join("writer.lock"))?;
+        let installation_lock = Self::open_installation_lock(&directory)?;
         installation_lock.try_lock().map_err(|error| {
             ApplicationError::Unavailable(format!("search writer is already running: {error}"))
         })?;

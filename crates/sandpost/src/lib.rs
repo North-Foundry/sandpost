@@ -5,12 +5,14 @@ pub mod configuration;
 mod imap_backend;
 mod imap_listener;
 mod lifecycle;
+mod maintenance;
 mod smtp_delivery;
 mod smtp_listener;
 mod startup;
 
 pub use configuration::{Configuration, ConfigurationError};
 pub use lifecycle::{RunningSandpost, RuntimeError, SandpostRuntime};
+pub use maintenance::{MaintenanceCommand, MigrationOperation};
 pub use startup::StartupSummary;
 
 #[cfg(test)]
