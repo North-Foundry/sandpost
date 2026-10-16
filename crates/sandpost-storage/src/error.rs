@@ -44,7 +44,7 @@ pub enum StorageError {
     /// A compatibility inbox already uses this address for the owner.
     #[error("inbox address already exists")]
     DuplicateInboxAddress,
-    /// A compatibility inbox address is not a normalizable local address.
+    /// A compatibility inbox address is not a valid normalized ASCII email address.
     #[error("inbox address is invalid")]
     InvalidInboxAddress,
     /// A scope filter or parent changed without advancing its policy version.

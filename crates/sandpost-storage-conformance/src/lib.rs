@@ -27,9 +27,7 @@ pub use messages::{
 };
 pub use scopes::{scope_crud, scope_memberships};
 pub use search::search_outbox;
-pub use smtp_server::{
-    smtp_access_authentication_rules, smtp_access_credentials, smtp_server_address,
-};
+pub use smtp_server::{smtp_access_authentication_rules, smtp_access_credentials};
 pub use users::{bootstrap, duplicate_user_email, global_roles, last_owner_invariant, user_crud};
 pub use views::view_crud;
 
@@ -82,7 +80,6 @@ pub async fn run_all(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     duplicate_user_email(storage).await?;
     global_roles(storage).await?;
     last_owner_invariant(storage).await?;
-    smtp_server_address(storage).await?;
     smtp_access_credentials(storage).await?;
     smtp_access_authentication_rules(storage).await?;
     scope_crud(storage).await?;

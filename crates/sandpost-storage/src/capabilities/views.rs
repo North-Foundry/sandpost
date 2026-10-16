@@ -20,7 +20,7 @@ pub trait ViewStorage: Send + Sync {
     /// Create a caller-owned recipient view with transactional duplicate-address protection.
     ///
     /// Compatibility helper for the legacy inbox API; it stores a personal view whose filter
-    /// matches one normalized sandpost.local address.
+    /// matches one normalized ASCII dot-atom address.
     async fn create_recipient_view(
         &self,
         user: UserIdentifier,

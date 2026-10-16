@@ -1,26 +1,16 @@
-//! Smtp server storage capability.
+//! SMTP access storage capability.
 use crate::{
     NewSmtpAccess, SmtpAccess, SmtpAccessCredential, SmtpAccessIdentifier,
     SmtpAuthenticationMechanism, StorageError,
 };
 use async_trait::async_trait;
-use std::net::SocketAddr;
 
-/// The single global SMTP server's settings and its centrally administered access credentials.
+/// Centrally administered SMTP access credentials.
 ///
 /// Passwords cross this boundary only as one-way hashes. Listing and single-access reads never
 /// return hashes; only the credential reads used by authentication do.
 #[async_trait]
 pub trait SmtpServerStorage: Send + Sync {
-    /// Load the persisted listener address of the global SMTP server; `None` means disabled.
-    async fn smtp_listen_address(&self) -> Result<Option<SocketAddr>, StorageError>;
-
-    /// Replace the persisted listener address of the global SMTP server.
-    async fn save_smtp_listen_address(
-        &self,
-        address: Option<SocketAddr>,
-    ) -> Result<(), StorageError>;
-
     /// List every SMTP access ordered by name and identifier, without password hashes.
     async fn list_smtp_accesses(&self) -> Result<Vec<SmtpAccess>, StorageError>;
 
