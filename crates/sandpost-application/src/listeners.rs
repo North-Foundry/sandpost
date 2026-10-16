@@ -1,9 +1,7 @@
-//! Runtime control of the single global SMTP listener, implemented by the hosting runtime.
+//! Read-only status of the single configuration-owned SMTP listener.
 //!
-//! The application persists the global SMTP server's listener address; a hosting runtime that owns
-//! the real socket implements [`MailListenerControl`] so management edits bind, move, or stop the
-//! listener without a restart. Applications without a runtime (tests, offline tools) have no
-//! control and report no listener state.
+//! The hosting runtime implements [`MailListenerControl`] to expose its configured and bound
+//! addresses. Applications without a runtime report no listener state.
 use async_trait::async_trait;
 use serde::Serialize;
 use std::net::SocketAddr;
@@ -12,10 +10,8 @@ use std::net::SocketAddr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MailListenerSource {
-    /// The persisted server address, editable through management.
-    Database,
-    /// A process environment override, which management edits do not rebind.
-    Environment,
+    /// The resolved process configuration, including environment, TOML, and defaults.
+    Configuration,
 }
 
 /// Lifecycle state of the global SMTP listener.
@@ -47,7 +43,7 @@ pub enum MailListenerEncryption {
 /// Observable status of the global SMTP listener.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MailListenerStatus {
-    /// The address the runtime tries to bind, after environment overrides.
+    /// The address the runtime tries to bind, after resolving environment, TOML, and defaults.
     pub configured_address: Option<SocketAddr>,
     /// The actual bound address, including a system-allocated port.
     pub bound_address: Option<SocketAddr>,
@@ -64,12 +60,12 @@ pub struct MailListenerStatus {
 }
 
 impl MailListenerStatus {
-    /// Describe a server whose persisted definition has no listener address.
+    /// Describe a runtime whose SMTP listener is stopped.
     pub fn disabled() -> Self {
         Self {
             configured_address: None,
             bound_address: None,
-            source: MailListenerSource::Database,
+            source: MailListenerSource::Configuration,
             state: MailListenerState::Disabled,
             error: None,
             authentication_required: false,
@@ -78,15 +74,9 @@ impl MailListenerStatus {
     }
 }
 
-/// Bind, move, and stop the global SMTP listener for its persisted address.
+/// Report the configuration-owned SMTP listener without allowing management edits.
 #[async_trait]
 pub trait MailListenerControl: Send + Sync {
-    /// Reconcile the listener with the persisted server address and return the new status.
-    ///
-    /// `None` stops the listener. A failed bind is reported in the returned status rather than as
-    /// an error; an environment-managed listener keeps its override and is left unchanged.
-    async fn apply(&self, address: Option<SocketAddr>) -> MailListenerStatus;
-
     /// Report the current status of the listener.
     async fn status(&self) -> MailListenerStatus;
 }

@@ -748,6 +748,150 @@ async fn shared_views_require_global_administration() {
         .unwrap();
 }
 
+/// Arbitrary-domain inboxes normalize, appear in listings, filter mail, and reject unsafe syntax.
+#[tokio::test]
+async fn inboxes_accept_safe_arbitrary_domain_addresses() {
+    let storage = empty_storage().await;
+    let member = create_user(
+        &storage,
+        "Member",
+        GlobalRole::Member,
+        MailAccess::All,
+        None,
+    )
+    .await;
+    let application = application(storage.clone()).await;
+    let authorized = application.authorized(&session(&member));
+
+    let inbox = authorized
+        .create_inbox("Plus alias".into(), "  QA+tag@Mail.Example-Test  ".into())
+        .await
+        .unwrap();
+    assert_eq!(inbox.address.as_deref(), Some("qa+tag@mail.example-test"));
+    assert!(matches!(
+        authorized
+            .create_inbox("Duplicate alias".into(), "QA+tag@MAIL.EXAMPLE-TEST".into())
+            .await,
+        Err(crate::ApplicationError::Conflict)
+    ));
+    let legacy = authorized
+        .create_inbox("Legacy".into(), "legacy@sandpost.local".into())
+        .await
+        .unwrap();
+    assert_eq!(legacy.address.as_deref(), Some("legacy@sandpost.local"));
+    let legacy_view = View {
+        identifier: ViewIdentifier::new(),
+        owner_identifier: Some(member.identifier),
+        name: "Previously accepted shape".into(),
+        filter: "envelope.to.address == \"qa..tag@sandpost.local\"".into(),
+    };
+    storage.save_view(&legacy_view).await.unwrap();
+    let maximum_length = authorized
+        .create_inbox(
+            "Maximum length".into(),
+            format!(
+                "{}@{}.{}.{}",
+                "a".repeat(64),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(61)
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(maximum_length.address.as_deref().unwrap().len(), 254);
+    let listed = authorized.list_inboxes().await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|item| item.id == inbox.id && item.address == inbox.address)
+    );
+    assert!(
+        listed
+            .iter()
+            .any(|item| item.id == legacy.id && item.address == legacy.address)
+    );
+    assert!(listed.iter().any(|item| {
+        item.id == legacy_view.identifier.0
+            && item.address.as_deref() == Some("qa..tag@sandpost.local")
+    }));
+
+    let matching = insert_message(&storage, "inbox match", "qa+tag@mail.example-test").await;
+    insert_message(&storage, "different alias", "qa@mail.example-test").await;
+    let messages = authorized
+        .list_messages_in_inbox(Some(sandpost_core::InboxIdentifier(inbox.id)), None, 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.identifier)
+            .collect::<Vec<_>>(),
+        vec![matching]
+    );
+
+    for (index, address) in [
+        "missing-domain",
+        "@example.test",
+        ".local@example.test",
+        "local.@example.test",
+        "local..part@example.test",
+        "local@",
+        "local@example..test",
+        "local@-example.test",
+        "local@example-.test",
+        "local@example.test\r\nBcc: victim@example.test",
+        "local@example.test\" || true || \"x",
+        "local\\@example.test",
+        "lócál@example.test",
+        "local@éxample.test",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            matches!(
+                authorized
+                    .create_inbox(format!("Invalid {index}"), address.into())
+                    .await,
+                Err(crate::ApplicationError::InvalidInput(_))
+            ),
+            "expected address {address:?} to be rejected"
+        );
+    }
+    for (index, address) in [
+        format!("{}@example.test", "a".repeat(65)),
+        format!("a@{}", "b".repeat(64)),
+        format!(
+            "{}@{}.{}.{}",
+            "a".repeat(64),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(62)
+        ),
+        format!(
+            "a@{}.{}.{}.{}",
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(63),
+            "e".repeat(63)
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            matches!(
+                authorized
+                    .create_inbox(format!("Oversized {index}"), address.clone())
+                    .await,
+                Err(crate::ApplicationError::InvalidInput(_))
+            ),
+            "expected oversized address to be rejected: {address:?}"
+        );
+    }
+}
+
 /// Account administration stores the global role and mail access and keeps owners exclusive.
 #[tokio::test]
 async fn accounts_carry_role_and_mail_access() {
@@ -828,41 +972,35 @@ fn filter_expression_is_shared_with_the_query_language() {
     assert!(expression.evaluate(&facts));
 }
 
-/// Record listener reconciliation requests instead of binding a real socket.
-#[derive(Default)]
+/// Expose configured listener status without binding a real socket.
 struct RecordingListeners {
-    applied: std::sync::Mutex<Vec<Option<std::net::SocketAddr>>>,
+    configured_address: std::net::SocketAddr,
+    bound_address: std::net::SocketAddr,
 }
 
-impl RecordingListeners {
-    /// Report an address as listening, or the disabled state for none.
-    fn status_for(address: Option<std::net::SocketAddr>) -> crate::MailListenerStatus {
-        match address {
-            Some(address) => crate::MailListenerStatus {
-                configured_address: Some(address),
-                bound_address: Some(address),
-                source: crate::MailListenerSource::Database,
-                state: crate::MailListenerState::Listening,
-                error: None,
-                authentication_required: !address.ip().is_loopback(),
-                encryption: crate::MailListenerEncryption::None,
-            },
-            None => crate::MailListenerStatus::disabled(),
+impl Default for RecordingListeners {
+    /// Provide the default SMTP configuration for credential response tests.
+    fn default() -> Self {
+        Self {
+            configured_address: socket("127.0.0.1:1025"),
+            bound_address: socket("127.0.0.1:1025"),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl crate::MailListenerControl for RecordingListeners {
-    /// Record the request and report the address as listening.
-    async fn apply(&self, address: Option<std::net::SocketAddr>) -> crate::MailListenerStatus {
-        self.applied.lock().unwrap().push(address);
-        Self::status_for(address)
-    }
-
-    /// Report the latest recorded address.
+    /// Report the configured and bound addresses supplied by the runtime.
     async fn status(&self) -> crate::MailListenerStatus {
-        Self::status_for(self.applied.lock().unwrap().last().copied().flatten())
+        crate::MailListenerStatus {
+            configured_address: Some(self.configured_address),
+            bound_address: Some(self.bound_address),
+            source: crate::MailListenerSource::Configuration,
+            state: crate::MailListenerState::Listening,
+            error: None,
+            authentication_required: !self.configured_address.ip().is_loopback(),
+            encryption: crate::MailListenerEncryption::None,
+        }
     }
 }
 
@@ -1327,14 +1465,6 @@ async fn members_and_viewers_cannot_administer_smtp_accesses() {
         );
         forbidden(authorized.delete_smtp_access(identifier).await);
         forbidden(authorized.smtp_server().await.map(drop));
-        forbidden(
-            authorized
-                .save_smtp_server(crate::SmtpServerUpdate {
-                    listen_address: None,
-                })
-                .await
-                .map(drop),
-        );
     }
     let still_enabled = storage.get_smtp_access(identifier).await.unwrap().unwrap();
     assert!(still_enabled.enabled);
@@ -1563,44 +1693,37 @@ async fn smtp_access_input_is_validated() {
     ));
 }
 
-/// Saving the global server persists its address and applies it to the runtime listener.
+/// Server details come only from runtime configuration and retain the actual allocated port.
 #[tokio::test]
-async fn saving_the_smtp_server_persists_and_applies_the_listener() {
+async fn smtp_server_reports_configured_and_bound_addresses() {
     let storage = empty_storage().await;
     let admin = create_user(&storage, "Admin", GlobalRole::Admin, MailAccess::All, None).await;
-    let listeners = Arc::new(RecordingListeners::default());
-    let application = application(storage.clone())
-        .await
-        .with_mail_listeners(listeners.clone());
-    let authorized = application.authorized(&session(&admin));
-    let saved = authorized
-        .save_smtp_server(crate::SmtpServerUpdate {
-            listen_address: Some(socket("0.0.0.0:2525")),
-        })
+    let application = application(storage).await;
+    let offline = application
+        .authorized(&session(&admin))
+        .smtp_server()
         .await
         .unwrap();
-    let listener = saved.listener.unwrap();
-    assert_eq!(listener.state, crate::MailListenerState::Listening);
+    assert_eq!(offline.listen_address, None);
+    assert!(offline.listener.is_none());
+
+    let configured_address = socket("0.0.0.0:0");
+    let bound_address = socket("0.0.0.0:2525");
+    let application = application.with_mail_listeners(Arc::new(RecordingListeners {
+        configured_address,
+        bound_address,
+    }));
+    let details = application
+        .authorized(&session(&admin))
+        .smtp_server()
+        .await
+        .unwrap();
+    assert_eq!(details.listen_address, Some(configured_address));
+    let listener = details.listener.unwrap();
+    assert_eq!(listener.configured_address, Some(configured_address));
+    assert_eq!(listener.bound_address, Some(bound_address));
+    assert_eq!(listener.source, crate::MailListenerSource::Configuration);
     assert!(listener.authentication_required);
-    assert_eq!(
-        storage.smtp_listen_address().await.unwrap(),
-        Some(socket("0.0.0.0:2525"))
-    );
-    let disabled = authorized
-        .save_smtp_server(crate::SmtpServerUpdate {
-            listen_address: None,
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        disabled.listener.unwrap().state,
-        crate::MailListenerState::Disabled
-    );
-    assert_eq!(
-        listeners.applied.lock().unwrap().as_slice(),
-        &[Some(socket("0.0.0.0:2525")), None]
-    );
-    assert_eq!(storage.smtp_listen_address().await.unwrap(), None);
 }
 
 /// Credentials survive a restart, and the plaintext password never reaches the database files.

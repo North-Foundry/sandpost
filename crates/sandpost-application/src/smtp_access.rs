@@ -60,20 +60,13 @@ pub enum SmtpAuthentication {
     MechanismNotAllowed,
 }
 
-/// The global SMTP server: its persisted address and the runtime listener status.
+/// The global SMTP server: its configured address and runtime listener status.
 ///
 /// `listener` is absent when no runtime owns the socket (for example, in offline tools).
 #[derive(Clone, Debug, Serialize)]
 pub struct SmtpServerDetails {
     pub listen_address: Option<SocketAddr>,
     pub listener: Option<MailListenerStatus>,
-}
-
-/// Administrator change to the global SMTP server.
-#[derive(Deserialize)]
-pub struct SmtpServerUpdate {
-    #[serde(default)]
-    pub listen_address: Option<SocketAddr>,
 }
 
 /// Newly issued SMTP credentials: the only representation that ever carries the password.
@@ -225,29 +218,6 @@ impl AuthorizedApplication {
         self.smtp_server_details().await
     }
 
-    /// Persist the global SMTP server address and apply it to the listener immediately.
-    ///
-    /// A bind failure (for example, a port already in use) still saves the address and is
-    /// reported through the returned listener status.
-    pub async fn save_smtp_server(
-        &self,
-        update: SmtpServerUpdate,
-    ) -> Result<SmtpServerDetails, ApplicationError> {
-        self.require_global_admin().await?;
-        let storage = &self.application.storage;
-        storage
-            .save_smtp_listen_address(update.listen_address)
-            .await?;
-        let listener = match &self.application.mail_listeners {
-            Some(control) => Some(control.apply(update.listen_address).await),
-            None => None,
-        };
-        Ok(SmtpServerDetails {
-            listen_address: update.listen_address,
-            listener,
-        })
-    }
-
     /// List every SMTP access without credential material.
     pub async fn list_smtp_accesses(&self) -> Result<Vec<SmtpAccess>, ApplicationError> {
         self.require_global_admin().await?;
@@ -389,15 +359,16 @@ impl AuthorizedApplication {
         Ok(())
     }
 
-    /// Read the persisted server address and the runtime listener status.
+    /// Read the configured server address and runtime listener status, when a runtime is attached.
     async fn smtp_server_details(&self) -> Result<SmtpServerDetails, ApplicationError> {
-        let listen_address = self.application.storage.smtp_listen_address().await?;
         let listener = match &self.application.mail_listeners {
             Some(control) => Some(control.status().await),
             None => None,
         };
         Ok(SmtpServerDetails {
-            listen_address,
+            listen_address: listener
+                .as_ref()
+                .and_then(|status| status.configured_address),
             listener,
         })
     }
