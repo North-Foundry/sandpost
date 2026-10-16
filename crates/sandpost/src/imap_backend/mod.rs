@@ -126,10 +126,12 @@ impl Account for ImapAccountAdapter {
     type Mailbox = ImapMailboxHandle;
     type Watch = WatchAdapter;
 
+    /// Revalidate that the account and its owner may still use IMAP.
     async fn validate(&self) -> Result<(), BackendError> {
         self.0.validate().await.map_err(backend_error)
     }
 
+    /// List the account's mailboxes, marking Trash with its special use.
     async fn mailboxes(&self) -> Result<Vec<MailboxListing>, BackendError> {
         Ok(self
             .0
@@ -146,6 +148,7 @@ impl Account for ImapAccountAdapter {
             .collect())
     }
 
+    /// Subscribe or unsubscribe a mailbox name for this account.
     async fn set_subscription(&self, name: &str, subscribed: bool) -> Result<(), MailboxError> {
         self.0
             .set_subscription(name, subscribed)
@@ -171,6 +174,7 @@ impl Account for ImapAccountAdapter {
             .map_err(mailbox_error)
     }
 
+    /// Select a mailbox and convert its members into protocol message states.
     async fn open(
         &self,
         name: &str,
@@ -195,6 +199,7 @@ impl Account for ImapAccountAdapter {
         })
     }
 
+    /// Report mailbox counters without selecting it.
     async fn status(&self, name: &str) -> Result<MailboxStatus, MailboxError> {
         let status = self.0.status(name).await.map_err(mailbox_error)?;
         Ok(MailboxStatus {
@@ -206,6 +211,7 @@ impl Account for ImapAccountAdapter {
         })
     }
 
+    /// Report membership and flag changes since the session's last observed cursor.
     async fn synchronize(
         &self,
         mailbox: &ImapMailboxHandle,
@@ -243,6 +249,7 @@ impl Account for ImapAccountAdapter {
         })
     }
 
+    /// Report size and internal date of the requested messages.
     async fn metadata(
         &self,
         mailbox: &ImapMailboxHandle,
@@ -262,6 +269,7 @@ impl Account for ImapAccountAdapter {
             .collect())
     }
 
+    /// Read one message's raw octets, or `None` when it is no longer a member.
     async fn content(
         &self,
         mailbox: &ImapMailboxHandle,
@@ -278,6 +286,7 @@ impl Account for ImapAccountAdapter {
             }))
     }
 
+    /// Apply a flag change and return the resulting protocol flags per message.
     async fn store(
         &self,
         mailbox: &ImapMailboxHandle,
@@ -302,6 +311,7 @@ impl Account for ImapAccountAdapter {
             .collect())
     }
 
+    /// Remove `\Deleted` messages, optionally limited to UIDs, and return the removed UIDs.
     async fn expunge(
         &self,
         mailbox: &ImapMailboxHandle,
@@ -310,6 +320,7 @@ impl Account for ImapAccountAdapter {
         self.0.expunge(mailbox, uids).await.map_err(mailbox_error)
     }
 
+    /// Copy or move messages, reporting COPYUID data only for newly assigned UIDs.
     async fn copy(
         &self,
         mailbox: &ImapMailboxHandle,
@@ -335,6 +346,7 @@ impl Account for ImapAccountAdapter {
         })
     }
 
+    /// Subscribe to change notifications that may concern this account.
     fn watch(&self) -> WatchAdapter {
         WatchAdapter(self.0.watch())
     }
