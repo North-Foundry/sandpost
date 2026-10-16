@@ -1,0 +1,7 @@
+{
+  "extends": "@sandpost/typescript-config/tsconfig.node.json",
+  "include": [
+    "vite.config.ts",
+    "vitest.config.ts"
+  ]
+}

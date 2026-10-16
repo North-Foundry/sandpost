@@ -1,0 +1,318 @@
+/**
+ * Rust mailbox representation used by both HTTP and native transports.
+ */
+export interface WireMailbox {
+  address: string
+  domain: string
+}
+
+/**
+ * Rust message-list representation serialized by serde.
+ */
+export interface WireMessageSummary {
+  id: string
+  seq: number
+  subject: string
+  from: WireMailbox[]
+  to: WireMailbox[]
+  received_at: number
+  size: number
+  attachment_count: number
+  seen: boolean
+
+  /**
+   * Added with primary message flag support; optional for compatibility with older servers.
+   */
+  flags?: WireMessageFlags
+  envelope_to?: WireMailbox[]
+  preview?: string
+}
+
+export interface WireMessageFlags {
+  seen: boolean
+  answered: boolean
+  flagged: boolean
+  draft: boolean
+  deleted: boolean
+  keywords: string[]
+}
+
+/**
+ * Inbox representation shared by the HTTP API and native bridge.
+ */
+export interface WireInbox {
+  id: string
+  name: string
+  address: string | null
+  system: boolean
+}
+
+/**
+ * Rust `View`: a saved query, personal when it has an owner.
+ */
+export interface WireView {
+  identifier: string
+  owner_identifier: string | null
+  name: string
+  filter: string
+}
+
+/**
+ * Rust WebFolder DTO; timestamps are Unix seconds.
+ */
+export interface WireWebFolder {
+  identifier: string
+  owner_identifier: string
+  name: string
+  exposed_accounts: string[]
+  created_at: number
+  updated_at: number
+}
+
+/**
+ * Rust message-detail envelope serialized by the HTTP API and desktop bridge.
+ */
+export interface WireMessageDetail {
+  id: string
+  facts: {
+    subject: string
+    from: WireMailbox[]
+    to: WireMailbox[]
+    cc: WireMailbox[]
+    received_at: number
+    text: string
+    html: string
+    headers: Record<string, string[]>
+  }
+  attachments: {
+    filename: string | null
+    content_type: string
+    size: number
+    content_hash: string
+  }[]
+}
+
+/**
+ * Rust runtime status of the global SMTP listener.
+ */
+export interface WireListenerStatus {
+  configured_address: string | null
+  bound_address: string | null
+  source: 'configuration'
+  state: 'listening' | 'disabled' | 'failed'
+  error: string | null
+  authentication_required: boolean
+
+  /**
+   * Absent from runtimes that predate SMTP TLS, which never encrypt.
+   */
+  encryption?: 'none' | 'start_tls_optional' | 'start_tls_required' | 'implicit'
+}
+
+/**
+ * Rust `SmtpServerDetails`.
+ */
+export interface WireSmtpServer {
+  listen_address: string | null
+  listener: WireListenerStatus | null
+}
+
+/**
+ * Rust `SmtpAccess`; timestamps are Unix seconds.
+ */
+export interface WireSmtpAccess {
+  identifier: string
+  name: string
+  username: string
+  enabled: boolean
+  created_at: number
+  last_used_at: number | null
+
+  /**
+   * Absent from runtimes that predate per-access rules, which accept any connection.
+   */
+  requires_encryption?: boolean
+  allowed_mechanisms?: ('plain' | 'login')[]
+}
+
+/**
+ * Rust `SmtpAccessUpdate`; omitted fields keep their value.
+ */
+export interface WireSmtpAccessUpdate {
+  enabled?: boolean
+  requires_encryption?: boolean
+  allowed_mechanisms?: ('plain' | 'login')[]
+}
+
+/**
+ * Rust `IssuedSmtpCredentials`, the only representation carrying a password.
+ */
+export interface WireIssuedSmtpCredentials {
+  access: WireSmtpAccess
+  password: string
+  server: WireSmtpServer
+}
+
+/**
+ * Rust `NewSmtpAccessRequest`.
+ */
+export interface WireSmtpAccessInput {
+  name: string
+  username: string | null
+  requires_encryption?: boolean
+  allowed_mechanisms?: ('plain' | 'login')[]
+}
+
+/**
+ * Rust `ImapSecurity`.
+ */
+export type WireImapSecurity =
+  'none' | 'start_tls_optional' | 'start_tls_required' | 'implicit'
+
+/**
+ * Rust `ImapServerDetails`.
+ */
+export interface WireImapServer {
+  enabled: boolean
+  host: string | null
+  port: number | null
+  security: WireImapSecurity
+  listen_address: string | null
+}
+
+/**
+ * Rust `ImapLinkedView`.
+ */
+export interface WireImapLinkedView {
+  view_identifier: string
+  alias: string | null
+}
+
+/**
+ * Rust `ImapLocalFolder`; timestamps are Unix seconds.
+ */
+export interface WireImapLocalFolder {
+  identifier: string
+  account_identifier: string
+  kind: 'smart' | 'manual' | 'private'
+  definition_identifier: string | null
+  name: string
+  filter: string
+  include_in_inbox: boolean
+  created_at: number
+  updated_at: number
+}
+
+/**
+ * Rust `ImapMailboxPreview`.
+ */
+export interface WireImapMailbox {
+  name: string
+  source: 'inbox' | 'trash' | 'view' | 'folder'
+  view_identifier: string | null
+  folder_identifier: string | null
+}
+
+/**
+ * Rust `ImapAccountDetails`; timestamps are Unix seconds and no password is ever included.
+ */
+export interface WireImapAccount {
+  identifier: string
+  owner_identifier: string
+  name: string
+  username: string
+  enabled: boolean
+  mode?: 'mirror' | 'independent'
+
+  /**
+   * Legacy output accepted from older servers.
+   */
+  mirror_views?: boolean
+  created_at: number
+  updated_at: number
+  last_used_at: number | null
+  linked_views: WireImapLinkedView[]
+  folders: WireImapLocalFolder[]
+  mailboxes: WireImapMailbox[]
+}
+
+/**
+ * Rust `IssuedImapCredentials`, the only representation carrying an IMAP password.
+ */
+export interface WireIssuedImapCredentials {
+  account: WireImapAccount
+  password: string
+  server: WireImapServer
+}
+
+/**
+ * Rust `NewImapAccountRequest`.
+ */
+export interface WireImapAccountInput {
+  name: string
+  username: string | null
+  mode: 'mirror' | 'independent'
+
+  /**
+   * Legacy request fields accepted by the server for existing clients.
+   */
+  mirror_views?: boolean
+  linked_views?: WireImapLinkedView[]
+}
+
+/**
+ * Rust `ImapAccountUpdate`; omitted fields keep their value.
+ */
+export interface WireImapAccountUpdate {
+  name?: string
+  enabled?: boolean
+  mode?: 'mirror' | 'independent'
+  mirror_views?: boolean
+  linked_views?: WireImapLinkedView[]
+}
+
+/**
+ * Rust `ImapFolderRequest`.
+ */
+export interface WireImapFolderInput {
+  name: string
+  filter: string
+
+  /**
+   * Legacy field retained for server compatibility.
+   */
+  include_in_inbox?: boolean
+}
+
+/**
+ * Rust `Scope` definition.
+ */
+export interface WireScope {
+  id: string
+  parent: string | null
+  name: string
+  description: string | null
+  filter: string
+  position: number
+  policy_version: number
+}
+
+/**
+ * Rust account details without credentials.
+ */
+export interface WireAccount {
+  identifier: string
+  name: string
+  email: string
+  role: 'owner' | 'admin' | 'member' | 'viewer'
+  mail_access: 'all' | 'scoped'
+  personal_filter: string | null
+}
+
+/**
+ * Rust query validation result.
+ */
+export interface WireQueryValidation {
+  valid: boolean
+  error: { message: string; position: number } | null
+}

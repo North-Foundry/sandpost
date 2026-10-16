@@ -1,0 +1,14 @@
+{
+  "extends": "@sandpost/typescript-config/tsconfig.vue.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.vue"
+  ]
+}
