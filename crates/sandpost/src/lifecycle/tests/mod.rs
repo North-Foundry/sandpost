@@ -49,6 +49,31 @@ async fn modified_configuration_is_validated_before_runtime_start() {
     );
 }
 
+/// An unreadable IMAP certificate stops startup before storage creates any data.
+#[tokio::test]
+async fn unusable_imap_certificate_fails_before_opening_storage() {
+    let (mut configuration, directory) = test_configuration();
+    configuration.imap.certificate = Some(crate::configuration::MailCertificatePaths {
+        certificate_chain: directory.0.with_extension("missing.crt"),
+        private_key: directory.0.with_extension("missing.key"),
+    });
+    let error = match SandpostRuntime::start(configuration).await {
+        Ok(running) => {
+            running.shutdown().await.unwrap();
+            panic!("a missing IMAP certificate must stop startup");
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("IMAP TLS certificate"),
+        "{error}"
+    );
+    assert!(
+        !directory.0.exists(),
+        "certificate failures must precede storage initialization"
+    );
+}
+
 /// Verify native embedding, real bound sockets, and bounded draining of active SSE.
 #[tokio::test]
 async fn embedded_runtime_is_ready_and_bounds_shutdown_with_active_events() {

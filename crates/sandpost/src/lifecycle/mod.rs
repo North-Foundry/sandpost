@@ -48,8 +48,9 @@ impl SandpostRuntime {
     /// No process signals or global tracing subscriber are installed by this operation.
     pub async fn start(configuration: Configuration) -> Result<RunningSandpost, RuntimeError> {
         configuration.validate()?;
-        // Load the certificate before touching storage, so a bad path fails fast.
+        // Load certificates before touching storage, so a bad path fails fast.
         let mail_encryption = MailEncryption::load(&configuration)?;
+        let prepared_imap = crate::imap_listener::prepare(&configuration.imap)?;
         let storage = bootstrap::initialize(&configuration).await?;
         let (event_broadcast, _) = broadcast::channel(256);
         let instance =
@@ -106,7 +107,8 @@ impl SandpostRuntime {
             http::cancel_on_shutdown,
         ));
         let web_listener = TcpListener::bind(configuration.web_listen_address).await?;
-        let imap = crate::imap_listener::bind(&configuration.imap, &application).await?;
+        let imap =
+            crate::imap_listener::bind(&configuration.imap, prepared_imap, &application).await?;
         mail_server.start(desired_listener).await?;
         let web_listen_address = web_listener.local_addr()?;
         let mail_listen_address = mail_server.bound_address().await;

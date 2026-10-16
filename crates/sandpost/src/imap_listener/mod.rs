@@ -2,8 +2,9 @@
 //!
 //! The listener is configured from TOML and environment overrides at startup. Its TLS policy follows the
 //! configuration: implicit TLS or STARTTLS with a certificate, required STARTTLS on network
-//! addresses, and clear text only on loopback unless explicitly allowed. A bind failure stops
-//! startup, like the HTTP listener.
+//! addresses, and clear text only on loopback unless explicitly allowed. The certificate is loaded
+//! by [`prepare`] before storage opens; a certificate or bind failure stops startup, like the
+//! HTTP listener.
 use crate::configuration::{ImapConfiguration, ImapEncryptionMode, ImapEncryptionSetting};
 use crate::imap_backend::ImapAccounts;
 use crate::lifecycle::RuntimeError;
@@ -12,6 +13,13 @@ use sandpost_application::{Application, ImapSecurity, ImapServerDetails};
 use sandpost_imap::{ImapServer, Limits, TlsConfiguration, TransportSecurity};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+
+/// The enabled IMAP listener's address and loaded transport security, ready to bind.
+pub(crate) struct PreparedImap {
+    address: SocketAddr,
+    transport_security: TransportSecurity,
+    security: ImapSecurity,
+}
 
 /// A bound IMAP listener ready to serve.
 pub(crate) struct BoundImap {
@@ -60,16 +68,37 @@ fn transport_security(
     })
 }
 
-/// Bind the IMAP listener when configured and describe it to the application.
-pub(crate) async fn bind(
+/// Load the enabled listener's certificate before storage opens, so a bad path fails startup
+/// without initializing data; `None` when IMAP is disabled.
+pub(crate) fn prepare(
     configuration: &ImapConfiguration,
-    application: &Application,
-) -> Result<Option<BoundImap>, RuntimeError> {
+) -> Result<Option<PreparedImap>, RuntimeError> {
     let Some(address) = configuration.listen_address else {
-        application.set_imap_server(None);
         return Ok(None);
     };
     let (transport_security, security) = transport_security(configuration, address)?;
+    Ok(Some(PreparedImap {
+        address,
+        transport_security,
+        security,
+    }))
+}
+
+/// Bind the IMAP listener when configured and describe it to the application.
+pub(crate) async fn bind(
+    configuration: &ImapConfiguration,
+    prepared: Option<PreparedImap>,
+    application: &Application,
+) -> Result<Option<BoundImap>, RuntimeError> {
+    let Some(PreparedImap {
+        address,
+        transport_security,
+        security,
+    }) = prepared
+    else {
+        application.set_imap_server(None);
+        return Ok(None);
+    };
     let listener = TcpListener::bind(address)
         .await
         .map_err(|error| format!("IMAP listener {address}: {error}"))?;
