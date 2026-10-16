@@ -45,9 +45,7 @@ impl NativeRuntime {
         let events = Mutex::new(application.subscribe());
         let changes = Mutex::new(application.subscribe_changes());
         let (session_token, _) = watch::channel(None);
-        let smtp_address = running
-            .mail_listen_address
-            .map(|address| address.to_string());
+        let smtp_address = running.mail_listen_address.to_string();
         let http_address = running.web_listen_address.to_string();
         let (stop, mut stop_receiver) = watch::channel(false);
         let (cancel_events, _) = watch::channel(false);
@@ -76,9 +74,9 @@ impl NativeRuntime {
     }
 
     /// Report the global SMTP server's actual bind address at startup, including a
-    /// system-allocated port, or null when the listener did not start.
+    /// system-allocated port.
     #[napi(getter)]
-    pub fn smtp_address(&self) -> Option<String> {
+    pub fn smtp_address(&self) -> String {
         self.smtp_address.clone()
     }
 

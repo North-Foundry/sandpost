@@ -131,7 +131,7 @@ async fn smtp_accesses_deliver_through_one_global_listener() {
     };
     let laravel = issue("Laravel").await;
     let pipeline = issue("CI Pipeline").await;
-    let address = running.mail_listen_address.unwrap();
+    let address = running.mail_listen_address;
     for (credentials, subject) in [
         (
             Some((laravel.access.username.as_str(), laravel.password.as_str())),
@@ -179,58 +179,17 @@ async fn smtp_accesses_deliver_through_one_global_listener() {
     running.shutdown().await.unwrap();
 }
 
-/// The persisted server address moves at runtime, and a required policy refuses
-/// unauthenticated mail even on loopback while revoked credentials stop working.
+/// The configured listener requires AUTH when requested, and revoked credentials stop working.
 #[tokio::test]
-async fn global_listener_moves_at_runtime_and_enforces_required_authentication() {
+async fn configured_listener_enforces_required_authentication() {
     let (mut configuration, _directory) = test_configuration();
-    configuration.mail_listen_address = None;
+    configuration.mail_listen_address = "127.0.0.1:0".parse().unwrap();
     configuration.mail_authentication = crate::configuration::MailAuthenticationSetting::Required;
-    std::fs::create_dir_all(&configuration.data_directory).unwrap();
-    {
-        let storage = sandpost_storage_sqlite::SqliteStorage::open(&configuration.database_path)
-            .await
-            .unwrap();
-        sandpost_storage::SmtpServerStorage::save_smtp_listen_address(
-            &storage,
-            Some("127.0.0.1:0".parse().unwrap()),
-        )
-        .await
-        .unwrap();
-    }
     let running = SandpostRuntime::start(configuration).await.unwrap();
     assert!(running.mail_authentication_required);
     let owner = owner_session(&running).await;
     let authorized = running.application.authorized(&owner);
-    let first_address = running.mail_listen_address.unwrap();
-    let free_address = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let moved = authorized
-        .save_smtp_server(sandpost_application::SmtpServerUpdate {
-            listen_address: Some(free_address),
-        })
-        .await
-        .unwrap();
-    let listener = moved.listener.unwrap();
-    assert_eq!(
-        listener.source,
-        sandpost_application::MailListenerSource::Database
-    );
-    assert!(listener.authentication_required);
-    let address = listener.bound_address.unwrap();
-    assert_eq!(address, free_address);
-    assert_ne!(address, first_address);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while tokio::net::TcpStream::connect(first_address).await.is_ok() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the previous listener must release its port"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let address = running.mail_listen_address;
 
     let anonymous = submit_with_credentials(address, None, "anonymous").await;
     assert!(anonymous.starts_with("530"), "{anonymous}");
@@ -280,75 +239,41 @@ async fn global_listener_moves_at_runtime_and_enforces_required_authentication()
     assert!(tokio::net::TcpStream::connect(address).await.is_err());
 }
 
-/// A TOML SMTP override pins the listener without rewriting a saved address or disabled state.
+/// TOML and environment values select the listener, with environment taking precedence.
 #[tokio::test]
-async fn smtp_toml_override_preserves_persisted_listener_state() {
-    use sandpost_storage::SmtpServerStorage;
-    for persisted_address in [Some("127.0.0.1:0".parse().unwrap()), None] {
-        let (mut configuration, directory) = test_configuration();
-        std::fs::create_dir_all(&directory.0).unwrap();
-        {
-            let storage =
-                sandpost_storage_sqlite::SqliteStorage::open(&configuration.database_path)
-                    .await
-                    .unwrap();
-            storage
-                .save_smtp_listen_address(persisted_address)
-                .await
-                .unwrap();
-        }
-        let configuration_path = directory.0.join("runtime.toml");
-        std::fs::write(
-            &configuration_path,
-            "[smtp]\nbind_address = '127.0.0.1'\nport = 0\n[imap]\nenabled = false\n",
-        )
+async fn smtp_listener_uses_resolved_configuration() {
+    let (_configuration, directory) = test_configuration();
+    let configuration_path = directory.0.join("runtime.toml");
+    std::fs::create_dir_all(&directory.0).unwrap();
+    std::fs::write(
+        &configuration_path,
+        "[smtp]\nbind_address = '127.0.0.1'\nport = 2525\n[imap]\nenabled = false\n",
+    )
+    .unwrap();
+    let configured = Configuration::from_environment_values(|name| match name {
+        "SANDPOST_CONFIG" => Some(configuration_path.to_string_lossy().into_owned()),
+        "SANDPOST_DATA_DIRECTORY" => Some(directory.0.to_string_lossy().into_owned()),
+        "SANDPOST_HTTP_PORT" => Some("0".into()),
+        "SANDPOST_SMTP_PORT" => Some("0".into()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(
+        configured.mail_listen_address,
+        "127.0.0.1:0".parse().unwrap()
+    );
+    let running = SandpostRuntime::start(configured).await.unwrap();
+    assert!(running.mail_listen_address.port() > 0);
+    let details = running
+        .application
+        .authorized(&owner_session(&running).await)
+        .smtp_server()
+        .await
         .unwrap();
-        let configured = Configuration::from_environment_values(|name| match name {
-            "SANDPOST_CONFIG" => Some(configuration_path.to_string_lossy().into_owned()),
-            "SANDPOST_DATA_DIRECTORY" => Some(directory.0.to_string_lossy().into_owned()),
-            "SANDPOST_HTTP_PORT" => Some("0".into()),
-            _ => None,
-        })
-        .unwrap();
-        assert_eq!(
-            configured.mail_listen_address,
-            Some("127.0.0.1:0".parse().unwrap())
-        );
-        let running = SandpostRuntime::start(configured).await.unwrap();
-        let bound_address = running.mail_listen_address.unwrap();
-        let owner = owner_session(&running).await;
-        // Management can save a disabled state but cannot unpin this process's listener.
-        let server = running
-            .application
-            .authorized(&owner)
-            .save_smtp_server(sandpost_application::SmtpServerUpdate {
-                listen_address: persisted_address,
-            })
-            .await
-            .unwrap();
-        let listener = server.listener.unwrap();
-        assert_eq!(
-            listener.source,
-            sandpost_application::MailListenerSource::Environment
-        );
-        assert_eq!(listener.bound_address, Some(bound_address));
-        running.shutdown().await.unwrap();
-        {
-            let storage =
-                sandpost_storage_sqlite::SqliteStorage::open(&configuration.database_path)
-                    .await
-                    .unwrap();
-            assert_eq!(
-                storage.smtp_listen_address().await.unwrap(),
-                persisted_address
-            );
-        }
-        configuration.mail_listen_address = None;
-        let restarted = SandpostRuntime::start(configuration).await.unwrap();
-        assert_eq!(
-            restarted.mail_listen_address.is_some(),
-            persisted_address.is_some()
-        );
-        restarted.shutdown().await.unwrap();
-    }
+    assert_eq!(details.listen_address, Some("127.0.0.1:0".parse().unwrap()));
+    assert_eq!(
+        details.listener.unwrap().bound_address,
+        Some(running.mail_listen_address)
+    );
+    running.shutdown().await.unwrap();
 }

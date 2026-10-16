@@ -116,7 +116,7 @@ async fn embedded_runtime_is_ready_and_bounds_shutdown_with_active_events() {
             .is_empty()
     );
     let web_address = running.web_listen_address;
-    let mail_address = running.mail_listen_address.unwrap();
+    let mail_address = running.mail_listen_address;
     let mut stream = tokio::net::TcpStream::connect(web_address).await.unwrap();
     stream
         .write_all(format!("GET /api/v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\n\r\n", login.token).as_bytes())

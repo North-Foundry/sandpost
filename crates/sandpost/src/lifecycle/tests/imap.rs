@@ -12,6 +12,7 @@ fn configuration(
         "SANDPOST_CONFIG" => Some(configuration_path.to_string_lossy().into_owned()),
         "SANDPOST_DATA_DIRECTORY" => Some(directory.to_string_lossy().into_owned()),
         "SANDPOST_HTTP_PORT" => Some("0".into()),
+        "SANDPOST_SMTP_PORT" => Some("0".into()),
         "SANDPOST_IMAP_ENABLED" => imap_enabled.map(|enabled| enabled.to_string()),
         _ => None,
     })
@@ -40,7 +41,7 @@ async fn owner_session(running: &RunningSandpost) -> sandpost_application::Sessi
         .user
 }
 
-/// Disabled IMAP leaves its configured port free while HTTP and persisted SMTP operate;
+/// Disabled IMAP leaves its configured port free while HTTP and configured SMTP operate;
 /// account data created before disablement survives restart with IMAP enabled again.
 #[tokio::test]
 async fn disabled_imap_keeps_services_and_data_available_across_restart() {
@@ -52,6 +53,7 @@ async fn disabled_imap_keeps_services_and_data_available_across_restart() {
     let imap_port = imap_reservation.local_addr().unwrap().port();
     drop(imap_reservation);
     let configuration_path = directory.0.join("runtime.toml");
+    std::fs::create_dir_all(&directory.0).unwrap();
     std::fs::write(
         &configuration_path,
         format!(
@@ -59,18 +61,6 @@ async fn disabled_imap_keeps_services_and_data_available_across_restart() {
         ),
     )
     .unwrap();
-    {
-        let storage =
-            sandpost_storage_sqlite::SqliteStorage::open(&directory.0.join("sandpost.sqlite3"))
-                .await
-                .unwrap();
-        sandpost_storage::SmtpServerStorage::save_smtp_listen_address(
-            &storage,
-            Some("127.0.0.1:0".parse().unwrap()),
-        )
-        .await
-        .unwrap();
-    }
 
     let enabled =
         SandpostRuntime::start(configuration(&configuration_path, &directory.0, Some(true)))
@@ -113,10 +103,7 @@ async fn disabled_imap_keeps_services_and_data_available_across_restart() {
     .await
     .unwrap();
     assert!(disabled.imap.is_none());
-    assert!(
-        disabled.mail_listen_address.is_some(),
-        "persisted SMTP binds while IMAP is disabled"
-    );
+    assert_ne!(disabled.mail_listen_address.port(), 0);
 
     let mut http = tokio::net::TcpStream::connect(disabled.web_listen_address)
         .await
@@ -139,7 +126,7 @@ async fn disabled_imap_keeps_services_and_data_available_across_restart() {
         "{http_response}"
     );
 
-    let mut smtp = tokio::net::TcpStream::connect(disabled.mail_listen_address.unwrap())
+    let mut smtp = tokio::net::TcpStream::connect(disabled.mail_listen_address)
         .await
         .unwrap();
     let mut smtp_greeting = [0; 128];
@@ -180,7 +167,7 @@ async fn disabled_imap_keeps_services_and_data_available_across_restart() {
         restarted.imap.as_ref().unwrap().listen_address,
         Some(format!("127.0.0.1:{imap_port}").parse().unwrap())
     );
-    assert!(restarted.mail_listen_address.is_some());
+    assert_ne!(restarted.mail_listen_address.port(), 0);
     let owner = restarted
         .application
         .instance()
@@ -221,7 +208,7 @@ async fn runtime_listeners_bind_ipv6_loopback() {
     .unwrap();
     let running = SandpostRuntime::start(configuration).await.unwrap();
     assert!(running.web_listen_address.is_ipv6());
-    assert!(running.mail_listen_address.unwrap().is_ipv6());
+    assert!(running.mail_listen_address.is_ipv6());
     let address = running.imap.as_ref().unwrap().listen_address.unwrap();
     assert!(address.is_ipv6() && address.ip().is_loopback(), "{address}");
     let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();

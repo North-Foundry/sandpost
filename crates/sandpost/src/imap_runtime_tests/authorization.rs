@@ -59,7 +59,7 @@ async fn revoking_a_scope_expunges_from_idle_clients() {
         })
         .await
         .unwrap();
-    let smtp = running.mail_listen_address.unwrap();
+    let smtp = running.mail_listen_address;
     send_mail(smtp, "dev@team.test", "Team mail").await;
     send_mail(smtp, "dev@private.test", "Private mail").await;
     wait_for_mail(&running, 2).await;

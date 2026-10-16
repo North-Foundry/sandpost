@@ -18,7 +18,7 @@ fn row_value<'output>(output: &'output str, label: &str) -> &'output str {
 fn default_configuration_reports_current_transport_and_storage_capabilities() {
     let configuration = Configuration::from_values(|_| None).unwrap();
     let output = StartupSummary {
-        mail_listen_address: Some("127.0.0.1:1025".parse().unwrap()),
+        mail_listen_address: "127.0.0.1:1025".parse().unwrap(),
         mail_authentication_required: false,
         mail_encryption: MailListenerEncryption::None,
         web_listen_address: configuration.web_listen_address,
@@ -75,7 +75,7 @@ fn storage_section_reports_the_configuration_file() {
     let mut configuration = Configuration::from_values(|_| None).unwrap();
     configuration.configuration_path = Some(std::path::PathBuf::from("/etc/sandpost/config.toml"));
     let output = StartupSummary {
-        mail_listen_address: Some("127.0.0.1:1025".parse().unwrap()),
+        mail_listen_address: "127.0.0.1:1025".parse().unwrap(),
         mail_authentication_required: false,
         mail_encryption: MailListenerEncryption::None,
         web_listen_address: configuration.web_listen_address,
@@ -102,7 +102,7 @@ fn imap_section_reports_connection_details() {
         listen_address: Some("0.0.0.0:993".parse().unwrap()),
     };
     let output = StartupSummary {
-        mail_listen_address: None,
+        mail_listen_address: "127.0.0.1:1025".parse().unwrap(),
         mail_authentication_required: true,
         mail_encryption: MailListenerEncryption::None,
         web_listen_address: configuration.web_listen_address,
@@ -173,7 +173,7 @@ fn bound_listener_addresses_take_precedence_over_requested_addresses() {
         configuration: &configuration,
         imap: None,
         bootstrap_secret: None,
-        mail_listen_address: Some("127.0.0.1:34567".parse().unwrap()),
+        mail_listen_address: "127.0.0.1:34567".parse().unwrap(),
         mail_authentication_required: false,
         mail_encryption: MailListenerEncryption::None,
         web_listen_address: "127.0.0.1:45678".parse().unwrap(),
@@ -218,7 +218,7 @@ fn wildcard_and_specific_ipv6_addresses_have_usable_client_representations() {
             configuration: &configuration,
             imap: None,
             bootstrap_secret: None,
-            mail_listen_address: Some(listen_address.parse().unwrap()),
+            mail_listen_address: listen_address.parse().unwrap(),
             mail_authentication_required: true,
             mail_encryption: MailListenerEncryption::None,
             web_listen_address: listen_address.parse().unwrap(),
@@ -263,13 +263,13 @@ fn bootstrap_summary_prints_secret_once_and_labels_local_setup_url() {
     assert!(output.contains("Listening  0.0.0.0:8025"));
 }
 
-/// Point the operator at the admin interface when the primary SMTP listener did not start.
+/// SMTP always reports its configured listener and allocated port.
 #[test]
-fn missing_primary_listener_is_reported_without_a_port() {
+fn smtp_listener_is_always_reported() {
     let configuration = Configuration::from_values(|_| None).unwrap();
     let output = StartupSummary {
         configuration: &configuration,
-        mail_listen_address: None,
+        mail_listen_address: "127.0.0.1:12345".parse().unwrap(),
         mail_authentication_required: false,
         mail_encryption: MailListenerEncryption::None,
         web_listen_address: configuration.web_listen_address,
@@ -277,9 +277,8 @@ fn missing_primary_listener_is_reported_without_a_port() {
         bootstrap_secret: None,
     }
     .to_string();
-    assert!(row_value(&output, "Status").starts_with("not listening"));
-    assert!(!output.contains("Port"));
-    assert_eq!(row_value(&output, "Encryption"), "none");
+    assert_eq!(row_value(&output, "Port"), "12345");
+    assert_eq!(row_value(&output, "Listening"), "127.0.0.1:12345");
 }
 
 /// Prevent configured filenames from injecting terminal styling or false readiness lines.
@@ -328,7 +327,7 @@ fn encryption_row_names_the_transport_protection() {
         (MailListenerEncryption::Implicit, "implicit TLS"),
     ] {
         let output = StartupSummary {
-            mail_listen_address: Some("0.0.0.0:587".parse().unwrap()),
+            mail_listen_address: "0.0.0.0:587".parse().unwrap(),
             mail_authentication_required: true,
             mail_encryption: encryption,
             web_listen_address: configuration.web_listen_address,

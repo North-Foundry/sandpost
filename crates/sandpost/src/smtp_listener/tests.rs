@@ -2,6 +2,7 @@ use super::*;
 use sandpost_application::SmtpAuthenticator;
 use sandpost_storage::Storage;
 use sandpost_storage_sqlite::SqliteStorage;
+use std::time::Duration;
 use tokio::sync::broadcast;
 
 /// Create a stopped server over an in-memory database with the automatic policy.
@@ -48,102 +49,36 @@ async fn released(address: SocketAddr) -> bool {
     true
 }
 
-/// Binding, moving, and disabling the listener take effect without a restart.
+/// Startup binds the configured address and a bind error fails startup.
 #[tokio::test]
-async fn apply_binds_moves_and_stops_the_listener() {
-    let server = test_server().await;
-    let first = free_port().await;
-    let status = server.apply(Some(first)).await;
-    assert_eq!(status.state, MailListenerState::Listening);
-    assert_eq!(status.bound_address, Some(first));
-    assert!(
-        !status.authentication_required,
-        "loopback stays open locally"
-    );
-    assert!(accepts(first).await);
-
-    let second = free_port().await;
-    let status = server.apply(Some(second)).await;
-    assert_eq!(status.bound_address, Some(second));
-    assert!(accepts(second).await);
-    assert!(released(first).await, "the previous port must be released");
-
-    // Moving back to a just-released port succeeds within the rebind grace period.
-    let status = server.apply(Some(first)).await;
-    assert_eq!(status.state, MailListenerState::Listening);
-
-    let status = server.apply(None).await;
-    assert_eq!(status.state, MailListenerState::Disabled);
-    assert!(released(first).await);
-    assert_eq!(server.status().await.state, MailListenerState::Disabled);
-    server.shutdown().await;
-}
-
-/// An occupied port is reported as a failed listener and can be retried by saving again.
-#[tokio::test]
-async fn occupied_port_is_reported_and_retried() {
-    let server = test_server().await;
-    let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = occupied.local_addr().unwrap();
-    let status = server.apply(Some(address)).await;
-    assert_eq!(status.state, MailListenerState::Failed);
-    assert_eq!(status.bound_address, None);
-    assert!(status.error.unwrap().contains("already in use"));
-    assert_eq!(server.status().await.state, MailListenerState::Failed);
-
-    drop(occupied);
-    let status = server.apply(Some(address)).await;
-    assert_eq!(status.state, MailListenerState::Listening);
-    server.shutdown().await;
-    assert!(released(address).await);
-}
-
-/// Startup tolerates an occupied persisted address but fails for an environment override.
-#[tokio::test]
-async fn startup_fails_only_for_environment_overrides() {
-    let server = test_server().await;
-    let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = occupied.local_addr().unwrap();
-    server
-        .start(Some(DesiredListener {
-            address,
-            source: MailListenerSource::Database,
-        }))
-        .await
-        .unwrap();
-    assert_eq!(server.status().await.state, MailListenerState::Failed);
-
-    assert!(
-        test_server()
-            .await
-            .start(Some(DesiredListener {
-                address,
-                source: MailListenerSource::Environment,
-            }))
-            .await
-            .is_err()
-    );
-}
-
-/// An environment override keeps its address when the persisted definition changes.
-#[tokio::test]
-async fn environment_overrides_are_not_rebound() {
+async fn startup_binds_configured_listener_and_fails_on_occupied_port() {
     let server = test_server().await;
     let address = free_port().await;
-    server
-        .start(Some(DesiredListener {
-            address,
-            source: MailListenerSource::Environment,
-        }))
-        .await
-        .unwrap();
-    let status = server.apply(None).await;
-    assert_eq!(status.source, MailListenerSource::Environment);
-    assert_eq!(status.state, MailListenerState::Listening);
+    assert_eq!(server.start(address).await.unwrap(), address);
+    assert_eq!(server.status().await.state, MailListenerState::Listening);
     assert!(accepts(address).await);
     server.shutdown().await;
-    let status = server.apply(Some(address)).await;
-    assert_eq!(status.state, MailListenerState::Failed);
+    assert!(released(address).await);
+
+    let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = occupied.local_addr().unwrap();
+    assert!(test_server().await.start(address).await.is_err());
+}
+
+/// Status reports the configured address and the actual bound socket.
+#[tokio::test]
+async fn status_reports_configured_and_bound_addresses() {
+    let server = test_server().await;
+    let address: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    server.start(address).await.unwrap();
+    let status = server.status().await;
+    assert_eq!(status.state, MailListenerState::Listening);
+    assert_eq!(status.configured_address, Some(address));
+    assert_eq!(status.source, MailListenerSource::Configuration);
+    let bound = status.bound_address.unwrap();
+    assert_ne!(bound.port(), 0);
+    assert!(accepts(bound).await);
+    server.shutdown().await;
 }
 
 /// The automatic policy requires AUTH everywhere except loopback; explicit settings win.
@@ -303,7 +238,8 @@ async fn bound_listener_offers_start_tls_and_reports_it() {
         ),
     );
     let address = free_port().await;
-    let status = server.apply(Some(address)).await;
+    server.start(address).await.unwrap();
+    let status = server.status().await;
     assert_eq!(status.encryption, MailListenerEncryption::StartTlsOptional);
     let mut client = BufReader::new(tokio::net::TcpStream::connect(address).await.unwrap());
     let mut line = String::new();

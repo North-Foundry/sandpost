@@ -70,13 +70,13 @@ async fn primary_deletion_and_independent_expunge_are_isolated_across_restart() 
         .await
         .unwrap();
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "a@example.test",
         "HTTP deletion",
     )
     .await;
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "a@example.test",
         "IMAP deletion",
     )

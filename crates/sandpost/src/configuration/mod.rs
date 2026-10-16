@@ -97,12 +97,12 @@ pub struct MailCertificatePaths {
     pub private_key: PathBuf,
 }
 
+/// Resolved runtime settings shared by the CLI and embedding hosts; validated before startup.
 #[derive(Debug, Clone)]
 pub struct Configuration {
     pub web_listen_address: SocketAddr,
-    /// Explicit TOML/environment override for the persisted global SMTP listener.
-    /// `None` preserves the saved address or disabled state, seeded as 127.0.0.1:1025.
-    pub mail_listen_address: Option<SocketAddr>,
+    /// SMTP listener address from environment, TOML, or the 127.0.0.1:1025 default.
+    pub mail_listen_address: SocketAddr,
     /// SMTP AUTH requirement, from `smtp.auth` or `SANDPOST_SMTP_AUTH`.
     pub mail_authentication: MailAuthenticationSetting,
     /// SMTP TLS requirement, from `smtp.tls` or `SANDPOST_SMTP_TLS`.
@@ -122,6 +122,7 @@ pub struct Configuration {
     pub configuration_path: Option<PathBuf>,
 }
 
+/// A configuration file or setting that cannot be used, named for the operator.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigurationError {
     #[error("invalid configuration file {}: {reason}", path.display())]
@@ -132,6 +133,7 @@ pub enum ConfigurationError {
         reason: String,
     },
 }
+
 impl Configuration {
     /// Validate settings after parsing or editing their typed representation.
     pub(crate) fn validate(&self) -> Result<(), ConfigurationError> {
@@ -192,7 +194,7 @@ impl Configuration {
     fn validate_listener_conflicts(&self) -> Result<(), ConfigurationError> {
         let listeners = [
             ("HTTP", Some(self.web_listen_address)),
-            ("SMTP", self.mail_listen_address),
+            ("SMTP", Some(self.mail_listen_address)),
             ("IMAP", self.imap.listen_address),
         ];
         for (index, (name, address)) in listeners.iter().enumerate() {
@@ -280,13 +282,17 @@ impl Configuration {
     ) -> Result<Self, ConfigurationError> {
         let defaults = file::FileConfiguration::default();
         let file = file.unwrap_or(&defaults);
-        let data_directory = environment_value("SANDPOST_DATA_DIRECTORY")
-            .map(PathBuf::from)
+        // Blank storage paths are treated as unset, matching blank file values.
+        let path_value = |setting_name| {
+            environment_value(setting_name)
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+        };
+        let data_directory = path_value("SANDPOST_DATA_DIRECTORY")
             .or_else(|| configuration_path.and_then(|path| file.data_directory(path)))
             .unwrap_or_else(default_data_directory);
         let database_path = data_directory.join(
-            environment_value("SANDPOST_DATABASE_PATH")
-                .map(PathBuf::from)
+            path_value("SANDPOST_DATABASE_PATH")
                 .or_else(|| file.storage.database_path.clone())
                 .unwrap_or_else(|| "sandpost.sqlite3".into()),
         );
@@ -310,72 +316,46 @@ impl Configuration {
                 });
             }
         }
-        let mail_authentication = match environment_value("SANDPOST_SMTP_AUTH")
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
-            None => file
-                .smtp
+        let mail_authentication = environment_choice(
+            environment_value,
+            "SANDPOST_SMTP_AUTH",
+            &[
+                ("auto", MailAuthenticationSetting::Automatic),
+                ("required", MailAuthenticationSetting::Required),
+                ("optional", MailAuthenticationSetting::Optional),
+            ],
+            file.smtp
                 .auth
                 .unwrap_or(MailAuthenticationSetting::Automatic),
-            Some("auto") => MailAuthenticationSetting::Automatic,
-            Some("required") => MailAuthenticationSetting::Required,
-            Some("optional") => MailAuthenticationSetting::Optional,
-            Some(other) => {
-                return Err(ConfigurationError::Invalid {
-                    setting_name: "SANDPOST_SMTP_AUTH",
-                    reason: format!("expected auto, required, or optional, got {other:?}"),
-                });
-            }
-        };
-        let normalized_value = |setting_name| {
-            environment_value(setting_name).map(|value| value.trim().to_ascii_lowercase())
-        };
-        let mail_encryption = match normalized_value("SANDPOST_SMTP_TLS").as_deref() {
-            None => file.smtp.tls.unwrap_or(MailEncryptionSetting::Automatic),
-            Some("auto") => MailEncryptionSetting::Automatic,
-            Some("required") => MailEncryptionSetting::Required,
-            Some("off") => MailEncryptionSetting::Disabled,
-            Some(other) => {
-                return Err(ConfigurationError::Invalid {
-                    setting_name: "SANDPOST_SMTP_TLS",
-                    reason: format!("expected auto, required, or off, got {other:?}"),
-                });
-            }
-        };
-        let mail_encryption_mode = match normalized_value("SANDPOST_SMTP_TLS_MODE").as_deref() {
-            None => file.smtp.tls_mode.unwrap_or(MailEncryptionMode::StartTls),
-            Some("starttls") => MailEncryptionMode::StartTls,
-            Some("implicit") => MailEncryptionMode::Implicit,
-            Some(other) => {
-                return Err(ConfigurationError::Invalid {
-                    setting_name: "SANDPOST_SMTP_TLS_MODE",
-                    reason: format!("expected starttls or implicit, got {other:?}"),
-                });
-            }
-        };
-        let mail_certificate = match (
-            environment_value("SANDPOST_SMTP_TLS_CERTIFICATE")
-                .map(PathBuf::from)
-                .or_else(|| file.smtp.tls_certificate.clone()),
-            environment_value("SANDPOST_SMTP_TLS_PRIVATE_KEY")
-                .map(PathBuf::from)
-                .or_else(|| file.smtp.tls_private_key.clone()),
-        ) {
-            (Some(certificate_chain), Some(private_key)) => Some(MailCertificatePaths {
-                certificate_chain,
-                private_key,
-            }),
-            (None, None) => None,
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(ConfigurationError::Invalid {
-                    setting_name: "SANDPOST_SMTP_TLS_CERTIFICATE",
-                    reason: "set smtp.tls_certificate and smtp.tls_private_key together (or their SANDPOST_SMTP_TLS_CERTIFICATE and SANDPOST_SMTP_TLS_PRIVATE_KEY overrides)".into(),
-                });
-            }
-        };
+        )?;
+        let mail_encryption = environment_choice(
+            environment_value,
+            "SANDPOST_SMTP_TLS",
+            &[
+                ("auto", MailEncryptionSetting::Automatic),
+                ("required", MailEncryptionSetting::Required),
+                ("off", MailEncryptionSetting::Disabled),
+            ],
+            file.smtp.tls.unwrap_or(MailEncryptionSetting::Automatic),
+        )?;
+        let mail_encryption_mode = environment_choice(
+            environment_value,
+            "SANDPOST_SMTP_TLS_MODE",
+            &[
+                ("starttls", MailEncryptionMode::StartTls),
+                ("implicit", MailEncryptionMode::Implicit),
+            ],
+            file.smtp.tls_mode.unwrap_or(MailEncryptionMode::StartTls),
+        )?;
+        let mail_certificate = certificate_paths(
+            environment_value,
+            "smtp",
+            [
+                "SANDPOST_SMTP_TLS_CERTIFICATE",
+                "SANDPOST_SMTP_TLS_PRIVATE_KEY",
+            ],
+            [&file.smtp.tls_certificate, &file.smtp.tls_private_key],
+        )?;
         let imap = imap_configuration(environment_value, &file.imap, mail_certificate.as_ref())?;
         let web_listen_address = listener_address(
             environment_value,
@@ -385,22 +365,14 @@ impl Configuration {
             file.http.port,
             8025,
         )?;
-        let smtp_is_configured = file.smtp.bind_address.is_some()
-            || file.smtp.port.is_some()
-            || environment_value("SANDPOST_SMTP_BIND_ADDRESS").is_some()
-            || environment_value("SANDPOST_SMTP_PORT").is_some();
-        let mail_listen_address = smtp_is_configured
-            .then(|| {
-                listener_address(
-                    environment_value,
-                    "SANDPOST_SMTP_BIND_ADDRESS",
-                    "SANDPOST_SMTP_PORT",
-                    file.smtp.bind_address,
-                    file.smtp.port,
-                    1025,
-                )
-            })
-            .transpose()?;
+        let mail_listen_address = listener_address(
+            environment_value,
+            "SANDPOST_SMTP_BIND_ADDRESS",
+            "SANDPOST_SMTP_PORT",
+            file.smtp.bind_address,
+            file.smtp.port,
+            1025,
+        )?;
         let configuration = Self {
             imap,
             web_listen_address,
@@ -465,6 +437,62 @@ fn environment_setting<Value: std::str::FromStr>(
             reason: format!("expected {expected}, got {value:?}"),
         }),
         None => Ok(fallback),
+    }
+}
+
+/// Parse a trimmed, case-insensitive enumerated environment setting, else keep the fallback.
+fn environment_choice<Value: Copy>(
+    environment_value: &impl Fn(&str) -> Option<String>,
+    setting_name: &'static str,
+    choices: &[(&str, Value)],
+    fallback: Value,
+) -> Result<Value, ConfigurationError> {
+    let Some(value) = environment_value(setting_name) else {
+        return Ok(fallback);
+    };
+    let value = value.trim().to_ascii_lowercase();
+    if let Some((_, choice)) = choices.iter().find(|(name, _)| *name == value) {
+        return Ok(*choice);
+    }
+    let names: Vec<&str> = choices.iter().map(|(name, _)| *name).collect();
+    let expected = match names.as_slice() {
+        [first, second] => format!("{first} or {second}"),
+        [leading @ .., last] => format!("{}, or {last}", leading.join(", ")),
+        [] => String::new(),
+    };
+    Err(ConfigurationError::Invalid {
+        setting_name,
+        reason: format!("expected {expected}, got {value:?}"),
+    })
+}
+
+/// Resolve a certificate chain/private key pair whose environment fields override file fields
+/// independently; `None` when neither is set, and an error when only one is.
+fn certificate_paths(
+    environment_value: &impl Fn(&str) -> Option<String>,
+    file_section: &str,
+    [certificate_setting, private_key_setting]: [&'static str; 2],
+    [file_certificate, file_private_key]: [&Option<PathBuf>; 2],
+) -> Result<Option<MailCertificatePaths>, ConfigurationError> {
+    match (
+        environment_value(certificate_setting)
+            .map(PathBuf::from)
+            .or_else(|| file_certificate.clone()),
+        environment_value(private_key_setting)
+            .map(PathBuf::from)
+            .or_else(|| file_private_key.clone()),
+    ) {
+        (Some(certificate_chain), Some(private_key)) => Ok(Some(MailCertificatePaths {
+            certificate_chain,
+            private_key,
+        })),
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(ConfigurationError::Invalid {
+            setting_name: certificate_setting,
+            reason: format!(
+                "set {file_section}.tls_certificate and {file_section}.tls_private_key together (or their {certificate_setting} and {private_key_setting} overrides)"
+            ),
+        }),
     }
 }
 
@@ -559,10 +587,6 @@ fn imap_configuration(
     file: &file::ImapConfiguration,
     mail_certificate: Option<&MailCertificatePaths>,
 ) -> Result<ImapConfiguration, ConfigurationError> {
-    let invalid = |setting_name: &'static str, reason: String| ConfigurationError::Invalid {
-        setting_name,
-        reason,
-    };
     let enabled = environment_setting(
         environment_value,
         "SANDPOST_IMAP_ENABLED",
@@ -579,60 +603,43 @@ fn imap_configuration(
         1143,
     )?;
     let listen_address = enabled.then_some(address);
-    let normalized = |setting_name| {
-        environment_value(setting_name).map(|value| value.trim().to_ascii_lowercase())
-    };
-    let encryption = match normalized("SANDPOST_IMAP_TLS").as_deref() {
-        None => file.tls.unwrap_or(ImapEncryptionSetting::Automatic),
-        Some("auto") => ImapEncryptionSetting::Automatic,
-        Some("required") => ImapEncryptionSetting::Required,
-        Some("off") => ImapEncryptionSetting::Disabled,
-        Some(other) => {
-            return Err(invalid(
-                "SANDPOST_IMAP_TLS",
-                format!("expected auto, required, or off, got {other:?}"),
-            ));
-        }
-    };
-    let encryption_mode = match normalized("SANDPOST_IMAP_TLS_MODE").as_deref() {
-        None => file.tls_mode.unwrap_or(ImapEncryptionMode::Implicit),
-        Some("implicit") => ImapEncryptionMode::Implicit,
-        Some("starttls") => ImapEncryptionMode::StartTls,
-        Some(other) => {
-            return Err(invalid(
-                "SANDPOST_IMAP_TLS_MODE",
-                format!("expected implicit or starttls, got {other:?}"),
-            ));
-        }
-    };
-    let certificate = match (
-        environment_value("SANDPOST_IMAP_TLS_CERTIFICATE")
-            .map(PathBuf::from)
-            .or_else(|| file.tls_certificate.clone()),
-        environment_value("SANDPOST_IMAP_TLS_PRIVATE_KEY")
-            .map(PathBuf::from)
-            .or_else(|| file.tls_private_key.clone()),
-    ) {
-        (Some(certificate_chain), Some(private_key)) => Some(MailCertificatePaths {
-            certificate_chain,
-            private_key,
-        }),
-        (None, None) => mail_certificate.cloned(),
-        _ => {
-            return Err(invalid(
-                "SANDPOST_IMAP_TLS_CERTIFICATE",
-                "set imap.tls_certificate and imap.tls_private_key together (or their SANDPOST_IMAP_TLS_CERTIFICATE and SANDPOST_IMAP_TLS_PRIVATE_KEY overrides)"
-                    .into(),
-            ));
-        }
-    };
+    let encryption = environment_choice(
+        environment_value,
+        "SANDPOST_IMAP_TLS",
+        &[
+            ("auto", ImapEncryptionSetting::Automatic),
+            ("required", ImapEncryptionSetting::Required),
+            ("off", ImapEncryptionSetting::Disabled),
+        ],
+        file.tls.unwrap_or(ImapEncryptionSetting::Automatic),
+    )?;
+    let encryption_mode = environment_choice(
+        environment_value,
+        "SANDPOST_IMAP_TLS_MODE",
+        &[
+            ("implicit", ImapEncryptionMode::Implicit),
+            ("starttls", ImapEncryptionMode::StartTls),
+        ],
+        file.tls_mode.unwrap_or(ImapEncryptionMode::Implicit),
+    )?;
+    let certificate = certificate_paths(
+        environment_value,
+        "imap",
+        [
+            "SANDPOST_IMAP_TLS_CERTIFICATE",
+            "SANDPOST_IMAP_TLS_PRIVATE_KEY",
+        ],
+        [&file.tls_certificate, &file.tls_private_key],
+    )?
+    .or_else(|| mail_certificate.cloned());
     let maximum_connection_count = match environment_value("SANDPOST_IMAP_MAX_CONNECTIONS") {
-        Some(value) => value.trim().parse::<usize>().ok().ok_or_else(|| {
-            invalid(
-                "SANDPOST_IMAP_MAX_CONNECTIONS",
-                "expected a number from 1 to 10000".into(),
-            )
-        })?,
+        Some(value) => value
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| ConfigurationError::Invalid {
+                setting_name: "SANDPOST_IMAP_MAX_CONNECTIONS",
+                reason: "expected a number from 1 to 10000".into(),
+            })?,
         None => file.max_connections.unwrap_or(DEFAULT_IMAP_CONNECTIONS),
     };
     let advertised_host = environment_value("SANDPOST_IMAP_HOST")

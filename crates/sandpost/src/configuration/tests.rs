@@ -37,6 +37,21 @@ fn storage_environment_overrides() {
     );
 }
 
+/// Blank storage environment values behave as unset instead of selecting the working directory.
+#[test]
+fn blank_storage_environment_values_select_defaults() {
+    let configuration = Configuration::from_values(|setting_name| match setting_name {
+        "SANDPOST_DATA_DIRECTORY" | "SANDPOST_DATABASE_PATH" => Some("  ".into()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(configuration.data_directory, default_data_directory());
+    assert_eq!(
+        configuration.database_path,
+        default_data_directory().join("sandpost.sqlite3")
+    );
+}
+
 /// Own a temporary configuration directory without touching the user's real home or environment.
 struct ConfigurationDirectory(PathBuf);
 
@@ -330,7 +345,10 @@ fn defaults_overrides_and_invalid_values() {
         default_data_directory().join("sandpost.sqlite3")
     );
     assert_eq!(configuration.maximum_scope_depth, Some(2));
-    assert!(configuration.mail_listen_address.is_none());
+    assert_eq!(
+        configuration.mail_listen_address,
+        "127.0.0.1:1025".parse().unwrap()
+    );
     assert_eq!(
         configuration.mail_authentication,
         MailAuthenticationSetting::Automatic
@@ -345,7 +363,7 @@ fn defaults_overrides_and_invalid_values() {
     assert_eq!(configuration.maximum_scope_depth, Some(0));
     assert_eq!(
         configuration.mail_listen_address,
-        Some("127.0.0.1:2525".parse().unwrap())
+        "127.0.0.1:2525".parse().unwrap()
     );
     assert_eq!(
         configuration.database_path,
@@ -635,7 +653,7 @@ port = 2143
     );
     assert_eq!(
         configuration.mail_listen_address,
-        Some("127.0.0.2:2525".parse().unwrap())
+        "127.0.0.2:2525".parse().unwrap()
     );
     assert_eq!(
         configuration.imap.listen_address,
@@ -707,7 +725,7 @@ port = 2143
         assert_eq!(
             [
                 configuration.web_listen_address,
-                configuration.mail_listen_address.unwrap(),
+                configuration.mail_listen_address,
                 configuration.imap.listen_address.unwrap(),
             ],
             expected_addresses.map(|address| address.parse::<SocketAddr>().unwrap()),
@@ -735,7 +753,7 @@ fn listener_environment_and_partial_defaults() {
     );
     assert_eq!(
         configuration.mail_listen_address,
-        Some("[::1]:2525".parse().unwrap())
+        "[::1]:2525".parse().unwrap()
     );
     assert_eq!(
         configuration.imap.listen_address,
@@ -743,7 +761,7 @@ fn listener_environment_and_partial_defaults() {
     );
 
     for (contents, values, expected) in [
-        ("[smtp]", vec![], None),
+        ("[smtp]", vec![], Some("127.0.0.1:1025")),
         ("[smtp]\nport = 2525", vec![], Some("127.0.0.1:2525")),
         ("[smtp]\nbind_address = '::1'", vec![], Some("[::1]:1025")),
         (
@@ -760,7 +778,7 @@ fn listener_environment_and_partial_defaults() {
         let configuration = listener_sources(contents, &values).unwrap();
         assert_eq!(
             configuration.mail_listen_address,
-            expected.map(|address| address.parse().unwrap())
+            expected.unwrap().parse().unwrap()
         );
     }
 }
@@ -933,7 +951,7 @@ fn listener_address_conflicts() {
     listener_sources("[http]\nport = 1143\n[imap]\nenabled = false", &[]).unwrap();
 }
 
-/// Read each SMTP security policy from TOML without pinning the persisted listener address.
+/// Read each SMTP security policy from TOML while retaining the default listener address.
 #[test]
 fn mail_security_file_policies_and_defaults() {
     for (value, expected) in [
@@ -943,7 +961,10 @@ fn mail_security_file_policies_and_defaults() {
     ] {
         let configuration = listener_sources(&format!("[smtp]\nauth = '{value}'"), &[]).unwrap();
         assert_eq!(configuration.mail_authentication, expected);
-        assert!(configuration.mail_listen_address.is_none());
+        assert_eq!(
+            configuration.mail_listen_address,
+            "127.0.0.1:1025".parse().unwrap()
+        );
     }
     for (value, expected) in [
         ("auto", MailEncryptionSetting::Automatic),
@@ -956,7 +977,10 @@ fn mail_security_file_policies_and_defaults() {
         )
         .unwrap();
         assert_eq!(configuration.mail_encryption, expected);
-        assert!(configuration.mail_listen_address.is_none());
+        assert_eq!(
+            configuration.mail_listen_address,
+            "127.0.0.1:1025".parse().unwrap()
+        );
     }
     for (value, expected) in [
         ("starttls", MailEncryptionMode::StartTls),

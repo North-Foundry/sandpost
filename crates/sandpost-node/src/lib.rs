@@ -12,7 +12,7 @@ pub struct NativeRuntime {
     stop: watch::Sender<bool>,
     cancel_events: watch::Sender<bool>,
     completion: watch::Receiver<Option<std::result::Result<(), String>>>,
-    smtp_address: Option<String>,
+    smtp_address: String,
     http_address: String,
 }
 

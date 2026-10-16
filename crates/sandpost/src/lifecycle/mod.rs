@@ -1,11 +1,9 @@
 //! Bind, supervise, and drain shared HTTP, SMTP, and IMAP transports without owning signals.
 
 use crate::smtp_delivery::MailDelivery;
-use crate::smtp_listener::{DesiredListener, MailEncryption, MailServer, authentication_policy};
+use crate::smtp_listener::{MailEncryption, MailServer, authentication_policy};
 use crate::{Configuration, bootstrap};
-use sandpost_application::{
-    Application, Instance, MailListenerSource, SearchCoordinator, SmtpAuthenticator,
-};
+use sandpost_application::{Application, Instance, SearchCoordinator, SmtpAuthenticator};
 use sandpost_smtp::AuthenticationPolicy;
 use std::{error::Error, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -31,8 +29,8 @@ pub struct SandpostRuntime;
 pub struct RunningSandpost {
     pub application: Application,
     pub web_listen_address: SocketAddr,
-    /// The global SMTP server's bound address at startup, if its listener started.
-    pub mail_listen_address: Option<SocketAddr>,
+    /// The global SMTP server's actual bound address at startup.
+    pub mail_listen_address: SocketAddr,
     /// Whether SMTP sessions must authenticate on the startup listener.
     pub mail_authentication_required: bool,
     /// How sessions on the startup listener are protected in transit.
@@ -74,28 +72,11 @@ impl SandpostRuntime {
         )
         .with_scope_depth_limit(configuration.maximum_scope_depth)
         .with_mail_listeners(Arc::new(mail_server.clone()));
-        let desired_listener = match configuration.mail_listen_address {
-            Some(address) => Some(DesiredListener {
-                address,
-                // Retain the existing API source for all operator overrides, including TOML.
-                source: MailListenerSource::Environment,
-            }),
-            None => storage
-                .smtp_listen_address()
-                .await?
-                .map(|address| DesiredListener {
-                    address,
-                    source: MailListenerSource::Database,
-                }),
-        };
-        let mail_authentication_required = desired_listener.as_ref().is_some_and(|listener| {
-            authentication_policy(configuration.mail_authentication, listener.address)
-                == AuthenticationPolicy::Required
-        });
-        let startup_encryption = desired_listener.as_ref().map_or(
-            sandpost_application::MailListenerEncryption::None,
-            |listener| mail_encryption.describe(listener.address),
-        );
+        let mail_authentication_required = authentication_policy(
+            configuration.mail_authentication,
+            configuration.mail_listen_address,
+        ) == AuthenticationPolicy::Required;
+        let startup_encryption = mail_encryption.describe(configuration.mail_listen_address);
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
         let application_router = if sandpost_web_api::EMBEDDED_FRONTEND {
             sandpost_web_api::router_with_embedded_frontend(application.clone())
@@ -107,12 +88,12 @@ impl SandpostRuntime {
             http::cancel_on_shutdown,
         ));
         let web_listener = TcpListener::bind(configuration.web_listen_address).await?;
+        let web_listen_address = web_listener.local_addr()?;
         let imap =
             crate::imap_listener::bind(&configuration.imap, prepared_imap, &application).await?;
-        mail_server.start(desired_listener).await?;
-        let web_listen_address = web_listener.local_addr()?;
-        let mail_listen_address = mail_server.bound_address().await;
-        tracing::debug!(web = %web_listen_address, mail = ?mail_listen_address, "listeners initialized");
+        // The SMTP listener starts serving immediately, so it binds after every fallible step.
+        let mail_listen_address = mail_server.start(configuration.mail_listen_address).await?;
+        tracing::debug!(web = %web_listen_address, mail = %mail_listen_address, "listeners initialized");
         let web_shutdown_receiver = shutdown_receiver.clone();
         let web_server_task = tokio::spawn(async move {
             axum::serve(web_listener, application_router)

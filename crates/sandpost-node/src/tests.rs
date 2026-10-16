@@ -71,7 +71,7 @@ async fn authenticated_test_host() -> (
         stop,
         cancel_events,
         completion,
-        smtp_address: None,
+        smtp_address: String::new(),
         http_address: String::new(),
     });
     (runtime, application, storage, completion_sender, directory)
@@ -163,7 +163,7 @@ async fn native_setup_uses_host_bootstrap_secret_and_reports_trusted_status() {
         stop,
         cancel_events,
         completion,
-        smtp_address: None,
+        smtp_address: String::new(),
         http_address: String::new(),
     };
 

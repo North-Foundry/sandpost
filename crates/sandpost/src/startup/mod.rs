@@ -11,8 +11,8 @@ use std::{
 /// Operator-facing state after storage initialization and successful listener binds.
 pub struct StartupSummary<'configuration> {
     pub configuration: &'configuration Configuration,
-    /// The global SMTP server's bound address, or `None` when its listener did not start.
-    pub mail_listen_address: Option<SocketAddr>,
+    /// The global SMTP server's actual bound address.
+    pub mail_listen_address: SocketAddr,
     /// Whether SMTP sessions must authenticate with an SMTP access.
     pub mail_authentication_required: bool,
     /// How SMTP sessions are protected in transit.
@@ -34,40 +34,30 @@ impl Display for StartupSummary<'_> {
             formatter,
             "\nSandpost\n  Local email capture for development"
         )?;
-        let mut mail_rows = match self.mail_listen_address {
-            Some(mail_listen_address) => {
-                let mail_connection_address = connection_address(mail_listen_address);
-                vec![
-                    ("Host", connection_host(mail_connection_address)),
-                    ("Port", mail_connection_address.port().to_string()),
-                ]
-            }
-            None => vec![(
-                "Status",
-                "not listening; check SMTP Access in the admin interface".into(),
-            )],
-        };
-        mail_rows.push((
-            "Encryption",
-            match self.mail_encryption {
-                MailListenerEncryption::None => "none",
-                MailListenerEncryption::StartTlsOptional => "STARTTLS (optional)",
-                MailListenerEncryption::StartTlsRequired => "STARTTLS (required)",
-                MailListenerEncryption::Implicit => "implicit TLS",
-            }
-            .into(),
-        ));
-        mail_rows.push((
-            "Auth",
-            if self.mail_authentication_required {
-                "required (SMTP access credentials, PLAIN/LOGIN)".into()
-            } else {
-                "optional (unauthenticated local mail accepted)".into()
-            },
-        ));
-        if let Some(mail_listen_address) = self.mail_listen_address {
-            mail_rows.push(("Listening", mail_listen_address.to_string()));
-        }
+        let mail_connection_address = connection_address(self.mail_listen_address);
+        let mail_rows = [
+            ("Host", connection_host(mail_connection_address)),
+            ("Port", mail_connection_address.port().to_string()),
+            (
+                "Encryption",
+                match self.mail_encryption {
+                    MailListenerEncryption::None => "none",
+                    MailListenerEncryption::StartTlsOptional => "STARTTLS (optional)",
+                    MailListenerEncryption::StartTlsRequired => "STARTTLS (required)",
+                    MailListenerEncryption::Implicit => "implicit TLS",
+                }
+                .into(),
+            ),
+            (
+                "Auth",
+                if self.mail_authentication_required {
+                    "required (SMTP access credentials, PLAIN/LOGIN)".into()
+                } else {
+                    "optional (unauthenticated local mail accepted)".into()
+                },
+            ),
+            ("Listening", self.mail_listen_address.to_string()),
+        ];
         write_section(formatter, "SMTP", &mail_rows)?;
         let imap_rows = match self.imap {
             Some(imap) => {

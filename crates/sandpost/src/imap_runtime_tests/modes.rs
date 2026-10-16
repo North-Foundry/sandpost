@@ -40,7 +40,7 @@ async fn mode_switches_revoke_wire_sessions_and_restore_dormant_uids() {
     .await;
     let identifier = issued.account.account.identifier;
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Before switching",
     )
@@ -110,7 +110,7 @@ async fn mode_switches_revoke_wire_sessions_and_restore_dormant_uids() {
     mirror.0.get_mut().write_all(b"i IDLE\r\n").await.unwrap();
     assert_eq!(mirror.response().await, "+ idling\r\n");
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "While Independent is dormant",
     )
@@ -209,7 +209,7 @@ async fn mirror_wire_mutations_share_web_organization_and_preserve_independent_s
     )
     .await;
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Shared primary organization",
     )
@@ -429,7 +429,7 @@ async fn bulk_copy_to_trash_coalesces_existing_occurrence_in_both_modes() {
         let running = SandpostRuntime::start(configuration).await.unwrap();
         let owner = owner(&running).await;
         let issued = create_account(&running, &owner, "Trash bulk copy", mode).await;
-        let smtp = running.mail_listen_address.unwrap();
+        let smtp = running.mail_listen_address;
         for subject in ["Bulk delete one", "Bulk delete two", "Bulk delete three"] {
             send_mail(smtp, "dev@example.test", subject).await;
         }
@@ -549,7 +549,7 @@ async fn bulk_move_to_trash_coalesces_existing_occurrence_in_both_modes() {
         let running = SandpostRuntime::start(configuration).await.unwrap();
         let owner = owner(&running).await;
         let issued = create_account(&running, &owner, "Trash bulk move", mode).await;
-        let smtp = running.mail_listen_address.unwrap();
+        let smtp = running.mail_listen_address;
         for subject in ["Bulk move one", "Bulk move two", "Bulk move three"] {
             send_mail(smtp, "dev@example.test", subject).await;
         }
@@ -674,7 +674,7 @@ async fn concurrent_mirror_copy_is_atomic_and_seen_is_shared() {
     )
     .await;
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Concurrent shared copy",
     )
@@ -776,7 +776,7 @@ async fn hierarchy_subtree_rename_preserves_child_uids_in_both_modes() {
     let running = SandpostRuntime::start(configuration).await.unwrap();
     let owner = owner(&running).await;
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Hierarchy identity",
     )

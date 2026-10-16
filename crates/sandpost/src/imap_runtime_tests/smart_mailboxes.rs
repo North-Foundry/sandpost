@@ -31,7 +31,7 @@ async fn smart_mailbox_protocol_rights_are_seen_only() {
         .await
         .unwrap();
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Smart rights message",
     )

@@ -36,7 +36,7 @@ async fn private_mailbox_crud_uidvalidity_and_restart() {
     let running = SandpostRuntime::start(configuration.clone()).await.unwrap();
     let (_, issued) = accounts(&running, 1, ImapAccountMode::Independent).await;
     let credential = &issued[0];
-    let smtp = running.mail_listen_address.unwrap();
+    let smtp = running.mail_listen_address;
     send_mail(smtp, "dev@example.test", "Private folder persistence").await;
     wait_for_mail(&running, 1).await;
 
@@ -118,7 +118,7 @@ async fn mirror_manual_structure_and_smart_insertion_rights() {
         .await
         .unwrap();
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Matching target message",
     )
@@ -213,7 +213,7 @@ async fn mirror_follows_web_placement_and_independent_keeps_its_snapshot() {
         .await
         .unwrap();
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Web placement inheritance",
     )
@@ -297,7 +297,7 @@ async fn private_move_isolation_overrides_and_safe_folder_deletion() {
         .await
         .unwrap();
     send_mail(
-        running.mail_listen_address.unwrap(),
+        running.mail_listen_address,
         "dev@example.test",
         "Private override target",
     )

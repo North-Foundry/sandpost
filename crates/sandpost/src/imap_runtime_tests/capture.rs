@@ -22,7 +22,7 @@ async fn smtp_mail_is_pushed_to_idle_clients_and_uids_persist() {
         .await
         .unwrap();
     assert_eq!(issued.server.port, Some(imap_address(&running).port()));
-    let smtp = running.mail_listen_address.unwrap();
+    let smtp = running.mail_listen_address;
     send_mail(smtp, "dev@example.test", "First test mail").await;
     wait_for_mail(&running, 1).await;
     let mut client = Client::login(imap_address(&running), &issued).await;
