@@ -329,7 +329,7 @@ fn defaults_overrides_and_invalid_values() {
         configuration.database_path,
         default_data_directory().join("sandpost.sqlite3")
     );
-    assert!(configuration.maximum_scope_depth.is_none());
+    assert_eq!(configuration.maximum_scope_depth, Some(2));
     assert!(configuration.mail_listen_address.is_none());
     assert_eq!(
         configuration.mail_authentication,
@@ -338,7 +338,7 @@ fn defaults_overrides_and_invalid_values() {
     let configuration = Configuration::from_values(|setting_name| match setting_name {
         "SANDPOST_DATA_DIRECTORY" => Some("/tmp/test".into()),
         "SANDPOST_MAX_SCOPE_DEPTH" => Some("0".into()),
-        "SANDPOST_SMTP_LISTEN" => Some("127.0.0.1:2525".into()),
+        "SANDPOST_SMTP_PORT" => Some("2525".into()),
         _ => None,
     })
     .unwrap();
@@ -353,13 +353,13 @@ fn defaults_overrides_and_invalid_values() {
     );
     assert!(
         Configuration::from_values(
-            |setting_name| (setting_name == "SANDPOST_HTTP_LISTEN").then(|| "invalid".into())
+            |setting_name| (setting_name == "SANDPOST_HTTP_BIND_ADDRESS").then(|| "invalid".into())
         )
         .is_err()
     );
     assert!(
         Configuration::from_values(
-            |setting_name| (setting_name == "SANDPOST_SMTP_LISTEN").then(|| "invalid".into())
+            |setting_name| (setting_name == "SANDPOST_SMTP_BIND_ADDRESS").then(|| "invalid".into())
         )
         .is_err()
     );
@@ -419,7 +419,7 @@ fn imap_settings() {
     assert!(defaults.certificate.is_none());
     assert_eq!(defaults.maximum_connection_count, 64);
     assert_eq!(
-        with(&[("SANDPOST_IMAP_LISTEN", "OFF")])
+        with(&[("SANDPOST_IMAP_ENABLED", "false")])
             .unwrap()
             .imap
             .listen_address,
@@ -428,7 +428,8 @@ fn imap_settings() {
     let inherited = with(&[
         ("SANDPOST_SMTP_TLS_CERTIFICATE", "/etc/sandpost/mail.crt"),
         ("SANDPOST_SMTP_TLS_PRIVATE_KEY", "/etc/sandpost/mail.key"),
-        ("SANDPOST_IMAP_LISTEN", "0.0.0.0:993"),
+        ("SANDPOST_IMAP_BIND_ADDRESS", "0.0.0.0"),
+        ("SANDPOST_IMAP_PORT", "993"),
         ("SANDPOST_IMAP_HOST", "mail.example.test"),
         ("SANDPOST_IMAP_MAX_CONNECTIONS", "8"),
     ])
@@ -444,15 +445,15 @@ fn imap_settings() {
     );
     assert_eq!(inherited.maximum_connection_count, 8);
     let opted_out = with(&[
-        ("SANDPOST_IMAP_LISTEN", "0.0.0.0:1143"),
+        ("SANDPOST_IMAP_BIND_ADDRESS", "0.0.0.0"),
         ("SANDPOST_IMAP_TLS", "off"),
     ])
     .unwrap()
     .imap;
     assert_eq!(opted_out.encryption, ImapEncryptionSetting::Disabled);
     for invalid in [
-        &[("SANDPOST_IMAP_LISTEN", "0.0.0.0:1143")][..],
-        &[("SANDPOST_IMAP_LISTEN", "nonsense")][..],
+        &[("SANDPOST_IMAP_BIND_ADDRESS", "0.0.0.0")][..],
+        &[("SANDPOST_IMAP_BIND_ADDRESS", "nonsense")][..],
         &[("SANDPOST_IMAP_TLS", "always")][..],
         &[("SANDPOST_IMAP_TLS", "required")][..],
         &[("SANDPOST_IMAP_TLS_MODE", "ssl")][..],
@@ -588,4 +589,1028 @@ fn validate_edited_imap_host_and_mapped_loopback() {
     }
     configuration.imap.advertised_host = Some("mail.example.test".into());
     configuration.validate().unwrap();
+}
+
+/// Load real TOML with supplied environment fields without mutating the process environment.
+fn listener_sources(
+    contents: &str,
+    values: &[(&str, &str)],
+) -> Result<Configuration, ConfigurationError> {
+    let directory = ConfigurationDirectory::new();
+    let path = directory.configuration_path();
+    std::fs::write(&path, contents).unwrap();
+    Configuration::from_sources(
+        |name| {
+            values
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).into())
+        },
+        Some(shared_file(path)),
+    )
+}
+
+/// Resolve complete listener sections, leaving unrelated security and storage defaults intact.
+#[test]
+fn listener_toml_sections() {
+    let configuration = listener_sources(
+        r#"
+[http]
+bind_address = "::1"
+port = 8080
+[smtp]
+bind_address = "127.0.0.2"
+port = 2525
+[imap]
+enabled = true
+bind_address = "::1"
+port = 2143
+"#,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        configuration.web_listen_address,
+        "[::1]:8080".parse().unwrap()
+    );
+    assert_eq!(
+        configuration.mail_listen_address,
+        Some("127.0.0.2:2525".parse().unwrap())
+    );
+    assert_eq!(
+        configuration.imap.listen_address,
+        Some("[::1]:2143".parse().unwrap())
+    );
+    assert_eq!(configuration.data_directory, default_data_directory());
+    assert_eq!(
+        configuration.mail_authentication,
+        MailAuthenticationSetting::Automatic
+    );
+    assert_eq!(
+        configuration.mail_encryption,
+        MailEncryptionSetting::Automatic
+    );
+    assert_eq!(
+        configuration.imap.encryption,
+        ImapEncryptionSetting::Automatic
+    );
+    assert_eq!(configuration.imap.maximum_connection_count, 64);
+}
+
+/// Each environment address or port overrides only its corresponding TOML field.
+#[test]
+fn listener_fields_override_independently() {
+    let contents = r#"
+[http]
+bind_address = "127.0.0.2"
+port = 8080
+[smtp]
+bind_address = "127.0.0.2"
+port = 2525
+[imap]
+bind_address = "127.0.0.2"
+port = 2143
+"#;
+    for (variable, value, expected_addresses) in [
+        (
+            "SANDPOST_HTTP_BIND_ADDRESS",
+            "::1",
+            ["[::1]:8080", "127.0.0.2:2525", "127.0.0.2:2143"],
+        ),
+        (
+            "SANDPOST_HTTP_PORT",
+            "8081",
+            ["127.0.0.2:8081", "127.0.0.2:2525", "127.0.0.2:2143"],
+        ),
+        (
+            "SANDPOST_SMTP_BIND_ADDRESS",
+            "::1",
+            ["127.0.0.2:8080", "[::1]:2525", "127.0.0.2:2143"],
+        ),
+        (
+            "SANDPOST_SMTP_PORT",
+            "2526",
+            ["127.0.0.2:8080", "127.0.0.2:2526", "127.0.0.2:2143"],
+        ),
+        (
+            "SANDPOST_IMAP_BIND_ADDRESS",
+            "::1",
+            ["127.0.0.2:8080", "127.0.0.2:2525", "[::1]:2143"],
+        ),
+        (
+            "SANDPOST_IMAP_PORT",
+            "2144",
+            ["127.0.0.2:8080", "127.0.0.2:2525", "127.0.0.2:2144"],
+        ),
+    ] {
+        let configuration = listener_sources(contents, &[(variable, value)]).unwrap();
+        assert_eq!(
+            [
+                configuration.web_listen_address,
+                configuration.mail_listen_address.unwrap(),
+                configuration.imap.listen_address.unwrap(),
+            ],
+            expected_addresses.map(|address| address.parse::<SocketAddr>().unwrap()),
+            "{variable}"
+        );
+    }
+}
+
+/// Every listener supports environment-only IPv6 addresses and independent TCP ports.
+#[test]
+fn listener_environment_and_partial_defaults() {
+    let configuration = Configuration::from_values(|name| match name {
+        "SANDPOST_HTTP_BIND_ADDRESS"
+        | "SANDPOST_SMTP_BIND_ADDRESS"
+        | "SANDPOST_IMAP_BIND_ADDRESS" => Some("::1".into()),
+        "SANDPOST_HTTP_PORT" => Some("8080".into()),
+        "SANDPOST_SMTP_PORT" => Some("2525".into()),
+        "SANDPOST_IMAP_PORT" => Some("2143".into()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(
+        configuration.web_listen_address,
+        "[::1]:8080".parse().unwrap()
+    );
+    assert_eq!(
+        configuration.mail_listen_address,
+        Some("[::1]:2525".parse().unwrap())
+    );
+    assert_eq!(
+        configuration.imap.listen_address,
+        Some("[::1]:2143".parse().unwrap())
+    );
+
+    for (contents, values, expected) in [
+        ("[smtp]", vec![], None),
+        ("[smtp]\nport = 2525", vec![], Some("127.0.0.1:2525")),
+        ("[smtp]\nbind_address = '::1'", vec![], Some("[::1]:1025")),
+        (
+            "",
+            vec![("SANDPOST_SMTP_PORT", "2525")],
+            Some("127.0.0.1:2525"),
+        ),
+        (
+            "",
+            vec![("SANDPOST_SMTP_BIND_ADDRESS", "::1")],
+            Some("[::1]:1025"),
+        ),
+    ] {
+        let configuration = listener_sources(contents, &values).unwrap();
+        assert_eq!(
+            configuration.mail_listen_address,
+            expected.map(|address| address.parse().unwrap())
+        );
+    }
+}
+
+/// IMAP defaults to enabled; either source may disable it, and environment may re-enable it.
+#[test]
+fn imap_enable_precedence() {
+    for (contents, values, expected) in [
+        ("", vec![], true),
+        ("[imap]\nenabled = false", vec![], false),
+        ("", vec![("SANDPOST_IMAP_ENABLED", "false")], false),
+        (
+            "[imap]\nenabled = true",
+            vec![("SANDPOST_IMAP_ENABLED", "false")],
+            false,
+        ),
+        (
+            "[imap]\nenabled = false\nbind_address = '::1'\nport = 2143",
+            vec![("SANDPOST_IMAP_ENABLED", "true")],
+            true,
+        ),
+    ] {
+        let configuration = listener_sources(contents, &values).unwrap();
+        assert_eq!(configuration.imap.listen_address.is_some(), expected);
+        if contents.contains("2143") {
+            assert_eq!(
+                configuration.imap.listen_address,
+                Some("[::1]:2143".parse().unwrap())
+            );
+        }
+    }
+    // Disabled network IMAP requires no plaintext opt-in because no connections can be accepted.
+    assert!(
+        listener_sources("[imap]\nenabled = false\nbind_address = '0.0.0.0'", &[])
+            .unwrap()
+            .imap
+            .listen_address
+            .is_none()
+    );
+}
+
+/// Reject invalid typed listener values and unknown keys with file/field context.
+#[test]
+fn invalid_listener_files() {
+    for section in ["http", "smtp", "imap"] {
+        for field in [
+            "bind_address = 'hostname'",
+            "bind_address = '[::1]'",
+            "bind_address = 123",
+            "port = -1",
+            "port = 65536",
+            "port = '8025'",
+            "port = 1.5",
+            "unknown = true",
+        ] {
+            let error = listener_sources(&format!("[{section}]\n{field}"), &[]).unwrap_err();
+            assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+            assert!(
+                error.to_string().contains(field.split(' ').next().unwrap()),
+                "{error}"
+            );
+        }
+    }
+    for value in ["'false'", "0", "'off'"] {
+        assert!(matches!(
+            listener_sources(&format!("[imap]\nenabled = {value}"), &[]),
+            Err(ConfigurationError::File { .. })
+        ));
+    }
+}
+
+/// Invalid environment fields report their names even while IMAP is disabled.
+#[test]
+fn invalid_listener_environment_values() {
+    for variable in [
+        "SANDPOST_HTTP_BIND_ADDRESS",
+        "SANDPOST_SMTP_BIND_ADDRESS",
+        "SANDPOST_IMAP_BIND_ADDRESS",
+    ] {
+        for value in ["localhost", "127.0.0.1:80", "[::1]", "300.1.1.1", ""] {
+            let error =
+                listener_sources("[imap]\nenabled = false", &[(variable, value)]).unwrap_err();
+            assert!(error.to_string().contains(variable), "{error}");
+        }
+    }
+    for variable in [
+        "SANDPOST_HTTP_PORT",
+        "SANDPOST_SMTP_PORT",
+        "SANDPOST_IMAP_PORT",
+    ] {
+        for value in ["-1", "65536", "1.5", "abc", ""] {
+            let error =
+                listener_sources("[imap]\nenabled = false", &[(variable, value)]).unwrap_err();
+            assert!(error.to_string().contains(variable), "{error}");
+        }
+        for value in ["0", "65535"] {
+            assert!(listener_sources("", &[(variable, value)]).is_ok());
+        }
+    }
+    for value in ["off", "1", "yes", "FALSE", ""] {
+        let error = listener_sources("", &[("SANDPOST_IMAP_ENABLED", value)]).unwrap_err();
+        assert!(
+            error.to_string().contains("SANDPOST_IMAP_ENABLED"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("true or false"), "{error}");
+    }
+}
+
+/// Legacy variables fail even when empty, disabled, or superseded by valid new settings.
+#[test]
+fn legacy_listener_settings_require_migration() {
+    for (variable, replacement) in [
+        (
+            "SANDPOST_HTTP_LISTEN",
+            "SANDPOST_HTTP_BIND_ADDRESS and SANDPOST_HTTP_PORT",
+        ),
+        (
+            "SANDPOST_SMTP_LISTEN",
+            "SANDPOST_SMTP_BIND_ADDRESS and SANDPOST_SMTP_PORT",
+        ),
+        ("SANDPOST_IMAP_LISTEN", "SANDPOST_IMAP_ENABLED=false"),
+    ] {
+        for value in ["", "off", "127.0.0.1:0"] {
+            let error = Configuration::from_values(|name| match name {
+                name if name == variable => Some(value.into()),
+                "SANDPOST_HTTP_PORT" => Some("8080".into()),
+                _ => None,
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains(variable), "{error}");
+            assert!(error.to_string().contains("no longer supported"), "{error}");
+            assert!(error.to_string().contains(replacement), "{error}");
+        }
+    }
+}
+
+/// Detect exact, wildcard, and mapped conflicts without rejecting distinct interfaces or port zero.
+#[test]
+fn listener_address_conflicts() {
+    for (first, second) in [
+        ("127.0.0.1", "127.0.0.1"),
+        ("0.0.0.0", "127.0.0.1"),
+        ("127.0.0.1", "0.0.0.0"),
+        ("::1", "::1"),
+        ("::", "::1"),
+        ("127.0.0.1", "::ffff:127.0.0.1"),
+    ] {
+        for (first_section, second_section) in
+            [("http", "smtp"), ("http", "imap"), ("smtp", "imap")]
+        {
+            let contents = format!(
+                "[{first_section}]\nbind_address = '{first}'\nport = 25000\n[{second_section}]\nbind_address = '{second}'\nport = 25000"
+            );
+            let error = listener_sources(&contents, &[("SANDPOST_IMAP_TLS", "off")]).unwrap_err();
+            assert!(error.to_string().contains("conflicts"), "{error}");
+        }
+    }
+    for (first, second, port) in [
+        ("127.0.0.1", "127.0.0.2", 25000),
+        ("::1", "::2", 25000),
+        ("127.0.0.1", "::1", 25000),
+        ("127.0.0.1", "127.0.0.1", 0),
+    ] {
+        let contents = format!(
+            "[http]\nbind_address = '{first}'\nport = {port}\n[smtp]\nbind_address = '{second}'\nport = {port}"
+        );
+        listener_sources(&contents, &[]).unwrap();
+    }
+    listener_sources("[http]\nport = 1143\n[imap]\nenabled = false", &[]).unwrap();
+}
+
+/// Read each SMTP security policy from TOML without pinning the persisted listener address.
+#[test]
+fn mail_security_file_policies_and_defaults() {
+    for (value, expected) in [
+        ("auto", MailAuthenticationSetting::Automatic),
+        ("required", MailAuthenticationSetting::Required),
+        ("optional", MailAuthenticationSetting::Optional),
+    ] {
+        let configuration = listener_sources(&format!("[smtp]\nauth = '{value}'"), &[]).unwrap();
+        assert_eq!(configuration.mail_authentication, expected);
+        assert!(configuration.mail_listen_address.is_none());
+    }
+    for (value, expected) in [
+        ("auto", MailEncryptionSetting::Automatic),
+        ("required", MailEncryptionSetting::Required),
+        ("off", MailEncryptionSetting::Disabled),
+    ] {
+        let configuration = listener_sources(
+            &format!("[smtp]\ntls = '{value}'\ntls_private_key = 'mail.key'"),
+            &[("SANDPOST_SMTP_TLS_CERTIFICATE", "mail.crt")],
+        )
+        .unwrap();
+        assert_eq!(configuration.mail_encryption, expected);
+        assert!(configuration.mail_listen_address.is_none());
+    }
+    for (value, expected) in [
+        ("starttls", MailEncryptionMode::StartTls),
+        ("implicit", MailEncryptionMode::Implicit),
+    ] {
+        let configuration = listener_sources(
+            &format!("[smtp]\ntls_mode = '{value}'\ntls_private_key = 'mail.key'"),
+            &[("SANDPOST_SMTP_TLS_CERTIFICATE", "mail.crt")],
+        )
+        .unwrap();
+        assert_eq!(configuration.mail_encryption_mode, expected);
+    }
+    let configuration = listener_sources("[smtp]", &[]).unwrap();
+    assert_eq!(
+        configuration.mail_authentication,
+        MailAuthenticationSetting::Automatic
+    );
+    assert_eq!(
+        configuration.mail_encryption,
+        MailEncryptionSetting::Automatic
+    );
+    assert_eq!(
+        configuration.mail_encryption_mode,
+        MailEncryptionMode::StartTls
+    );
+    assert!(configuration.mail_certificate.is_none());
+}
+
+/// Each environment policy overrides only its own TOML field; key overrides keep working-directory semantics.
+#[test]
+fn mail_security_environment_overrides_file_fields() {
+    let contents = "[smtp]\nauth = 'required'\ntls = 'required'\ntls_mode = 'implicit'\ntls_private_key = 'file.key'";
+    for (variable, value, expected_authentication, expected_encryption, expected_mode) in [
+        (
+            "SANDPOST_SMTP_AUTH",
+            "optional",
+            MailAuthenticationSetting::Optional,
+            MailEncryptionSetting::Required,
+            MailEncryptionMode::Implicit,
+        ),
+        (
+            "SANDPOST_SMTP_TLS",
+            "off",
+            MailAuthenticationSetting::Required,
+            MailEncryptionSetting::Disabled,
+            MailEncryptionMode::Implicit,
+        ),
+        (
+            "SANDPOST_SMTP_TLS_MODE",
+            "starttls",
+            MailAuthenticationSetting::Required,
+            MailEncryptionSetting::Required,
+            MailEncryptionMode::StartTls,
+        ),
+        (
+            "SANDPOST_SMTP_TLS_PRIVATE_KEY",
+            "override.key",
+            MailAuthenticationSetting::Required,
+            MailEncryptionSetting::Required,
+            MailEncryptionMode::Implicit,
+        ),
+    ] {
+        let configuration = listener_sources(
+            contents,
+            &[
+                ("SANDPOST_SMTP_TLS_CERTIFICATE", "certificate.crt"),
+                (variable, value),
+            ],
+        )
+        .unwrap();
+        assert_eq!(configuration.mail_authentication, expected_authentication);
+        assert_eq!(configuration.mail_encryption, expected_encryption);
+        assert_eq!(configuration.mail_encryption_mode, expected_mode);
+        let paths = configuration.mail_certificate.unwrap();
+        assert_eq!(paths.certificate_chain, PathBuf::from("certificate.crt"));
+        if variable == "SANDPOST_SMTP_TLS_PRIVATE_KEY" {
+            assert_eq!(paths.private_key, PathBuf::from("override.key"));
+        } else {
+            assert!(paths.private_key.is_absolute());
+            assert!(paths.private_key.ends_with("file.key"));
+        }
+    }
+}
+
+/// Refuse misspelled policy values, invalid types and incomplete TLS settings rather than using defaults.
+#[test]
+fn invalid_mail_security_files_report_allowed_values() {
+    for (field, value, expected) in [
+        ("auth", "'requird'", "optional"),
+        ("auth", "true", "auth"),
+        ("tls", "'enabled'", "off"),
+        ("tls", "42", "tls"),
+        ("tls_mode", "'smtps'", "starttls"),
+        ("tls_mode", "false", "tls_mode"),
+        ("tls_private_key", "true", "tls_private_key"),
+        ("tls_certificate", "true", "tls_certificate"),
+    ] {
+        let error = listener_sources(
+            &format!("[smtp]\n{field} = {value}"),
+            &[
+                ("SANDPOST_SMTP_AUTH", "optional"),
+                ("SANDPOST_SMTP_TLS", "off"),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    for contents in [
+        "[smtp]\ntls_private_key = 'mail.key'",
+        "[smtp]\ntls = 'required'",
+        "[smtp]\ntls_mode = 'implicit'",
+    ] {
+        assert!(listener_sources(contents, &[]).is_err(), "{contents}");
+    }
+    for (variable, value, field) in [
+        ("SANDPOST_SMTP_AUTH", "requird", "auth = 'auto'"),
+        ("SANDPOST_SMTP_TLS", "enabled", "tls = 'auto'"),
+        ("SANDPOST_SMTP_TLS_MODE", "smtps", "tls_mode = 'starttls'"),
+    ] {
+        let error =
+            listener_sources(&format!("[smtp]\n{field}"), &[(variable, value)]).unwrap_err();
+        assert!(error.to_string().contains(variable), "{error}");
+    }
+}
+
+/// File certificate/key paths resolve from the configuration directory and feed TLS loading and IMAP fallback.
+#[test]
+fn mail_security_file_key_loads_a_real_certificate() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let certificate_path = directory.0.join("certificate.pem");
+    let key_path = directory.0.join("private key.pem");
+    std::fs::write(&certificate_path, certificate.cert.pem()).unwrap();
+    std::fs::write(&key_path, certificate.signing_key.serialize_pem()).unwrap();
+    let certificate_value = certificate_path.to_string_lossy().into_owned();
+    for (file_certificate, private_key) in [
+        (None, PathBuf::from("private key.pem")),
+        (
+            Some(PathBuf::from("certificate.pem")),
+            PathBuf::from("private key.pem"),
+        ),
+        (Some(certificate_path.clone()), key_path.clone()),
+    ] {
+        let certificate_field = file_certificate
+            .as_ref()
+            .map(|path| format!("tls_certificate = '{}'\n", path.display()))
+            .unwrap_or_default();
+        // TOML literal strings also preserve Windows path separators.
+        std::fs::write(
+            &configuration_path,
+            format!(
+                "[smtp]\ntls = 'required'\n{certificate_field}tls_private_key = '{}'",
+                private_key.display()
+            ),
+        )
+        .unwrap();
+        let configuration = Configuration::from_sources(
+            |name| {
+                (name == "SANDPOST_SMTP_TLS_CERTIFICATE" && file_certificate.is_none())
+                    .then(|| certificate_value.clone())
+            },
+            Some(shared_file(configuration_path.clone())),
+        )
+        .unwrap();
+        let paths = configuration.mail_certificate.as_ref().unwrap();
+        assert_eq!(paths.certificate_chain, certificate_path);
+        assert_eq!(paths.private_key, key_path);
+        assert_eq!(configuration.imap.certificate.as_ref(), Some(paths));
+        let encryption = crate::mail_listeners::MailEncryption::load(&configuration).unwrap();
+        assert_eq!(
+            encryption.describe("127.0.0.1:1025".parse().unwrap()),
+            sandpost_application::MailListenerEncryption::StartTlsRequired
+        );
+        std::fs::remove_file(&key_path).unwrap();
+        assert!(
+            crate::mail_listeners::MailEncryption::load(&configuration)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("SMTP TLS certificate")
+        );
+        std::fs::write(&key_path, certificate.signing_key.serialize_pem()).unwrap();
+    }
+}
+
+/// Resolve IMAP security, advertised host, and session limits from TOML before applying defaults.
+#[test]
+fn imap_file_security_policies_and_defaults() {
+    let defaults = listener_sources("[imap]", &[]).unwrap().imap;
+    assert_eq!(defaults.encryption, ImapEncryptionSetting::Automatic);
+    assert_eq!(defaults.encryption_mode, ImapEncryptionMode::Implicit);
+    assert!(defaults.certificate.is_none());
+    assert!(defaults.advertised_host.is_none());
+    assert_eq!(defaults.maximum_connection_count, 64);
+    for (value, expected) in [
+        ("auto", ImapEncryptionSetting::Automatic),
+        ("required", ImapEncryptionSetting::Required),
+        ("off", ImapEncryptionSetting::Disabled),
+    ] {
+        let configuration = listener_sources(&format!("[imap]\ntls = '{value}'\ntls_certificate = 'imap.crt'\ntls_private_key = 'imap.key'"), &[]).unwrap();
+        assert_eq!(configuration.imap.encryption, expected);
+    }
+    for (value, expected) in [
+        ("implicit", ImapEncryptionMode::Implicit),
+        ("starttls", ImapEncryptionMode::StartTls),
+    ] {
+        let configuration =
+            listener_sources(&format!("[imap]\ntls_mode = '{value}'"), &[]).unwrap();
+        assert_eq!(configuration.imap.encryption_mode, expected);
+    }
+    let configuration = listener_sources(
+        "[imap]\nhost = '  mail.example.test  '\nmax_connections = 8",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        configuration.imap.advertised_host.as_deref(),
+        Some("mail.example.test")
+    );
+    assert_eq!(configuration.imap.maximum_connection_count, 8);
+    for count in [1, 10000] {
+        assert_eq!(
+            listener_sources(&format!("[imap]\nmax_connections = {count}"), &[])
+                .unwrap()
+                .imap
+                .maximum_connection_count,
+            count
+        );
+    }
+    assert!(
+        listener_sources("[imap]\nhost = '   '", &[])
+            .unwrap()
+            .imap
+            .advertised_host
+            .is_none()
+    );
+}
+
+/// Each IMAP environment field overrides its TOML counterpart without replacing other file values.
+#[test]
+fn imap_environment_overrides_each_file_security_field() {
+    let contents = "[imap]\ntls = 'required'\ntls_mode = 'starttls'\ntls_certificate = 'file.crt'\ntls_private_key = 'file.key'\nhost = 'file.example.test'\nmax_connections = 8";
+    for (variable, value) in [
+        ("SANDPOST_IMAP_TLS", "off"),
+        ("SANDPOST_IMAP_TLS_MODE", "implicit"),
+        ("SANDPOST_IMAP_TLS_CERTIFICATE", "environment.crt"),
+        ("SANDPOST_IMAP_TLS_PRIVATE_KEY", "environment.key"),
+        ("SANDPOST_IMAP_HOST", "environment.example.test"),
+        ("SANDPOST_IMAP_MAX_CONNECTIONS", "16"),
+    ] {
+        let configuration = listener_sources(contents, &[(variable, value)])
+            .unwrap()
+            .imap;
+        assert_eq!(
+            configuration.encryption,
+            if variable == "SANDPOST_IMAP_TLS" {
+                ImapEncryptionSetting::Disabled
+            } else {
+                ImapEncryptionSetting::Required
+            }
+        );
+        assert_eq!(
+            configuration.encryption_mode,
+            if variable == "SANDPOST_IMAP_TLS_MODE" {
+                ImapEncryptionMode::Implicit
+            } else {
+                ImapEncryptionMode::StartTls
+            }
+        );
+        assert_eq!(
+            configuration.advertised_host.as_deref(),
+            Some(if variable == "SANDPOST_IMAP_HOST" {
+                "environment.example.test"
+            } else {
+                "file.example.test"
+            })
+        );
+        assert_eq!(
+            configuration.maximum_connection_count,
+            if variable == "SANDPOST_IMAP_MAX_CONNECTIONS" {
+                16
+            } else {
+                8
+            }
+        );
+        let paths = configuration.certificate.unwrap();
+        if variable == "SANDPOST_IMAP_TLS_CERTIFICATE" {
+            assert_eq!(paths.certificate_chain, PathBuf::from("environment.crt"));
+        } else {
+            assert!(paths.certificate_chain.is_absolute());
+            assert!(paths.certificate_chain.ends_with("file.crt"));
+        }
+        if variable == "SANDPOST_IMAP_TLS_PRIVATE_KEY" {
+            assert_eq!(paths.private_key, PathBuf::from("environment.key"));
+        } else {
+            assert!(paths.private_key.is_absolute());
+            assert!(paths.private_key.ends_with("file.key"));
+        }
+    }
+    assert!(
+        listener_sources(contents, &[("SANDPOST_IMAP_HOST", "")])
+            .unwrap()
+            .imap
+            .advertised_host
+            .is_none()
+    );
+}
+
+/// Resolve complete dedicated pairs across sources, fall back to SMTP only when neither IMAP field exists.
+#[test]
+fn imap_file_certificate_pairing_and_mail_fallback() {
+    let mail_environment = [
+        ("SANDPOST_SMTP_TLS_CERTIFICATE", "smtp.crt"),
+        ("SANDPOST_SMTP_TLS_PRIVATE_KEY", "smtp.key"),
+    ];
+    let configuration = listener_sources("[imap]\ntls = 'required'", &mail_environment).unwrap();
+    assert_eq!(
+        configuration.imap.certificate,
+        configuration.mail_certificate
+    );
+    for (contents, variable, value) in [
+        (
+            "[imap]\ntls_certificate = 'file.crt'",
+            "SANDPOST_IMAP_TLS_PRIVATE_KEY",
+            "environment.key",
+        ),
+        (
+            "[imap]\ntls_private_key = 'file.key'",
+            "SANDPOST_IMAP_TLS_CERTIFICATE",
+            "environment.crt",
+        ),
+    ] {
+        assert!(
+            listener_sources(contents, &[(variable, value)])
+                .unwrap()
+                .imap
+                .certificate
+                .is_some()
+        );
+        let error = listener_sources(contents, &mail_environment).unwrap_err();
+        assert!(error.to_string().contains("together"), "{error}");
+    }
+    let dedicated = listener_sources(
+        "[imap]\ntls_certificate = 'imap.crt'\ntls_private_key = 'imap.key'",
+        &mail_environment,
+    )
+    .unwrap();
+    assert_ne!(dedicated.imap.certificate, dedicated.mail_certificate);
+    assert!(listener_sources("[imap]\ntls = 'required'", &[]).is_err());
+    assert!(listener_sources("[imap]\nbind_address = '0.0.0.0'", &[]).is_err());
+    assert!(listener_sources("[imap]\nbind_address = '0.0.0.0'\ntls = 'off'", &[]).is_ok());
+}
+
+/// File typos, invalid types, unsafe hosts and out-of-range limits fail without default fallback.
+#[test]
+fn invalid_imap_file_security_values() {
+    for field in [
+        "tls = 'enabled'",
+        "tls = false",
+        "tls_mode = 'smtps'",
+        "tls_mode = 1",
+        "tls_certificate = true",
+        "tls_private_key = 42",
+        "host = 42",
+        "max_connections = -1",
+        "max_connections = '64'",
+        "max_connections = false",
+    ] {
+        let error = listener_sources(&format!("[imap]\n{field}"), &[]).unwrap_err();
+        assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+    }
+    for field in [
+        "host = 'bad host'",
+        "host = 'bad/host'",
+        "max_connections = 0",
+        "max_connections = 10001",
+    ] {
+        assert!(
+            listener_sources(&format!("[imap]\n{field}"), &[]).is_err(),
+            "{field}"
+        );
+    }
+    for (variable, invalid_value, valid_field) in [
+        ("SANDPOST_IMAP_TLS", "enabled", "tls = 'auto'"),
+        ("SANDPOST_IMAP_TLS_MODE", "smtps", "tls_mode = 'implicit'"),
+        (
+            "SANDPOST_IMAP_HOST",
+            "bad host",
+            "host = 'mail.example.test'",
+        ),
+        ("SANDPOST_IMAP_MAX_CONNECTIONS", "0", "max_connections = 8"),
+    ] {
+        let error = listener_sources(
+            &format!("[imap]\n{valid_field}"),
+            &[(variable, invalid_value)],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(variable), "{error}");
+    }
+}
+
+/// Real file certificates support relative and absolute paths and load through the existing TLS implementation.
+#[test]
+fn imap_file_certificate_paths_load_real_keys() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let certificate_path = directory.0.join("imap cert.pem");
+    let private_key_path = directory.0.join("imap key.pem");
+    std::fs::write(&certificate_path, certificate.cert.pem()).unwrap();
+    std::fs::write(&private_key_path, certificate.signing_key.serialize_pem()).unwrap();
+    for (certificate_value, private_key_value) in [
+        (
+            PathBuf::from("imap cert.pem"),
+            PathBuf::from("imap key.pem"),
+        ),
+        (certificate_path.clone(), private_key_path.clone()),
+    ] {
+        std::fs::write(
+            &configuration_path,
+            format!(
+                "[imap]\ntls = 'required'\ntls_certificate = '{}'\ntls_private_key = '{}'",
+                certificate_value.display(),
+                private_key_value.display()
+            ),
+        )
+        .unwrap();
+        let configuration =
+            Configuration::from_sources(|_| None, Some(shared_file(configuration_path.clone())))
+                .unwrap();
+        let paths = configuration.imap.certificate.unwrap();
+        assert_eq!(paths.certificate_chain, certificate_path);
+        assert_eq!(paths.private_key, private_key_path);
+        assert!(
+            sandpost_imap::TlsConfiguration::from_pem_files(
+                &paths.certificate_chain,
+                &paths.private_key
+            )
+            .is_ok()
+        );
+    }
+}
+
+/// Database paths resolve below environment overrides and against the independently selected data directory.
+#[test]
+fn storage_file_database_path_precedence() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    std::fs::write(
+        &configuration_path,
+        "[storage]\ndata_directory = 'mail data'\ndatabase_path = 'databases/capture.sqlite3'",
+    )
+    .unwrap();
+    for (environment_directory, environment_database) in [
+        (None, None),
+        (Some("environment data"), None),
+        (None, Some("override.sqlite3")),
+        (Some("environment data"), Some("override.sqlite3")),
+    ] {
+        let configuration = Configuration::from_sources(
+            |name| match name {
+                "SANDPOST_DATA_DIRECTORY" => environment_directory.map(str::to_owned),
+                "SANDPOST_DATABASE_PATH" => environment_database.map(str::to_owned),
+                _ => None,
+            },
+            Some(shared_file(configuration_path.clone())),
+        )
+        .unwrap();
+        let expected_directory = environment_directory
+            .map(PathBuf::from)
+            .unwrap_or_else(|| directory.0.join("mail data"));
+        assert_eq!(configuration.data_directory, expected_directory);
+        assert_eq!(
+            configuration.database_path,
+            expected_directory.join(environment_database.unwrap_or("databases/capture.sqlite3"))
+        );
+        assert!(!configuration.database_path.exists());
+    }
+    // Omitting the data directory still anchors a relative database path to the platform default.
+    let configuration =
+        listener_sources("[storage]\ndatabase_path = 'custom.sqlite3'", &[]).unwrap();
+    assert_eq!(
+        configuration.database_path,
+        default_data_directory().join("custom.sqlite3")
+    );
+}
+
+/// Absolute TOML and environment database paths remain absolute regardless of the data directory.
+#[test]
+fn storage_absolute_database_paths_and_invalid_types() {
+    let directory = ConfigurationDirectory::new();
+    let configuration_path = directory.configuration_path();
+    let absolute_database = directory.0.join("external database.sqlite3");
+    let environment_database = directory.0.join("environment.sqlite3");
+    std::fs::write(
+        &configuration_path,
+        format!(
+            "[storage]\ndata_directory = 'mail'\ndatabase_path = '{}'",
+            absolute_database.display()
+        ),
+    )
+    .unwrap();
+    for environment_directory in [None, Some("environment data")] {
+        let configuration = Configuration::from_sources(
+            |name| {
+                (name == "SANDPOST_DATA_DIRECTORY")
+                    .then(|| environment_directory.map(str::to_owned))
+                    .flatten()
+            },
+            Some(shared_file(configuration_path.clone())),
+        )
+        .unwrap();
+        assert_eq!(configuration.database_path, absolute_database);
+        let configuration = Configuration::from_sources(
+            |name| match name {
+                "SANDPOST_DATA_DIRECTORY" => environment_directory.map(str::to_owned),
+                "SANDPOST_DATABASE_PATH" => {
+                    Some(environment_database.to_string_lossy().into_owned())
+                }
+                _ => None,
+            },
+            Some(shared_file(configuration_path.clone())),
+        )
+        .unwrap();
+        assert_eq!(configuration.database_path, environment_database);
+    }
+    for value in ["42", "true", "[]", "{}"] {
+        let error = listener_sources(
+            &format!("[storage]\ndatabase_path = {value}"),
+            &[("SANDPOST_DATABASE_PATH", "override.sqlite3")],
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+        assert!(error.to_string().contains("database_path"), "{error}");
+    }
+}
+
+/// Global TOML fields use their existing defaults and accept root-only limits and tracing directives.
+#[test]
+fn application_file_settings_and_defaults() {
+    let defaults = listener_sources("[sandpost]", &[]).unwrap();
+    assert_eq!(defaults.maximum_scope_depth, Some(2));
+    assert_eq!(defaults.log_level, "info");
+    for depth in [0, 4] {
+        let configuration =
+            listener_sources(&format!("[sandpost]\nmax_scope_depth = {depth}"), &[]).unwrap();
+        assert_eq!(configuration.maximum_scope_depth, Some(depth));
+        assert_eq!(configuration.log_level, "info");
+    }
+    for filter in [
+        "off",
+        "error",
+        "warn",
+        "info",
+        "debug",
+        "trace",
+        "info,sandpost_application=debug",
+    ] {
+        let configuration =
+            listener_sources(&format!("[sandpost]\nlog_level = '{filter}'"), &[]).unwrap();
+        assert_eq!(configuration.log_level, filter);
+        assert_eq!(configuration.maximum_scope_depth, Some(2));
+        assert!(tracing_subscriber::EnvFilter::try_new(&configuration.log_level).is_ok());
+    }
+}
+
+/// Environment overrides of global settings preserve the other field from TOML.
+#[test]
+fn application_environment_overrides_file_fields() {
+    let contents = "[sandpost]\nmax_scope_depth = 4\nlog_level = 'debug'";
+    for (values, expected_depth, expected_filter) in [
+        (vec![], 4, "debug"),
+        (vec![("SANDPOST_MAX_SCOPE_DEPTH", "0")], 0, "debug"),
+        (vec![("SANDPOST_LOG_LEVEL", "warn")], 4, "warn"),
+        (
+            vec![
+                ("SANDPOST_MAX_SCOPE_DEPTH", "8"),
+                ("SANDPOST_LOG_LEVEL", "trace"),
+            ],
+            8,
+            "trace",
+        ),
+    ] {
+        let configuration = listener_sources(contents, &values).unwrap();
+        assert_eq!(configuration.maximum_scope_depth, Some(expected_depth));
+        assert_eq!(configuration.log_level, expected_filter);
+    }
+    for value in ["-1", "unlimited", ""] {
+        let error = listener_sources(contents, &[("SANDPOST_MAX_SCOPE_DEPTH", value)]).unwrap_err();
+        assert!(
+            error.to_string().contains("SANDPOST_MAX_SCOPE_DEPTH"),
+            "{error}"
+        );
+    }
+}
+
+/// Global file values reject unsupported types and misspelled keys without silent defaults.
+#[test]
+fn invalid_application_file_settings() {
+    for field in [
+        "max_scope_depth = -1",
+        "max_scope_depth = '4'",
+        "max_scope_depth = true",
+        "log_level = 1",
+        "log_level = false",
+        "log_level = []",
+        "log_levle = 'info'",
+    ] {
+        let error = listener_sources(&format!("[sandpost]\n{field}"), &[]).unwrap_err();
+        assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+    }
+    // Preserve the existing tracing parser's validation rather than limiting logs to level names.
+    let configuration = listener_sources(
+        "[sandpost]\nlog_level = 'sandpost_application=invalid'",
+        &[],
+    )
+    .unwrap();
+    assert!(tracing_subscriber::EnvFilter::try_new(&configuration.log_level).is_err());
+}
+
+/// SMTP certificate overrides preserve the other TOML field and incomplete merged pairs fail startup.
+#[test]
+fn mail_file_certificate_environment_overrides() {
+    let contents = "[smtp]\ntls_certificate = 'file.crt'\ntls_private_key = 'file.key'";
+    for (variable, value) in [
+        ("SANDPOST_SMTP_TLS_CERTIFICATE", "override.crt"),
+        ("SANDPOST_SMTP_TLS_PRIVATE_KEY", "override.key"),
+    ] {
+        let configuration = listener_sources(contents, &[(variable, value)]).unwrap();
+        let paths = configuration.mail_certificate.unwrap();
+        if variable == "SANDPOST_SMTP_TLS_CERTIFICATE" {
+            assert_eq!(paths.certificate_chain, PathBuf::from("override.crt"));
+            assert!(paths.private_key.is_absolute());
+            assert!(paths.private_key.ends_with("file.key"));
+        } else {
+            assert!(paths.certificate_chain.is_absolute());
+            assert!(paths.certificate_chain.ends_with("file.crt"));
+            assert_eq!(paths.private_key, PathBuf::from("override.key"));
+        }
+    }
+    let configuration = listener_sources(
+        "[smtp]\ntls_certificate = 'file.crt'",
+        &[("SANDPOST_SMTP_TLS_PRIVATE_KEY", "environment.key")],
+    )
+    .unwrap();
+    assert!(
+        configuration
+            .mail_certificate
+            .unwrap()
+            .certificate_chain
+            .ends_with("file.crt")
+    );
+    let error = listener_sources("[smtp]\ntls_certificate = 'file.crt'", &[]).unwrap_err();
+    assert!(error.to_string().contains("together"), "{error}");
 }

@@ -76,6 +76,7 @@ impl SandpostRuntime {
         let desired_listener = match configuration.mail_listen_address {
             Some(address) => Some(DesiredListener {
                 address,
+                // Retain the existing API source for all operator overrides, including TOML.
                 source: MailListenerSource::Environment,
             }),
             None => storage

@@ -96,7 +96,7 @@ impl Display for StartupSummary<'_> {
                 }
                 rows
             }
-            None => vec![("Status", "disabled (SANDPOST_IMAP_LISTEN=off)".into())],
+            None => vec![("Status", "disabled (SANDPOST_IMAP_ENABLED=false)".into())],
         };
         write_section(formatter, "IMAP", &imap_rows)?;
         let mut web_rows = Vec::new();

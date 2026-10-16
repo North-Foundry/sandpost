@@ -1,10 +1,11 @@
 //! Bind, move, and stop the single global SMTP listener while the runtime keeps running.
 //!
 //! The global server's listener address is persisted in storage. At startup the runtime binds it,
-//! or the `SANDPOST_SMTP_LISTEN` environment override instead. Afterwards management edits
+//! or an explicit `[smtp]`/`SANDPOST_SMTP_BIND_ADDRESS`/`SANDPOST_SMTP_PORT` override
+//! instead. Afterwards management edits
 //! reconcile the listener through [`MailListenerControl`]. A persisted address that cannot be
 //! bound (for example, because the port is already in use) is reported as a failed listener
-//! instead of stopping the runtime; an environment override keeps its fail-fast startup behavior
+//! instead of stopping the runtime; an operator override keeps its fail-fast startup behavior
 //! because an operator asked for it explicitly.
 //!
 //! Every bind evaluates the authentication and TLS policies for its address, so moving the
@@ -222,7 +223,7 @@ impl MailServer {
         }
     }
 
-    /// Bind the startup listener, failing only for an environment override that cannot bind.
+    /// Bind the startup listener, failing only for an operator override that cannot bind.
     pub(crate) async fn start(&self, desired: Option<DesiredListener>) -> Result<(), RuntimeError> {
         let Some(listener) = desired else {
             return Ok(());
@@ -349,7 +350,7 @@ impl MailListenerControl for MailServer {
             };
         }
         if let Some(entry) = &state.entry {
-            // An environment override outranks the persisted address until the process restarts.
+            // A TOML/environment override outranks persistence until the process restarts.
             if entry.source == MailListenerSource::Environment {
                 return entry.status(authentication, encryption);
             }

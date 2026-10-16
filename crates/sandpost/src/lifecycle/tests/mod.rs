@@ -21,9 +21,10 @@ fn test_configuration() -> (Configuration, TestDirectory) {
     );
     let configuration = Configuration::from_values(|name| match name {
         "SANDPOST_DATA_DIRECTORY" => Some(directory.0.to_string_lossy().into_owned()),
-        "SANDPOST_HTTP_LISTEN" | "SANDPOST_SMTP_LISTEN" | "SANDPOST_IMAP_LISTEN" => {
-            Some("127.0.0.1:0".into())
-        }
+        "SANDPOST_HTTP_BIND_ADDRESS"
+        | "SANDPOST_SMTP_BIND_ADDRESS"
+        | "SANDPOST_IMAP_BIND_ADDRESS" => Some("127.0.0.1".into()),
+        "SANDPOST_HTTP_PORT" | "SANDPOST_SMTP_PORT" | "SANDPOST_IMAP_PORT" => Some("0".into()),
         _ => None,
     })
     .unwrap();
@@ -40,7 +41,7 @@ async fn modified_configuration_is_validated_before_runtime_start() {
             running.shutdown().await.unwrap();
             panic!("network IMAP without TLS must require an explicit plaintext opt-in");
         }
-        Err(error) => assert!(error.to_string().contains("SANDPOST_IMAP_LISTEN")),
+        Err(error) => assert!(error.to_string().contains("SANDPOST_IMAP_BIND_ADDRESS")),
     }
     assert!(
         !directory.0.exists(),
@@ -176,4 +177,5 @@ async fn runtime_serves_the_compiled_frontend_and_preserves_api_misses() {
     running.shutdown().await.unwrap();
 }
 
+mod imap;
 mod smtp;

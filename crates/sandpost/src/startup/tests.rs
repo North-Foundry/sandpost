@@ -64,7 +64,7 @@ fn default_configuration_reports_current_transport_and_storage_capabilities() {
     assert!(!output.contains('\u{1b}'));
     assert_eq!(
         row_value(&output, "Status"),
-        "disabled (SANDPOST_IMAP_LISTEN=off)"
+        "disabled (SANDPOST_IMAP_ENABLED=false)"
     );
     assert!(!output.contains("Inbox"));
 }
@@ -122,8 +122,10 @@ fn imap_section_reports_connection_details() {
 #[test]
 fn environment_overrides_are_reflected_without_printing_unrelated_settings() {
     let configuration = Configuration::from_values(|setting_name| match setting_name {
-        "SANDPOST_SMTP_LISTEN" => Some("192.0.2.10:2525".into()),
-        "SANDPOST_HTTP_LISTEN" => Some("192.0.2.11:8080".into()),
+        "SANDPOST_SMTP_BIND_ADDRESS" => Some("192.0.2.10".into()),
+        "SANDPOST_SMTP_PORT" => Some("2525".into()),
+        "SANDPOST_HTTP_BIND_ADDRESS" => Some("192.0.2.11".into()),
+        "SANDPOST_HTTP_PORT" => Some("8080".into()),
         "SANDPOST_DATA_DIRECTORY" => Some("/srv/mail-data".into()),
         "SANDPOST_DATABASE_PATH" => Some("/srv/custom/capture.sqlite3".into()),
         "SANDPOST_LOG_LEVEL" => Some("private-filter-value".into()),
@@ -162,7 +164,8 @@ fn environment_overrides_are_reflected_without_printing_unrelated_settings() {
 #[test]
 fn bound_listener_addresses_take_precedence_over_requested_addresses() {
     let configuration = Configuration::from_values(|setting_name| match setting_name {
-        "SANDPOST_SMTP_LISTEN" | "SANDPOST_HTTP_LISTEN" => Some("127.0.0.1:0".into()),
+        "SANDPOST_SMTP_BIND_ADDRESS" | "SANDPOST_HTTP_BIND_ADDRESS" => Some("127.0.0.1".into()),
+        "SANDPOST_SMTP_PORT" | "SANDPOST_HTTP_PORT" => Some("0".into()),
         _ => None,
     })
     .unwrap();
@@ -237,7 +240,8 @@ fn wildcard_and_specific_ipv6_addresses_have_usable_client_representations() {
 #[test]
 fn bootstrap_summary_prints_secret_once_and_labels_local_setup_url() {
     let configuration = Configuration::from_values(|name| match name {
-        "SANDPOST_HTTP_LISTEN" => Some("0.0.0.0:8025".into()),
+        "SANDPOST_HTTP_BIND_ADDRESS" => Some("0.0.0.0".into()),
+        "SANDPOST_HTTP_PORT" => Some("8025".into()),
         "SANDPOST_DATA_DIRECTORY" => Some("/data".into()),
         _ => None,
     })

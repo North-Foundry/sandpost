@@ -1,6 +1,6 @@
 //! Bind and serve the single IMAP service for every user's IMAP accounts.
 //!
-//! The listener is configured from the environment at startup. Its TLS policy follows the
+//! The listener is configured from TOML and environment overrides at startup. Its TLS policy follows the
 //! configuration: implicit TLS or STARTTLS with a certificate, required STARTTLS on network
 //! addresses, and clear text only on loopback unless explicitly allowed. A bind failure stops
 //! startup, like the HTTP listener.

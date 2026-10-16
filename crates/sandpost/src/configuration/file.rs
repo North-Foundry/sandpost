@@ -1,9 +1,13 @@
-//! The TOML configuration file supports only an optional storage data directory today.
+//! Strictly typed TOML listener and storage settings, before defaults and environment overrides.
 
-use super::{CONFIGURATION_PATH_SETTING, ConfigurationError};
+use super::{
+    CONFIGURATION_PATH_SETTING, ConfigurationError, ImapEncryptionMode, ImapEncryptionSetting,
+    MailAuthenticationSetting, MailEncryptionMode, MailEncryptionSetting,
+};
 use serde::Deserialize;
 use std::{
     io::ErrorKind,
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
@@ -11,18 +15,68 @@ use std::{
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct FileConfiguration {
-    storage: StorageConfiguration,
+    pub sandpost: ApplicationConfiguration,
+    pub storage: StorageConfiguration,
+    pub http: ListenerConfiguration,
+    pub smtp: MailConfiguration,
+    pub imap: ImapConfiguration,
+}
+
+/// Global application settings, independently overridden by environment fields.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct ApplicationConfiguration {
+    pub max_scope_depth: Option<usize>,
+    pub log_level: Option<String>,
+}
+
+/// Independently optional listener components; omission preserves lower-priority defaults.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct ListenerConfiguration {
+    pub bind_address: Option<IpAddr>,
+    pub port: Option<u16>,
+}
+
+/// SMTP listener components and security policy, independently overridden by environment fields.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct MailConfiguration {
+    pub bind_address: Option<IpAddr>,
+    pub port: Option<u16>,
+    pub auth: Option<MailAuthenticationSetting>,
+    pub tls: Option<MailEncryptionSetting>,
+    pub tls_mode: Option<MailEncryptionMode>,
+    pub tls_certificate: Option<PathBuf>,
+    pub tls_private_key: Option<PathBuf>,
+}
+
+/// IMAP may be disabled without changing any persisted accounts or mailbox state.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct ImapConfiguration {
+    pub enabled: Option<bool>,
+    pub bind_address: Option<IpAddr>,
+    pub port: Option<u16>,
+    pub tls: Option<ImapEncryptionSetting>,
+    pub tls_mode: Option<ImapEncryptionMode>,
+    pub tls_certificate: Option<PathBuf>,
+    pub tls_private_key: Option<PathBuf>,
+    pub host: Option<String>,
+    pub max_connections: Option<usize>,
 }
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct StorageConfiguration {
+pub(super) struct StorageConfiguration {
     data_directory: Option<String>,
+    pub database_path: Option<PathBuf>,
 }
 
 impl FileConfiguration {
     /// Read the file without creating it; a missing shared file selects defaults, while a missing
     /// explicit file is refused so a mistyped path cannot silently fall back.
+    /// Relative certificate/key paths are anchored to the configuration file's directory.
     pub(super) fn read(
         configuration_path: &Path,
         required: bool,
@@ -40,9 +94,25 @@ impl FileConfiguration {
             }
             Err(error) => return Err(invalid(configuration_path, error.to_string())),
         };
-        toml::from_str(&contents)
-            .map(Some)
-            .map_err(|error| invalid(configuration_path, error.to_string()))
+        let mut configuration: Self = toml::from_str(&contents)
+            .map_err(|error| invalid(configuration_path, error.to_string()))?;
+        for certificate_path in [
+            &mut configuration.smtp.tls_certificate,
+            &mut configuration.smtp.tls_private_key,
+            &mut configuration.imap.tls_certificate,
+            &mut configuration.imap.tls_private_key,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if certificate_path.is_relative() {
+                *certificate_path = configuration_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(&*certificate_path);
+            }
+        }
+        Ok(Some(configuration))
     }
 
     /// The configured data directory; blank strings use the system default and relative paths are
