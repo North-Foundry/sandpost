@@ -6,8 +6,9 @@ bound every account. Materialized memberships and retained references never gran
 
 ## Accounts and organization modes
 
-Accounts have `mode: mirror | independent`. New accounts default to Mirror; old
-credentials migrate to Independent to preserve their former account-local organization.
+Accounts have `mode: mirror | independent`. New accounts default to Mirror through
+the application API. The pre-release schema creates the mode columns directly;
+earlier development databases are not upgraded by this consolidated baseline.
 Legacy `mirror_views` remains an API compatibility input only: when no explicit mode
 is supplied, true selects Mirror and false selects Independent. Linked View selections
 are retained as compatibility data; Independent does not inherit primary smart Views.
@@ -141,14 +142,32 @@ remain supported. The operation matrix and original audit are in
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SANDPOST_IMAP_LISTEN` | `127.0.0.1:1143` | Listener address; `off` disables IMAP |
+| `SANDPOST_IMAP_ENABLED` | `true` | Enable IMAP; `false` disables the listener without changing stored accounts or mail data |
+| `SANDPOST_IMAP_BIND_ADDRESS` | `127.0.0.1` | Interface address |
+| `SANDPOST_IMAP_PORT` | `1143` | Listener port; `0` asks the operating system to allocate a port |
 | `SANDPOST_IMAP_TLS` | `auto` | With certificate, TLS; STARTTLS required off-loopback. Without one, clear text only on loopback. `required` always needs a certificate; `off` permits clear-text passwords on any address (explicit opt-in). |
 | `SANDPOST_IMAP_TLS_MODE` | `implicit` | `implicit` (IMAPS, usually 993) or `starttls` (usually 143) |
 | `SANDPOST_IMAP_TLS_CERTIFICATE`, `SANDPOST_IMAP_TLS_PRIVATE_KEY` | SMTP pair | PEM chain/key; set both or neither |
-| `SANDPOST_IMAP_HOST` | Bound address | Host shown in connection instructions |
+| `SANDPOST_IMAP_HOST` | Bound address | Advertised host shown in connection instructions; blank after trimming uses the bound address |
 | `SANDPOST_IMAP_MAX_CONNECTIONS` | `64` | Concurrent sessions, 1–10000 |
 
-`auto` without a certificate on a non-loopback address stops startup rather than accepting clear-text passwords; bind failure also stops startup. Startup prints IMAP host, port, security, and address, or `Status disabled`. Certificates load at startup; there is no certificate generation, and self-signed certificates must be trusted by the client or OS.
+TOML fields are `imap.tls`, `imap.tls_mode`, `imap.tls_certificate`, `imap.tls_private_key`, `imap.host`, and `imap.max_connections`. Each corresponding `SANDPOST_IMAP_*` variable independently overrides its TOML field, which overrides its default. Defaults are `auto`, `implicit`, the resolved SMTP certificate/key pair, the bound address, and `64`, respectively. The optional discovered config file is `~/.sandpost/config.toml` (`%USERPROFILE%\.sandpost\config.toml` on Windows); it may be absent. A path supplied through `SANDPOST_CONFIG` is required to exist. `auto` without a certificate on a non-loopback address stops startup rather than accepting clear-text passwords; bind failure also stops startup. Startup prints IMAP host, port, security, and address, or `Status disabled`. Disabling the listener leaves accounts, folders, flags, and all mail data intact. Port `0` is supported and startup reports the allocated port. Certificates load at startup; there is no certificate generation, and self-signed certificates must be trusted by the client or OS.
+
+TOML TLS policy strings are strict lowercase values; invalid values, unknown keys, or invalid types fail startup without fallback. Defaults apply only to omitted fields. The certificate and key are independently merged from environment and TOML, then must both be present or both absent. An incomplete dedicated IMAP pair is an error; the missing half is never mixed with SMTP. When both IMAP pair fields are absent after merging, IMAP uses the resolved SMTP pair. Relative certificate and key paths in TOML resolve from the TOML file's directory; relative `SANDPOST_IMAP_TLS_CERTIFICATE` and `SANDPOST_IMAP_TLS_PRIVATE_KEY` paths resolve from the working directory. Absolute paths remain unchanged. A blank host after trimming selects the bound address. `max_connections` must be an integer from 1 through 10000. The existing non-loopback plaintext guard, TLS mode behavior, and preservation of accounts and mail data while IMAP is disabled remain unchanged.
+
+Example optional IMAP settings:
+
+```toml
+[imap]
+tls = "auto"
+tls_mode = "implicit"
+# tls_certificate = "certs/imap-chain.pem"
+# tls_private_key = "certs/imap-key.pem"
+# host = "imap.example.test"
+max_connections = 64
+```
+
+The commented certificate, key, and host values are optional, so this example uses defaults as written.
 
 ## Management API and limits
 

@@ -37,7 +37,7 @@ was not governed by durable Independent references.
 | 13. UI | Existing Vue/shadcn-vue patterns are retained. Create/edit expose mode and concise ownership descriptions, prevent empty mode selection, explain reconnection, show Independent smart settings conditionally, and remove obsolete linked/exposure configuration from the workflow. Primary COPY and supported flag controls use both browser and native clients. |
 | 14. Matrix/races | The operation matrix covers both modes, including Empty Trash. Immediate SQLite transactions serialize references, UID allocation, generation changes, folder mutations and collection. Tests cover competing COPY, duplicate-batch rollback, stale catalogs/handles, live revocation, mode changes, restart and sequence-number handling. |
 | 15. Tests | Coverage mapping and executed commands are recorded below. Both memory and file-backed storage conformance pass. |
-| 16–17. Architecture/execution | Existing crate boundaries and storage traits are retained. Focused migrations preserve old state. Audit, design, implementation, validation and final review are recorded in the matrix, contracts and this report. No general-purpose import or unrelated feature was added. |
+| 16–17. Architecture/execution | Existing crate boundaries and storage traits are retained. The consolidated pre-release migrations create the current schema directly. Audit, design, implementation, validation and final review are recorded in the matrix, contracts and this report. No general-purpose import or unrelated feature was added. |
 
 ## Affected components
 
@@ -57,12 +57,12 @@ was not governed by durable Independent references.
 - Storage conformance, migration, service, protocol, runtime, frontend, desktop and
   real native/binary smoke tests; corresponding `.agents/docs/` contracts.
 
-New focused SQLite migrations are `0042` through `0056`; earlier pending migrations
-`0040` and `0041` were preserved. Existing credentials become Independent so their
-account-local folder IDs, memberships, flags and UIDs remain intact. Mirror projections
-receive separate identities. Backfills preserve overrides and primary Trash, use fresh
-internal keys to avoid legacy naming collisions, and invalidate obsolete fingerprints.
-Upgrade tests start from actual earlier migration prefixes and verify preserved data.
+The SQLite migrations now form a consolidated 46-script pre-release baseline. Account and
+folder modes, mode-specific mailbox indexes, and the primary flag cursor are part of the
+original table definitions. Historical development backfills and trigger replacements were
+removed; the final deletion membership trigger is created once after its dependencies.
+Earlier development sequences require explicit database recreation. Migration tests verify
+fresh initialization, supported baseline prefixes, batch rollback, and preserved data.
 
 ## Automated coverage mapping
 
@@ -145,7 +145,7 @@ comparison confirmed the physical mail count remained 723 and the preexisting
 Trash UID was preserved. This verifies that deletion scenario, not full GUI
 interoperability certification.
 
-- Existing credentials upgrade to Independent; new credentials default to Mirror.
+- New credentials default to Mirror; the consolidated baseline does not upgrade older development databases.
   Legacy `mirror_views`, linked/exposure inputs remain accepted for compatibility,
   but the UI presents explicit mode. Independent never imports primary smart folders.
 - Switching modes disconnects clients; reconnect is required. UIDs are meaningful

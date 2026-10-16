@@ -23,8 +23,8 @@ Implement each capability trait for one concrete type, then expose that type as
 `Arc<dyn sandpost_storage::Storage>`:
 
 - `UserStorage` — canonical users, credentials, global roles, mail access, bootstrap.
-- `SmtpServerStorage` — the global SMTP server address and SMTP access credentials (hashes only)
-  with their per-access authentication rules (TLS requirement, non-empty set of allowed mechanisms).
+- `SmtpServerStorage` — SMTP access credentials (hashes only) and per-access authentication rules
+  (TLS requirement, non-empty set of allowed mechanisms). Listener configuration is runtime-owned.
 - `ImapStorage` — user-owned IMAP accounts (hashes only), linked Views, IMAP-local folders, mailbox
   identities with UIDVALIDITY and UID counters, materialized UID-keyed membership, flags,
   exclusions, and subscriptions (see section 11.1).
@@ -156,7 +156,7 @@ duplicate error; callers should not depend on driver-specific constraint names.
   forward, preserving identities and mail. SQLite uses an applied script-name prefix, without a separate
   schema version; other backends may choose their own history representation.
 - The logical model (see `.agents/docs/storage.md`) is: users (with global role and mail
-  access), the global SMTP server and SMTP accesses, IMAP accounts with their configuration,
+  access), SMTP accesses, IMAP accounts with their configuration,
   mailbox identities, membership, and flags, scopes, scope memberships, views, one pool of
   mail + message facts, user-message deletions, and the search outbox. A backend may
   model these differently as long as the observable contract holds.
@@ -164,6 +164,8 @@ duplicate error; callers should not depend on driver-specific constraint names.
 For SQLite SQL changes, follow the [migration file conventions](storage.md#migration-file-conventions):
 one table with its indexes, separate trigger groups, and focused data backfills. Keep dependency order
 and atomic upgrades; do not introduce feature-wide migration bundles or a second schema-version scheme.
+Before the initial release, incorporate new columns into their table-creation scripts and remove
+obsolete development data conversions, updating both catalogs, tests, and documentation together.
 
 ## 10. Filter and query behaviour
 
@@ -232,8 +234,8 @@ It is self-contained and independent of SQLite. A minimal harness looks like:
     let storage: Arc<dyn Storage> = Arc::new(MyStorage::open(config).await?);
     sandpost_storage_conformance::run_all(storage.as_ref()).await?;
 
-The suite covers user CRUD, roles, and mail access, the owner invariant, bootstrap, the SMTP
-server and accesses, IMAP accounts, configuration, mailbox identities, membership
+The suite covers user CRUD, roles, and mail access, the owner invariant, bootstrap, SMTP
+accesses, IMAP accounts, configuration, mailbox identities, membership
 synchronization, flags, and expunges, scope membership invariants, views, message ingestion/retrieval/ordering/pagination,
 filtered listing equivalence with the canonical evaluator, deletion and revisions, and the search
 outbox protocol. Passing it is the expected bar for a production-ready backend.

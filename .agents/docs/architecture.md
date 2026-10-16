@@ -7,7 +7,7 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
 ## Ownership and boundaries
 
 - **SQLite is authoritative:** users/roles/mail access, scopes/assignments/Views,
-  SMTP server/accesses, IMAP accounts/mailboxes/UIDs/flags/placements, mail facts/raw
+  SMTP accesses, IMAP accounts/mailboxes/UIDs/flags/placements, mail facts/raw
   MIME, user deletions, and search outbox. Credentials store hashes only. All mail
   belongs to one pool, without SMTP partitions.
 - **Tantivy is disposable:** derived search candidates, recoverable from SQLite;
@@ -34,7 +34,7 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
 | `sandpost-mime` | I/O-free MIME facts/captured bytes; alternative/related selection, boundary recovery, `cid:`/`mid:` resolution, shared attachment transfer decoding for size/hash/download without charset conversion. |
 | `sandpost-smtp` | Bounded `SmtpServer`: selected RFC 5321 behavior, SIZE/8BITMIME, AUTH PLAIN/LOGIN, STARTTLS/implicit TLS (rustls), enhanced status/trace fields; MIME parsing and `SessionHandler` delivery. |
 | `sandpost-imap` | `ImapServer`: IMAP4rev1 framing/sessions/ENVELOPE/BODYSTRUCTURE/sections/SEARCH; IDLE, UIDPLUS, MOVE, UNSELECT, NAMESPACE, ID, CHILDREN, LITERAL-, SASL-IR, STARTTLS/implicit TLS. `ImapBackend` supplies accounts/mailboxes/UIDs/flags/access; no storage/search dependency. |
-| `sandpost-web-api` | HTTP/session middleware/SSE/optional SPA hosting. |
+| `sandpost-web-api` | HTTP/session middleware/SSE/SPA hosting, embedded at build time or served from a directory. |
 | `sandpost` | CLI/config/bootstrap/listeners, SMTP delivery and IMAP backend adapters, embedded runtime. |
 | `sandpost-node` | Electron Node-API boundary. |
 
@@ -118,9 +118,14 @@ File SQLite uses WAL, four read-only connections and one writer; in-memory stora
 shares one connection. Initialization is async. Ordered migration names in
 `migrations` must form an exact prefix matching physical schema; missing scripts
 apply atomically, fresh databases apply all. Future changes append scripts;
-unknown names/gaps/schema mismatches fail. No version batches/`PRAGMA user_version`.
-Scripts 0026–0056 add deletions/folders/exposures/placement/COPY membership. Older
-pre-deployment formats require recreation; startup never resets them automatically.
+unknown names/gaps/schema mismatches fail. Each execution records one positive batch for all
+pending scripts; reopening without pending work creates none. Offline CLI status reports batches,
+and rollback atomically reverses the latest batch without first applying pending scripts.
+There is no separate schema version or `PRAGMA user_version`. Validated name-only histories upgrade
+to batch 1; older incompatible pre-deployment formats still fail without resetting data.
+The 46-script pre-release baseline creates current table definitions directly, with separate
+trigger groups and no historical ALTERs or data backfills. Earlier development sequences require
+explicit database recreation; startup does not reset them.
 See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 
 ## Runtime and clients
@@ -128,17 +133,36 @@ See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 The `sandpost` runtime keeps service assembly in `lifecycle/mod.rs`, HTTP request/stream
 cancellation in `lifecycle/http/mod.rs`, search scheduling in `lifecycle/indexing/mod.rs`,
 and coordinated task draining and cleanup in `lifecycle/supervision/mod.rs`.
-Configuration, startup reporting, SMTP delivery/listener control, and the IMAP
-adapter/listener each retain their own modules. Modules with child files keep their
+Configuration, startup reporting, offline maintenance commands (`maintenance/`),
+shared client connection hosts (`network/`), SMTP delivery/listener
+(`smtp_delivery`, `smtp_listener/`), and the IMAP adapter/listener (`imap_backend/`,
+`imap_listener/`) each retain their own modules; `main.rs` only installs tracing and
+signals and dispatches commands. SMTP and IMAP certificates load before storage opens. Modules with child files keep their
 implementation in `<module>/mod.rs` and unit tests alongside it in `tests.rs`;
 test modules with children use `tests/mod.rs`. Real IMAP scenarios are grouped under
 `imap_runtime_tests/` by capture, authorization, mailbox organization, modes,
 subscriptions, smart-mailbox rights, and retention, with shared wire helpers.
 
-Environment parsing and runtime startup share typed configuration validation.
-Embedding hosts can edit configuration values, but startup rechecks TLS requirements,
-network IMAP plaintext opt-in, connection limits, and advertised hosts before opening
-storage or binding listeners.
+HTTP serves the frontend embedded at compile time when present, otherwise only the API.
+The runtime has no external frontend-directory setting.
+
+Environment and configuration-file parsing share typed configuration
+validation across CLI and embedded runtime; `SANDPOST_CONFIG` selects the file and an explicitly named file must exist. `SANDPOST_DATA_DIRECTORY` overrides
+`storage.data_directory`; an absent or blank file value selects the platform data
+default. Relative file data paths resolve from the configuration file's directory.
+`SANDPOST_DATABASE_PATH` overrides `storage.database_path`; the selected database
+path resolves relative paths against the effective data directory,
+preserves absolute paths, and defaults to `sandpost.sqlite3` inside that directory. The desktop
+runtime takes no data-directory argument, while Electron keeps its separate userData
+directory for browser preferences. Embedding hosts can edit configuration values,
+but startup rechecks TLS requirements, network IMAP plaintext opt-in, connection
+limits, and advertised hosts before opening storage or binding listeners.
+
+HTTP, SMTP, and IMAP bind addresses and ports follow environment, TOML, then default
+precedence. SMTP listener settings are configuration-only and read-only through
+management APIs and the interface; changing them requires a restart. IMAP can be
+disabled without changing its stored accounts or mail. See [project.md](project.md)
+for the complete TOML example and environment variable reference.
 
 Setup is available iff SQLite has no Owner, regardless of non-owner accounts or
 `instance.json`. Atomic owner creation preserves accounts/unique email, creates no
@@ -149,10 +173,8 @@ the boot key via origin-checked IPC without exposing it to Vue. Separate metadat
 is written after owner commit, never controls setup, and missing/malformed metadata
 does not block initialized instances. Publication failure leaves setup locked.
 
-Global SMTP edits reconcile through `MailListenerControl` without restart.
-`SANDPOST_SMTP_LISTEN` overrides persistence for the process lifetime; overridden
-management edits do not rebind. Persisted bind failure reports listener failure
-without stopping runtime; override bind failure stops startup. Accept failures
+`MailListenerControl` exposes read-only SMTP listener status from the runtime.
+SMTP always binds the resolved configuration address; bind failure stops startup. Accept failures
 are logged/skipped/retried; stopping acceptance releases the port before draining.
 AUTH/TLS `auto` policies are reevaluated per bind: AUTH optional on loopback,
 required elsewhere; with a certificate, TLS requires STARTTLS off loopback.

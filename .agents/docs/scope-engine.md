@@ -32,6 +32,12 @@ Placement is independent of authorization. Mirror shares primary Web placement a
 
 Authenticated APIs and application management support scopes, assignments, Views, and users. Scope and assignment management requires Owner or Admin. Scope definitions must form an acyclic tree within configured maximum depth, and every filter compiles before saving. An edit affects subsequent requests immediately through current persisted definitions; there is no historical mail reclassification job.
 
+The runtime defaults `sandpost.max_scope_depth` to `2`: roots have depth zero,
+children one, and grandchildren two. `SANDPOST_MAX_SCOPE_DEPTH` overrides the TOML
+value. Startup validates existing scopes against the resolved limit; installations
+with deeper trees must configure a larger value. This validation does not modify
+or remove persisted scopes.
+
 `validate_query` (`POST /api/v1/query/validate`) reports the first compilation error and its UTF-8 byte position without saving or executing. `preview_scope` (`POST /api/v1/scopes/preview`) requires a global administrator and samples newest mail matching the unsaved filter plus all parent-ancestor filters, composed with the caller's own authorization. It cannot show mail the administrator cannot read. Deleting a scope with children returns an in-use conflict.
 
 Membership rows are role-less and only contribute to a `Scoped` user's visibility union. Assignments are retained for `All` users but have no effect until mail access becomes `Scoped`; assigning an unknown scope returns not found. There is no message-to-scope materialization pipeline.

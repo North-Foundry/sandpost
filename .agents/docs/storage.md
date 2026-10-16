@@ -4,7 +4,7 @@ Persistence in SandPost is split into a backend-independent contract and a concr
 backend. `sandpost-storage` defines the contract — capability traits, domain types,
 request/result DTOs, and semantic errors — with no database driver and no SQL.
 `sandpost-storage-sqlite` implements that contract on top of SQLx and owns the
-physical schema, its forward migrations, and filter-to-SQL compilation. SQLite remains the
+physical schema, its forward and reverse migrations, and filter-to-SQL compilation. SQLite remains the
 authoritative source of truth; Tantivy is a disposable derived search index that can be
 reconstructed from SQLite.
 
@@ -60,9 +60,8 @@ ordered sequence of migration scripts.
   non-Owner users do not prevent setup. `create_first_owner` atomically refuses only if an
   Owner already exists, and may add an Owner alongside existing non-Owner users while
   preserving unique email.
-- **SMTP server.** One global listener address (`Option<SocketAddr>`; `None` disables SMTP). The
-  SQLite backend stores it in the `smtp_server` singleton as nullable `smtp_host` (IP literal) and
-  `smtp_port` columns that are null together, seeded with `127.0.0.1:1025`.
+- **SMTP listener configuration.** The listener address and security policies belong only to
+  process configuration. Storage has no listener settings, singleton table, or read/write operations.
 - **SMTP accesses.** `SmtpAccess { identifier, name, username, enabled, requires_encryption,
   allowed_mechanisms, created_at, last_used_at }` plus a password hash that only `SmtpAccessCredential`
   reads (used by authentication) ever return. `allowed_mechanisms` is a non-empty, canonically ordered
@@ -100,8 +99,7 @@ ordered sequence of migration scripts.
 - **Folders.** Primary Web definitions automatically project through Mirror accounts.
   Independent normal folders and smart definitions have no primary definition link;
   new accounts snapshot normal folders only. Legacy owner smart definitions remain
-  Mirror-compatible; old projections become separate Independent definitions during
-  upgrade. `/` paths form normal folder hierarchies; explicit parent renames change
+  Mirror-compatible. `/` paths form normal folder hierarchies; explicit parent renames change
   descendants transactionally while retaining identifiers. Deleting a normal folder
   trashes only otherwise-unfiled occurrences and preserves other normal copies.
 - **Membership identities.** Identity is keyed by credential, mode and source. Dormant
@@ -127,33 +125,57 @@ Full behavior, protocol decisions, subscriptions, and notifications: [imap.md](i
 
 ## SQLite backend, startup, and migrations
 
-`sandpost-storage-sqlite` keeps one ordered sequence of SQL scripts (currently 0001-0041),
+`sandpost-storage-sqlite` keeps one ordered sequence of 46 SQL scripts (0001–0046, without gaps),
 with table/index definitions and trigger groups in separate files. The `migrations` table records
-only the applied script names. There is no separate schema version or version batch, and startup
-neither reads nor writes `PRAGMA user_version`. To evolve the schema, append a script to the
+applied script names and a positive integer `batch`. Every execution with pending scripts records
+all of them in the same batch, one greater than the largest applied batch; fresh databases use batch
+1. Opening an up-to-date database does not create a batch. There is no separate schema version,
+and startup neither reads nor writes `PRAGMA user_version`. To evolve the schema, append a script to the
 sequence; never edit or reorder a script after it has shipped.
 
-Startup requires the recorded names to be an exact prefix of the checked-in sequence. It validates
-every table, constraint, index, and trigger against that prefix, then applies only the remaining
-scripts and records their names in the same immediate transaction. A fresh database applies the
+Startup requires the recorded names to be an exact prefix of the checked-in sequence, with positive
+nondecreasing batches in script order. It validates every table, constraint, index, and trigger
+against that prefix, then applies only the remaining scripts and records their names and batch in
+the same immediate transaction. A fresh database applies the
 whole sequence; an existing supported database applies its missing suffix. `PRAGMA foreign_key_check`
 must report no violation before commit. A failed upgrade rolls back both schema changes and history.
 Unknown scripts (including scripts from a newer build), gaps, missing history in a populated database,
 and schema mismatches fail startup; there is no automatic repair or reset.
 
-The sequence includes canonical users, global SMTP configuration and authentication rules, scopes,
-Views, shared mail and normalized facts, the search outbox, and IMAP state. Scripts 0026-0041 add
-user-message tombstones, owner folder definitions/projections, Web manual folders and selected
-exposures, durable Web/account placement and COPY membership, folder kinds, retained subscription
-names, and the per-user Web Trash with the trigger that clears it on permanent deletion. Each new table and its indexes, the folder-kind update, the Trash data backfill, and each
-ownership-trigger group have separate scripts. Incremental application preserves existing folder
-identifiers, mailbox UIDs, and tombstones. Scripts 0042–0056 separate mode catalogs, private retention,
-primary copies/flags and effective flags, preserve inherited organization during upgrade, and invalidate
-old membership fingerprints so the new smart and placement policy is reconciled.
+The sequence includes canonical users, SMTP access credentials and authentication rules, scopes,
+Views, shared mail and normalized facts, the search outbox, and IMAP state. Every table is created
+with its current columns, constraints, and indexes, including the primary flag cursor on `users`,
+account modes, folder kinds, and mode-specific mailbox identities. Owner folder definitions and
+their account projection links have separate table scripts. Trigger groups and the effective-flags
+view follow their dependencies; the primary deletion membership trigger is created once in 0046.
 
-The pre-deployment history format was simplified to remove its batch column. Databases created with
-that earlier format or the previous pre-release sequence are unsupported and must be recreated;
-startup rejects them without clearing or rewriting their data.
+The application has not shipped. Its pre-release baseline was consolidated: historical ALTERs,
+data backfills, trigger replacements, and fingerprint invalidation scripts were removed. Scripts
+were renumbered consecutively from 0001 to 0046 with matching rollback names. Databases created with the
+earlier development sequence are unsupported by this baseline and must be recreated explicitly
+for development; startup never rewrites their history or resets their data automatically. Once
+released, schema evolution must append migrations and preserve the shipped prefix.
+
+Supported name-only histories are validated against their original schema, then gain a batch column
+inside the same upgrade transaction. Existing records become batch 1 because their original execution
+boundaries were not recorded; pending scripts become batch 2. The older pre-release batch format with
+a different table definition remains unsupported and is rejected without rewriting data.
+
+Offline maintenance uses `sandpost migrate` (or `sandpost migrate up`), `sandpost migrate status`, and
+`sandpost migrate rollback`. Status shows the applied-script and distinct-batch counts followed by
+`batch`/script rows; it never applies pending migrations or changes legacy metadata. Rollback opens the
+existing database directly, without running startup migrations, and executes only the latest batch's
+matching `migrations/down/` scripts in reverse order. It atomically removes their history, validates
+the resulting prefix schema and foreign keys, and commits; any error leaves schema, history and data
+unchanged. Repeated rollback commands undo earlier batches. Reverting the initial batch also removes
+the history table; an empty database can then be initialized again. A later startup or explicit migrate
+reapplies pending scripts. Batch numbers follow the largest remaining batch, as in Laravel.
+
+Mutating CLI maintenance holds the installation's search writer lock and refuses a running instance;
+stop other database users before calling the backend's standalone maintenance methods. Rollback of
+table creation removes the corresponding data. Down scripts cannot recreate information lost
+by application writes. The consolidated baseline has no historical data conversions to reverse.
+Keep a database backup when reverting populated schemas.
 
 The physical schema is a SQLite implementation detail. The logical model above is what the
 sandpost-storage contract guarantees to every backend, so a future backend may model it
@@ -168,7 +190,8 @@ Keep each SQL migration focused on one schema object or one data-conversion resp
 - A trigger script groups triggers for one table and one rule. For example, the INSERT and UPDATE
   guards that enforce a placement's account ownership belong together, separately from table creation.
 - An alteration script changes one table and may include the directly related update needed to
-  populate its new columns.
+  populate its new columns. Before the initial release, fold such changes into the table's
+  creation script instead of retaining a historical ALTER or data backfill.
 - Give an independently meaningful data backfill its own script with a specific purpose, such as
   preserving existing Trash memberships as message copies. Do not mix it with unrelated table or
   trigger definitions.
@@ -180,9 +203,11 @@ Keep each SQL migration focused on one schema object or one data-conversion resp
   or backfills. Register every script in the same order in the migration catalog. Splitting files
   does not split the upgrade transaction: all missing scripts still commit or roll back together.
 
-SQLite uses only this ordered script history; do not add parallel schema-version groups or batches.
-Before release, unshipped scripts may be reorganized with matching catalog, test, and documentation
-updates. Once a script has shipped, preserve its name and contents and append new migrations instead.
+Pair each forward script with the same filename under `migrations/down/` and register its inverse
+at the same position in the rollback catalog. Inverses must restore the preceding physical schema;
+refuse a conversion when the available data cannot be reversed safely. Execution batches group history
+rows, not independent schema-version sequences. Before release, unshipped scripts may be reorganized
+with matching catalogs, tests, and documentation updates. Once a script has shipped, preserve its name and contents and append new migrations instead.
 
 ## Async execution
 

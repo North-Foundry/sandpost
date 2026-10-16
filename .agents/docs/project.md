@@ -18,7 +18,7 @@ The product name is **Sandpost**, one word with only the initial **S** capitaliz
 
 ## Build and run
 
-Requirements: Rust 1.99+, Cargo, a C compiler (bundled SQLite), Node.js 22.12+, and Yarn 4. Install JavaScript dependencies at the repository root; Rust crates share the root workspace and lockfile.
+Requirements: Rust 1.99+, Cargo, a C compiler (bundled SQLite), Node.js 24 LTS, and Yarn 4. Use `nvm use` to select the version declared in `.nvmrc`. Install JavaScript dependencies at the repository root; Rust crates share the root workspace and lockfile.
 
 ```sh
 yarn install
@@ -26,7 +26,7 @@ cargo build --workspace --locked
 cargo run -p sandpost --locked
 ```
 
-Defaults are HTTP `127.0.0.1:8025`, SMTP `127.0.0.1:1025`, and IMAP `127.0.0.1:1143`. Without `SANDPOST_FRONTEND_DIR`, HTTP serves only the API. For a web UI, run `yarn frontend:build` and set `SANDPOST_FRONTEND_DIR=apps/frontend/dist`; startup requires its `index.html`. The server serves assets and uses that file for non-API SPA paths; unknown `/api` paths remain 404. Node is a build dependency only. Ship `dist` beside the Rust binary when enabling the UI.
+Defaults are HTTP `127.0.0.1:8025`, SMTP `127.0.0.1:1025`, and IMAP `127.0.0.1:1143`. `sandpost-web-api` embeds `apps/frontend/dist` at compile time when it exists, so a build after `yarn frontend:build` serves the web interface from the single binary and a frontend change recompiles it. Without `dist`, HTTP serves only the API. The runtime serves the embedded assets and uses `index.html` for non-API SPA paths; unknown `/api` paths remain 404. Node is a build dependency only; the runtime needs no external frontend directory.
 
 Root scripts: `yarn frontend:dev` runs Vite with the explicit mock client; `yarn frontend:dev:http` proxies HTTP to the local Rust server; `yarn frontend:build` type-checks and builds; `yarn frontend:test` runs frontend tests. `yarn desktop:dev` builds the native addon and Electron main/preload, runs Vite on 1420, and launches Electron; browser Vite uses 5173. `yarn native:build` builds/copies the napi-rs 3 addon to `apps/desktop/native/<platform>-<architecture>/sandpost.node`; `yarn native:test`, `yarn desktop:check`, `yarn desktop:test`, `yarn desktop:smoke`, and `yarn desktop:smoke --dev` exercise the native, IPC, and Electron paths. `yarn desktop:build:dir` creates an unsigned unpacked app; `yarn desktop:build` packages the current host. Electron ships Vue assets and native artifacts outside ASAR; packaged users need no toolchain. Targets are macOS ARM64/x64, Linux x64, and Windows x64; only CI/local-built targets count as validated. Signing and notarization are not configured.
 
@@ -50,7 +50,7 @@ PYMAIL
 
 The CLI stores data in `$HOME/.sandpost` by default: SQLite is `sandpost.sqlite3`, derived search state is under `search`, and installation metadata is `instance.json` (metadata does not determine setup state). Facts/attachment metadata use relational rows; original MIME, including attachment bytes, stays in SQLite. SMTP commits before acknowledging mail. SIGINT/SIGTERM stop listeners with bounded draining; embedded runtimes expose shutdown and drain on host exit.
 
-After storage/listener initialization, stdout prints a plain-text connection summary; tracing goes to stderr, colors require a TTY and no `NO_COLOR`. It reports actual API/bind addresses, SMTP host/port and encryption/AUTH state, SQLite path, and IMAP connection/security or disabled status. Wildcard binds map client instructions to the matching loopback family while `Listening` shows the actual bind; port 0 reports the allocated port. A failed persisted SMTP bind appears as status; an SMTP environment override bind failure stops startup. SMTP server address is persisted and can be moved/stopped by an administrator while running; `SANDPOST_SMTP_LISTEN` overrides it for the process lifetime.
+After storage/listener initialization, stdout prints a plain-text connection summary; tracing goes to stderr, colors require a TTY and no `NO_COLOR`. It reports the Web UI URL when the frontend is embedded, actual API/bind addresses, SMTP host/port and encryption/AUTH state, SQLite path, the configuration file when one was read, and IMAP connection/security or disabled status. Wildcard binds map client instructions to the matching loopback family while `Listening` shows the actual bind; port 0 reports the allocated port. An SMTP bind failure stops startup. The SMTP listener is configured only through environment variables, TOML, and defaults; its address, status, and security settings are read-only in the interface and require a restart to change.
 
 When no Owner exists, each startup prints a fresh 256-bit setup key and local `/setup` URL. `GET /api/v1/instance` reports `{ initialized, setupKeyRequired }`; the browser verifies the key at `POST /api/v1/setup/authorize`, then submits Owner fields with the temporary authorization in `bootstrapSecret` to `POST /api/v1/setup`. Authorizations expire in 10 minutes, at most 64 are kept (oldest evicted), and restart or successful setup invalidates them. The legacy field also accepts the boot key. Setup creates no session; login follows. The key is never exposed by HTTP or persisted in frontend storage. Setup remains available whenever storage has no Owner, even if non-Owner accounts or `instance.json` exist; Owner creation is atomic, preserves those accounts, and honors unique email. Metadata is written after Owner creation; a metadata-write failure locks setup for that process, while restart recognizes the committed Owner.
 
@@ -58,19 +58,19 @@ Setup validation/server errors appear inline. If another client initializes the 
 
 Electron is trusted: native status says no setup key is required, and `NativeRuntime::setup` injects the boot key through origin-checked IPC; the renderer supplies only Owner fields. The mock uses `sandpost-test-secret`, the same authorization flow, and a 12-byte minimum password.
 
-For containers, mount `/data` persistently and set `SANDPOST_DATA_DIR` (replace `IMAGE`):
+For containers, mount `/data` persistently and set `SANDPOST_DATA_DIRECTORY` (replace `IMAGE`):
 
 ```sh
 docker run --name sandpost --rm \
   -p 127.0.0.1:8025:8025 -p 127.0.0.1:1025:1025 \
   --mount type=volume,source=sandpost-data,target=/data \
-  -e SANDPOST_HTTP_LISTEN=0.0.0.0:8025 \
-  -e SANDPOST_SMTP_LISTEN=0.0.0.0:1025 \
-  -e SANDPOST_IMAP_LISTEN=off \
-  -e SANDPOST_DATA_DIR=/data IMAGE
+  -e SANDPOST_HTTP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_HTTP_PORT=8025 \
+  -e SANDPOST_SMTP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_SMTP_PORT=1025 \
+  -e SANDPOST_IMAP_ENABLED=false \
+  -e SANDPOST_DATA_DIRECTORY=/data IMAGE
 ```
 
-Read the key using `docker logs sandpost`. The volume preserves SQLite and `instance.json`. A non-loopback SMTP bind requires AUTH by default; create an SMTP access or explicitly set `SANDPOST_SMTP_AUTH=optional`. The example disables IMAP. Non-loopback IMAP needs a certificate (`SANDPOST_IMAP_TLS_CERTIFICATE`/`_PRIVATE_KEY`, or the SMTP pair) and a published port, e.g. `-p 127.0.0.1:993:993 -e SANDPOST_IMAP_LISTEN=0.0.0.0:993`; without a certificate startup refuses it unless `SANDPOST_IMAP_TLS=off`, which permits clear-text passwords.
+Read the key using `docker logs sandpost`. The volume preserves SQLite and `instance.json`. Mounting a TOML file and pointing `SANDPOST_CONFIG` at it configures the process from that file; environment values override TOML. A non-loopback SMTP bind requires AUTH by default; create an SMTP access or explicitly set `SANDPOST_SMTP_AUTH=optional`. The example disables IMAP. Non-loopback IMAP needs a certificate (`SANDPOST_IMAP_TLS_CERTIFICATE`/`_PRIVATE_KEY`, or the SMTP pair) and a published port, e.g. `-p 127.0.0.1:993:993 -e SANDPOST_IMAP_ENABLED=true -e SANDPOST_IMAP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_IMAP_PORT=993`; without a certificate startup refuses it unless `SANDPOST_IMAP_TLS=off`, which permits clear-text passwords.
 
 `python3 scripts/mail_bursts.py` sends repeating traffic; `--cycles 1` sends one cycle (106 messages). Each cycle sends 100 immediately, waits 30 seconds, then sends 6 at five-second intervals. Defaults are `127.0.0.1:1025`, overridable with `--host`/`--port`; pass `--username` and set `SANDPOST_SMTP_PASSWORD` for AUTH, keeping the password out of command arguments.
 
@@ -90,29 +90,120 @@ Vue sends viewport rectangles over `sandpost:preview:*` IPC, validating the owne
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `SANDPOST_HTTP_LISTEN` | `127.0.0.1:8025` | HTTP socket address |
-| `SANDPOST_SMTP_LISTEN` | unset | Optional override of the global SMTP server's persisted address (seeded as `127.0.0.1:1025`) |
+| `SANDPOST_CONFIG` | `~/.sandpost/config.toml` | Configuration file read at startup; an explicitly named file must exist |
+| `SANDPOST_HTTP_BIND_ADDRESS` | `127.0.0.1` | HTTP interface address |
+| `SANDPOST_HTTP_PORT` | `8025` | HTTP port; `0` asks the operating system to allocate a port |
+| `SANDPOST_SMTP_BIND_ADDRESS` | `127.0.0.1` | SMTP interface address |
+| `SANDPOST_SMTP_PORT` | `1025` | SMTP port; `0` asks the operating system to allocate a port |
 | `SANDPOST_SMTP_AUTH` | `auto` | SMTP AUTH requirement: `auto` (optional on loopback, required elsewhere), `required`, or `optional` (explicit opt-in to unauthenticated mail on any address) |
 | `SANDPOST_SMTP_TLS` | `auto` | SMTP TLS requirement: `auto` (with a certificate, required on non-loopback addresses and offered on loopback; without one, no TLS), `required` (needs a certificate), or `off` |
 | `SANDPOST_SMTP_TLS_MODE` | `starttls` | `starttls` (clients upgrade with STARTTLS, ports 25/587) or `implicit` (TLS from the first byte, port 465; needs a certificate) |
-| `SANDPOST_SMTP_TLS_CERTIFICATE`, `SANDPOST_SMTP_TLS_PRIVATE_KEY` | unset | PEM certificate chain and private key for SMTP TLS; set both or neither. An unreadable or mismatched pair stops startup |
-| `SANDPOST_IMAP_LISTEN` | `127.0.0.1:1143` | IMAP listener address, or `off` to disable IMAP |
+| `SANDPOST_SMTP_TLS_CERTIFICATE` | unset | PEM certificate chain for SMTP TLS; overrides `smtp.tls_certificate`. Pair with the resolved private key |
+| `SANDPOST_SMTP_TLS_PRIVATE_KEY` | unset | PEM private key for SMTP TLS; overrides `smtp.tls_private_key`. Pair with the certificate; an unreadable or mismatched pair stops startup |
+| `SANDPOST_IMAP_ENABLED` | `true` | Enable the IMAP listener; set `false` to disable it while retaining all IMAP accounts and data |
+| `SANDPOST_IMAP_BIND_ADDRESS` | `127.0.0.1` | IMAP interface address |
+| `SANDPOST_IMAP_PORT` | `1143` | IMAP port; `0` asks the operating system to allocate a port |
 | `SANDPOST_IMAP_TLS` | `auto` | IMAP TLS requirement: `auto` (with a certificate, TLS; STARTTLS mode requires it on non-loopback addresses; without one, clear text allowed only on loopback), `required` (needs a certificate), or `off` (explicit opt-in to clear-text passwords on any address) |
 | `SANDPOST_IMAP_TLS_MODE` | `implicit` | `implicit` (IMAPS, port 993) or `starttls` (port 143) |
 | `SANDPOST_IMAP_TLS_CERTIFICATE`, `SANDPOST_IMAP_TLS_PRIVATE_KEY` | the SMTP pair | PEM certificate chain and key for IMAP; set both or neither. An unreadable or mismatched pair stops startup |
-| `SANDPOST_IMAP_HOST` | bound address | Host name shown in IMAP connection instructions |
+| `SANDPOST_IMAP_HOST` | bound address | Advertised host shown in IMAP connection instructions; blank after trimming uses the bound address |
 | `SANDPOST_IMAP_MAX_CONNECTIONS` | `64` | Concurrent IMAP sessions (1 to 10000) |
 | `SANDPOST_SMTP_ENDPOINT`, `SANDPOST_SMTP_ENDPOINTS` | removed | SMTP endpoints no longer exist; setting either fails startup with a migration hint |
-| `SANDPOST_DATA_DIR` | `$HOME/.sandpost` | Local data directory; falls back to `$USERPROFILE/.sandpost`, then `data` when neither home variable is available |
-| `SANDPOST_DATABASE_PATH` | `<data directory>/sandpost.sqlite3` | SQLite file |
-| `SANDPOST_MAX_SCOPE_DEPTH` | unset, unlimited | Maximum depth; roots are depth zero |
-| `SANDPOST_LOG_LEVEL` | `info` | Tracing filter, e.g. `info,sandpost_application=debug` |
-| `SANDPOST_FRONTEND_DIR` | unset | Optional built frontend directory; must contain `index.html` |
+| `SANDPOST_DATA_DIRECTORY` | platform data directory | Local data directory; overrides `storage.data_directory` in the configuration file; blank after trimming is treated as unset |
+| `SANDPOST_DATABASE_PATH` | `<data directory>/sandpost.sqlite3` | SQLite file; overrides `storage.database_path`; blank after trimming is treated as unset |
+| `SANDPOST_MAX_SCOPE_DEPTH` | `2` | Overrides `sandpost.max_scope_depth`; nonnegative maximum depth, roots are depth zero |
+| `SANDPOST_LOG_LEVEL` | `info` | Overrides `sandpost.log_level`; tracing filter, e.g. `info,sandpost_application=debug` |
 
 
-CLI's new data default does not migrate existing relative `data/`; set `SANDPOST_DATA_DIR=data` or move the complete directory. Desktop uses the platform app-data path only when `SANDPOST_DATA_DIR` is unset; explicit data/database paths and other shared runtime configuration are honored.
+All entry points read the optional `~/.sandpost/config.toml` (`%USERPROFILE%\.sandpost\config.toml` on Windows); `SANDPOST_CONFIG` selects another file. The discovered default file may be absent, but a file named explicitly by `SANDPOST_CONFIG` must exist. Environment variables override TOML values, which override defaults. Listener configuration uses these fields:
 
-Malformed configuration, invalid persisted topology/filter, failed migrations, missing configured frontend index, removed SMTP endpoint variables, search writer-lock conflicts, HTTP/IMAP bind errors, unusable IMAP certificates, non-loopback IMAP without TLS (unless explicitly disabled), and an SMTP override bind error stop startup. An unbindable persisted SMTP address does not stop startup; it is reported on SMTP Access. SQLite is authoritative; Tantivy is recovered/rebuilt as a derived index.
+```toml
+[sandpost]
+log_level = "info"
+max_scope_depth = 2
+
+[http]
+bind_address = "127.0.0.1"
+port = 8025
+
+[smtp]
+bind_address = "127.0.0.1"
+port = 1025
+auth = "auto"
+tls = "auto"
+tls_mode = "starttls"
+# tls_certificate = "certs/smtp-chain.pem"
+# tls_private_key = "certs/smtp-key.pem"
+
+[imap]
+enabled = true
+bind_address = "127.0.0.1"
+port = 1143
+tls = "auto"
+tls_mode = "implicit"
+# tls_certificate = "certs/imap-chain.pem"
+# tls_private_key = "certs/imap-key.pem"
+# host = "imap.example.test"
+max_connections = 64
+
+[storage]
+data_directory = ""
+database_path = "sandpost.sqlite3"
+```
+
+Global application settings live in `[sandpost]`. `max_scope_depth` is a nonnegative
+integer: `0` allows only root scopes, and omission defaults to `2` (root at depth
+zero, children at one, grandchildren at two). Set a larger value for deeper trees.
+Startup validates persisted scopes against this limit, so an existing deeper tree
+requires an explicit larger limit; no scopes are deleted or rewritten.
+`log_level` defaults to `"info"` and accepts tracing filters, including `off`,
+`error`, `warn`, `info`, `debug`, `trace`, or per-target directives such as
+`"info,sandpost_application=debug"`. Each corresponding environment variable
+overrides its TOML field independently. Unknown keys and invalid types fail
+configuration parsing; the CLI also rejects malformed tracing filters at startup.
+
+HTTP, SMTP, and IMAP resolve each bind address and port independently from environment variables, TOML, then defaults. SMTP listener settings are never stored in the database or changed through management APIs. The SMTP API reports `configuration` as its listener source, the configured address, and the actual bound address. Without an attached runtime, its address and listener status are null. Port `0` is supported for all listeners and reports the allocated port.
+
+SMTP security settings can be configured in TOML or independently overridden by their environment variable:
+
+| Environment variable | TOML field | Allowed values | Meaning and default |
+| --- | --- | --- | --- |
+| `SANDPOST_SMTP_AUTH` | `smtp.auth` | `auto`, `required`, `optional` | `auto` makes AUTH optional on loopback and required elsewhere; `required` always requires AUTH; `optional` permits unauthenticated mail on any address. Default: `auto`. |
+| `SANDPOST_SMTP_TLS` | `smtp.tls` | `auto`, `required`, `off` | `auto` uses no TLS without a certificate, otherwise STARTTLS is required on non-loopback and offered on loopback; `required` requires TLS on every address and needs a certificate; `off` disables TLS. Default: `auto`. |
+| `SANDPOST_SMTP_TLS_MODE` | `smtp.tls_mode` | `starttls`, `implicit` | `starttls` upgrades after the greeting; `implicit` encrypts from the first byte. Default: `starttls`. |
+| `SANDPOST_SMTP_TLS_CERTIFICATE` | `smtp.tls_certificate` | File path | PEM certificate chain; default: absent. Pair it with the resolved SMTP private key. |
+| `SANDPOST_SMTP_TLS_PRIVATE_KEY` | `smtp.tls_private_key` | File path | PEM private key; default: absent. Pair it with the resolved SMTP certificate. |
+
+TOML enum values are strict canonical lowercase strings; invalid values, unknown keys, or other invalid configuration fail startup without fallback. Environment parsing retains its existing normalization. TLS `required` or `implicit` requires a certificate and private key unless TLS is `off`; a certificate and key must be supplied together after independently resolving environment overrides over TOML. With `auto`, no certificate means plaintext; with a certificate, STARTTLS is required on non-loopback addresses and offered on loopback. Implicit mode encrypts from the first byte. SMTP listener address and security settings are resolved independently from configuration. Relative TOML certificate/key paths resolve from the configuration file's directory; relative `SANDPOST_SMTP_TLS_CERTIFICATE` and `SANDPOST_SMTP_TLS_PRIVATE_KEY` paths resolve from the working directory. Absolute paths are used unchanged.
+
+IMAP settings can be configured in TOML and each field is independently overridden by its corresponding `SANDPOST_IMAP_*` variable:
+
+| Environment variable | TOML field | Allowed values | Meaning and default |
+| --- | --- | --- | --- |
+| `SANDPOST_IMAP_TLS` | `imap.tls` | `auto`, `required`, `off` | TLS policy. `auto` uses TLS when a certificate pair exists; with `starttls`, TLS is required off-loopback, and without a pair clear text is allowed only on loopback. `required` needs a pair; `off` explicitly permits clear-text passwords on any address. Default: `auto`. |
+| `SANDPOST_IMAP_TLS_MODE` | `imap.tls_mode` | `implicit`, `starttls` | `implicit` encrypts from the first byte; `starttls` upgrades after the greeting. Default: `implicit`. |
+| `SANDPOST_IMAP_TLS_CERTIFICATE` | `imap.tls_certificate` | File path | PEM certificate chain. Default: the resolved SMTP certificate path when both IMAP pair fields are absent. |
+| `SANDPOST_IMAP_TLS_PRIVATE_KEY` | `imap.tls_private_key` | File path | PEM private key. Default: the resolved SMTP key path when both IMAP pair fields are absent. |
+| `SANDPOST_IMAP_HOST` | `imap.host` | Host string | Advertised host in connection instructions; blank after trimming uses the bound address. Default: bound address. |
+| `SANDPOST_IMAP_MAX_CONNECTIONS` | `imap.max_connections` | Integer, 1–10000 | Maximum concurrent IMAP sessions. Default: `64`. |
+
+IMAP TLS policy strings in TOML must be lowercase canonical values; invalid values, unknown keys, or invalid types fail startup without fallback. Defaults apply only to omitted fields. Environment variables override their corresponding TOML fields independently. The IMAP certificate and private-key values are independently merged from environment and TOML, then must either both be present or both absent; an incomplete dedicated pair is an error and does not borrow the missing half from SMTP. If neither IMAP value is supplied, the complete resolved SMTP pair is used. Relative IMAP certificate/key paths in TOML resolve from the configuration file's directory; relative `SANDPOST_IMAP_TLS_CERTIFICATE` and `SANDPOST_IMAP_TLS_PRIVATE_KEY` paths resolve from the working directory. Absolute paths are unchanged.
+
+The removed `SANDPOST_HTTP_LISTEN`, `SANDPOST_SMTP_LISTEN`, and `SANDPOST_IMAP_LISTEN` variables are rejected at startup with migration errors; use the corresponding bind-address and port variables, and `SANDPOST_IMAP_ENABLED=false` to disable IMAP. Disabling IMAP does not delete or modify accounts, folders, flags, or message data. The existing non-loopback plaintext guard and TLS modes are unchanged.
+
+Bind addresses accept IPv4 or unbracketed IPv6 literals (for example `::1`); ports
+must be integers from 0 to 65535. `SANDPOST_IMAP_ENABLED` accepts exactly `true` or
+`false`. Binding `0.0.0.0` exposes the listener on all IPv4 interfaces and does not
+provide TLS or change authentication policy. Definite address conflicts among
+HTTP, enabled IMAP, and SMTP fail validation before startup;
+the same port on distinct interfaces is allowed. Cross-family wildcard overlap
+depends on the operating system and is checked by binding. SMTP bind errors stop startup.
+
+`SANDPOST_DATA_DIRECTORY` overrides that value; when neither is specified, macOS uses `~/Library/Application Support/Sandpost`, Windows uses `%APPDATA%\Sandpost` (RoamingAppData), and Linux uses `$XDG_DATA_HOME/sandpost` or `~/.local/share/sandpost`. If the platform data directory cannot be determined, the fallback is `data` relative to the working directory. An empty or whitespace-only `data_directory` means the platform default; a bare `data_directory =` is invalid TOML. A relative `storage.data_directory` resolves against the directory holding the configuration file, with no tilde or environment-variable expansion. `storage.database_path` selects the SQLite file and `SANDPOST_DATABASE_PATH` overrides it: relative database paths resolve against the effective data directory, absolute paths are used unchanged, and the default is `sandpost.sqlite3` inside that directory. The database path must be a string; invalid types fail startup. The optional config is never created automatically; malformed, unreadable, or unknown fields and invalid types fail startup. Restart is required for changes. Browser preferences remain in Electron's userData directory.
+
+The unified default does not migrate or move existing data. Existing CLI `~/.sandpost` data, relative `data/`, and Electron `SandPost` data remain where they are. Select an existing directory with `SANDPOST_DATA_DIRECTORY` or move the complete directory yourself.
+
+Malformed configuration, a missing file named by `SANDPOST_CONFIG`, invalid persisted topology/filter, failed migrations, removed SMTP endpoint variables, search writer-lock conflicts, HTTP/IMAP bind errors, unusable SMTP or IMAP certificates (checked before storage opens), non-loopback IMAP without TLS (unless explicitly disabled), and SMTP bind errors stop startup. SQLite is authoritative; Tantivy is recovered/rebuilt as a derived index.
 
 The embedded runtime revalidates configuration before opening storage or binding
 listeners, including settings edited after environment parsing. Both entry paths
@@ -192,7 +283,7 @@ Public Rust and HTTP representations retain their existing field names.
 | `POST /api/v1/setup` | Complete first-owner setup using the boot key or temporary authorization in `bootstrapSecret` |
 | `POST /api/v1/login` | Verify credentials and issue a session |
 | `GET /api/v1/session`, `POST /api/v1/logout` | Inspect/revoke the current session |
-| `GET/PUT /api/v1/smtp/server` | Global administrators: read or change the global SMTP server address (`listen_address`, null disables); the response includes the runtime listener status and whether AUTH is required |
+| `GET /api/v1/smtp/server` | Global administrators: read the configuration-owned SMTP listener address, runtime status, and AUTH/TLS state; no write operation is available |
 | `GET/POST /api/v1/smtp/accesses` | Global administrators: list SMTP accesses (never secrets) or create one from `{ name, username?, requires_encryption?, allowed_mechanisms? }` (mechanisms `plain`/`login`); creation returns `{ access, password, server }` once with 201 |
 | `PUT/DELETE /api/v1/smtp/accesses/<id>` | Global administrators: partially update `{ enabled?, requires_encryption?, allowed_mechanisms? }` or delete an access |
 | `POST /api/v1/smtp/accesses/<id>/password` | Global administrators: regenerate the password and return it once; the previous one stops working immediately |
@@ -234,11 +325,13 @@ Health, instance status, setup authorization, first-owner setup, and login are p
 
 SSE has bounded notifications and no durable replay: reload on `ready` (including reconnect) or `resync`. Placement/deletion changes send `resync` without IDs; notifications revalidate session. Message events carry public IDs and internal sequences, never bodies. Vue normalizes HTTP/Electron DTOs; native raw MIME crosses IPC as Buffer then Uint8Array.
 
-IPC channels: `sandpost:inboxes:list/create`, `sandpost:views:list/save/delete`, `sandpost:messages:list/get/raw/search/attachment/delete/move/copy/trash/seen/flags` (list accepts `viewId`/DSL `query`), `sandpost:folders:list/create/update/delete/messages`, `sandpost:trash:messages/empty`, `sandpost:admin:scopes:*`, `sandpost:admin:users:*`, `sandpost:admin:smtp:server:get/save`, `sandpost:admin:smtp:accesses:list/create/regenerate/update/delete`, `sandpost:admin:query:validate`, `sandpost:imap:server`, `sandpost:imap:accounts:list/get/create/update/delete/regenerate/restore`, and `sandpost:imap:folders:create/update/delete` (caller-owned accounts). Each suffix is a separate channel validated in main (IDs, roles, addresses, usernames, query lengths). Credential inputs never carry passwords; IMAP inputs are allowlisted; preload has no general invocation. Subscriptions use `sandpost:event`, without another domain event bus.
+IPC channels: `sandpost:inboxes:list/create`, `sandpost:views:list/save/delete`, `sandpost:messages:list/get/raw/search/attachment/delete/move/copy/trash/seen/flags` (list accepts `viewId`/DSL `query`), `sandpost:folders:list/create/update/delete/messages`, `sandpost:trash:messages/empty`, `sandpost:admin:scopes:*`, `sandpost:admin:users:*`, `sandpost:admin:smtp:server:get`, `sandpost:admin:smtp:accesses:list/create/regenerate/update/delete`, `sandpost:admin:query:validate`, `sandpost:imap:server`, `sandpost:imap:accounts:list/get/create/update/delete/regenerate/restore`, and `sandpost:imap:folders:create/update/delete` (caller-owned accounts). Each suffix is a separate channel validated in main (IDs, roles, addresses, usernames, query lengths). Credential inputs never carry passwords; IMAP inputs are allowlisted; preload has no general invocation. Subscriptions use `sandpost:event`, without another domain event bus.
 
 Electron production serves Vue through `sandpost://app` with local SPA fallback; renderer operations never use runtime HTTP, which remains available to external tools. NativeRuntime applies shared environment settings and defaults desktop data to Electron's platform user-data path. Main starts it before a window, retains it when macOS windows close, and awaits shutdown before quit. `wait` propagates listener failures; `nextEvent` awaits Rust broadcast without polling, lag becomes `resync`, and cancel/shutdown resolves pending receives with null. Preload subscribes after attaching listeners, signals ready after acknowledgement, and removes listeners on unsubscribe.
 
-The persistent Vue shell has Mail (Inbox, Trash, address inboxes, Smart Folders, manual Folders) and admin pages; its + menu creates a Smart Folder, address inbox, or manual folder. Manual folder deletion identifies exposed accounts and confirms messages return to fallback. Messages can move to folders/Inbox/Trash; Trash offers Empty Trash. Users/Scopes/SMTP appear only to Owners/Admins; IMAP appears to all users. Footer shows event state only while connecting/offline and offers appearance/sign-out. Narrow screens use a drawer; Cmd/Ctrl+B toggles it on desktop.
+The shared browser/Electron frontend uses Vue I18n in Composition API mode for English (`en`), French (`fr`), Italian (`it`), Spanish (`es`), German (`de`), and Danish (`da`). Catalogs are TypeScript default exports in `apps/frontend/src/i18n/<lang>/<domain>.ts`, with matching keys and named interpolation parameters across languages. The initial language prefers `sandpost.locale` in local storage, then the first supported browser language (including regional variants), then English. A language selector is available during login/setup and in the account menu. Switching updates the interface, document `lang`, dates, numbers, and folder sorting without reloading, and persists where storage is available. English is the translation fallback. Mail content, user-defined names, protocol identifiers, and query syntax remain unchanged; backend-provided error details and diagnostics retain their original text. Catalog parity, interpolation, message compilation, locale selection, and persistence are covered by frontend tests.
+
+The persistent Vue shell has Mail (Inbox, Trash, address inboxes, Smart Folders, manual Folders) and admin pages; its + menu creates a Smart Folder, address inbox, or manual folder. Manual folder deletion identifies exposed accounts and confirms messages return to fallback. Messages can move to folders/Inbox/Trash; Trash offers Empty Trash. Users/Scopes/SMTP appear only to Owners/Admins; IMAP appears to all users. Footer shows event state only while connecting/offline and offers language/appearance/sign-out. Narrow screens use a drawer; Cmd/Ctrl+B toggles it on desktop.
 
 Folder/search are encoded in `/mail?folder=<view id>&q=<search>` and preserved on `/mail/<message id>`. The dense two-line list supports All/Unread, refresh, arrows and j/k; selection supports Shift ranges, Cmd/Ctrl-click, and Cmd/Ctrl+A over loaded rows. Delete/Backspace, swipe, header, and inspector actions move mail to Trash immediately; inside Trash they delete permanently after confirmation. Bulk DELETE uses bounded concurrency; partial failures remain selected for retry. Selection clears on folder/search change. Keyset paging loads near the end with an explicit “Load older messages” control. Inspector renders isolated HTML/plain text; Headers copies all or downloads `.eml`; Attachments downloads decoded MIME parts. Dialogs are accessible; narrow layouts switch between list and inspector.
 
@@ -246,7 +339,7 @@ Search spans readable mail; Cmd/Ctrl+K or `/` focuses it. It accepts canonical D
 
 The shared CodeMirror 6 editor serves Scopes, Smart Folders and Independent account smart folders. It shows line numbers, active line, validation/cursor status; highlights query words; completes grammar-valid fields/operators/boolean values/and/or, auto-closes quotes and `header[""]`, and supports Tab/Enter acceptance, Escape, and hover documentation. Server validation remains authoritative; errors underline the reported position, collection `!=` warns, and a collapsible reference lists fields/operators/examples. Smart Folders are named canonical-query Views: personal by default; Owners/Admins may share. Views never grant access.
 
-Admin pages: `/admin/scopes` shows hierarchy, inherited filters, live newest-match preview, sibling order, assignments (owners omitted; All-mail users flagged). `/admin/smtp-access` edits the global listener address (immediate rebind), displays status/AUTH and credentials, and supports copy username, rotate, enable/disable, confirmed delete. Create asks name/optional username. One-time credential dialog shows host/port/user/password with copy, warns rotation invalidates old credentials, and cannot close until “I have saved my credentials” is checked; plaintext leaves component state and is never stored in browser storage/toasts. Users can be created/edited/deleted with role and All/Scoped access; editing signs the account out.
+Admin pages: `/admin/scopes` shows hierarchy, inherited filters, live newest-match preview, sibling order, assignments (owners omitted; All-mail users flagged). `/admin/smtp-access` displays the configuration-owned global listener address and status/AUTH in read-only form, displays credentials, and supports copy username, rotate, enable/disable, confirmed delete. Create asks name/optional username. One-time credential dialog shows host/port/user/password with copy, warns rotation invalidates old credentials, and cannot close until “I have saved my credentials” is checked; plaintext leaves component state and is never stored in browser storage/toasts. Users can be created/edited/deleted with role and All/Scoped access; editing signs the account out.
 
 SMTP Access also exposes “Authentication settings” for TLS/mechanism rules and warns when TLS-only access lacks a certificate.
 
@@ -259,7 +352,7 @@ reconnection; deleting a credential permanently removes its Independent state.
 One-time credentials remain ephemeral. Notices explain disabled service, clear-text
 password risk and manual self-signed certificate trust. Full behavior: [imap.md](imap.md).
 
-Default Inbox is virtual with nil UUID; compatibility inboxes are Views for normalized recipients under `@sandpost.local`. Search indexes normalized facts in Tantivy as a disposable candidate index; canonical verification and current SQL revision/authorization checks prevent stale hits from exposing changed mail. Short substrings/negative queries may scan broadly and indexing is eventual. See [query-language.md](query-language.md), [scope-engine.md](scope-engine.md), and [storage.md](storage.md) for those contracts. Read status is authoritative primary server state, shared with Mirror accounts; Independent read state stays local to its account. Inbox badge counts newest-first until 1,000 unviewed or end: exact through 999, then `999+`, hidden at zero; it updates on opens, events and deletions. Appearance follows system until changed, then persists per device. Roles: Owner full authority; Admin manages users (except owners), scopes, SMTP access, shared Views and search maintenance; Member reads/deletes visible mail and keeps personal Views; Viewer reads visible mail and keeps personal Views. All mail access reads all mail; Scoped reads assigned scopes and inherited filters, with personal filters further restricting; no assignments means no mail. Owners bypass visibility restrictions. There is no outbound delivery; IMAP reads captured mail through users' accounts.
+Default Inbox is virtual with nil UUID; address inboxes are personal Views for normalized, complete recipient addresses on any domain. The creation form accepts the full email address (for example `payments+test@example.com`), without appending a domain. Addresses are trimmed and ASCII-lowercased; supported addresses use an ASCII dot-atom local part (1–64 characters) and domain labels (1–63 letters/digits with internal hyphens), up to 254 characters overall. Single-label development domains are allowed. Existing `@sandpost.local` inboxes remain valid. Creating an address inbox neither provisions SMTP delivery nor moves/copies mail; it filters current authorized mail by `envelope.to.address` and deleting the inbox preserves its messages. Search indexes normalized facts in Tantivy as a disposable candidate index; canonical verification and current SQL revision/authorization checks prevent stale hits from exposing changed mail. Short substrings/negative queries may scan broadly and indexing is eventual. See [query-language.md](query-language.md), [scope-engine.md](scope-engine.md), and [storage.md](storage.md) for those contracts. Read status is authoritative primary server state, shared with Mirror accounts; Independent read state stays local to its account. Inbox badge counts newest-first until 1,000 unviewed or end: exact through 999, then `999+`, hidden at zero; it updates on opens, events and deletions. Appearance follows system until changed, then persists per device. Roles: Owner full authority; Admin manages users (except owners), scopes, SMTP access, shared Views and search maintenance; Member reads/deletes visible mail and keeps personal Views; Viewer reads visible mail and keeps personal Views. All mail access reads all mail; Scoped reads assigned scopes and inherited filters, with personal filters further restricting; no assignments means no mail. Owners bypass visibility restrictions. There is no outbound delivery; IMAP reads captured mail through users' accounts.
 
 ## Verify
 
@@ -277,10 +370,11 @@ yarn native:build
 yarn native:test
 yarn desktop:smoke
 yarn desktop:smoke --dev
+cargo build --workspace --locked
 python3 scripts/smoke.py --frontend apps/frontend/dist
 ```
 
-`cargo test --workspace --locked` and `yarn frontend:test` run the suites; the root smoke starts the binary with isolated ports/data, sends SMTP, checks MIME, HTTP authorization/search/raw/SSE, then uses independent Python `imaplib` for login, LIST/SELECT/FETCH/SEARCH/STORE/IDLE push/MOVE and verifies restart persistence, UIDVALIDITY, UIDs and flags. `--frontend apps/frontend/dist` additionally checks assets, deep SPA routes and API 404 boundaries.
+`cargo test --workspace --locked` and `yarn frontend:test` run the suites; the root smoke starts the binary with isolated ports/data, sends SMTP, checks MIME, HTTP authorization/search/raw/SSE, then uses independent Python `imaplib` for login, LIST/SELECT/FETCH/SEARCH/STORE/IDLE push/MOVE and verifies restart persistence, UIDVALIDITY, UIDs and flags. `--frontend apps/frontend/dist` additionally checks embedded assets, deep SPA routes and API 404 boundaries against that directory; build the frontend and then rebuild Rust before running it. The flag supplies expected bytes for verification and does not configure the server.
 
 `yarn desktop:check`/`desktop:test` cover main/preload typing and IPC/security. `yarn native:test` after addon build covers real SMTP, events, reads, Buffer fidelity, HTTP parity, cancellation, shutdown/restart. Electron smoke sends real MIME and checks notifications, list/detail/raw IPC, exact bytes, Vue UI, HTML isolation and blocked HTTP API. Production uses the local app protocol; dev permits Vite/HMR but blocks `/api`. For unpacked app use `yarn desktop:smoke --packaged <absolute executable path>` (macOS executable: `SandPost.app/Contents/MacOS/SandPost`).
 
@@ -295,7 +389,7 @@ Local migration validation covered macOS ARM64 native debug/release, Vite dev, p
 - [Architecture and component boundaries](architecture.md); [storage contract and SQLite migrations](storage.md); [query grammar and semantics](query-language.md); [scope authorization and index synchronization](scope-engine.md); [IMAP behavior and limits](imap.md); [code style](code-style.md).
 - Implemented: one global authenticated SMTP catcher and mail pool; canonical users/roles/mail access; hierarchical scopes; personal/shared Views; SQLite storage contract and backend; typed DSL; durable search outbox/disposable Tantivy generations; MIME normalization; HTTP/SSE; optional SPA; shared browser/mock/Electron clients and embedded runtimes; users' IMAP accounts with IMAP4rev1 IDLE, UIDPLUS, MOVE, UNSELECT, NAMESPACE, ID, CHILDREN, LITERAL-, SASL-IR, STARTTLS/implicit TLS, virtual mailboxes and persistent UID state; manual folder exposure and per-message placement.
 - Limits: search sync is eventual (10 ms poll, 50 ms quiet, max five-second wait; shutdown drains); broad negative/short substring searches may scan widely. Outbound mail, durable SSE replay, disk-backed attachments, advanced mail-management features are absent. IMAP APPEND, server Drafts/Sent, CONDSTORE/QRESYNC, LIST-EXTENDED and IMAP4rev2 are absent; IMAP SEARCH scans selected mailbox rather than Tantivy. Apple Mail/Thunderbird/Outlook lack automated GUI verification. SMTP TLS requires configured cert/key (no generation, upload or hot reload); without it SMTP AUTH is clear text. HTTP has no built-in TLS.
-- SQLite uses one ordered script-name migration sequence (no schema versions/batches); startup validates applied prefix and physical schema, then atomically applies missing scripts/history. Append future scripts. Old pre-deployment batch-history/pre-release databases are unsupported; recreate them, as startup rejects without clearing data. No active message-to-scope materialization; authorization composes mail access, assignments/inherited filters and personal filters. Mirror exposes every primary normal/smart folder; Independent initializes primary normal organization once and owns its own smart definitions. Smart results and global search include filed mail and exclude primary Trash. Reference-safe collection releases physical content only after all views release it.
-- Search status/rebuild are administrator HTTP operations and offline CLI commands. HTTP rebuild allows SMTP ingestion; CLI status reads SQL without writer lock, CLI rebuild requires the installation lock. Index schema/checksum validation precedes recovery; indexing worker failure stops supervised listeners. In-flight work can finish with already-read facts; later requests re-read roles/policies. Credential-bound sessions are invalidated on password change, and administrators cannot grant authority they lack. SMTP server edits rebind/re-evaluate AUTH without restart; an environment override lasts until process restart without it.
+- SQLite uses one ordered script-name migration sequence with execution batches (no separate schema versions); startup validates the applied prefix and physical schema, then atomically applies missing scripts/history as one new batch. `sandpost migrate [up|status|rollback]` applies pending scripts, reports batches, or atomically reverses only the latest batch without first upgrading; mutating commands require the instance to be stopped. The 46-script pre-release baseline creates current tables directly, without historical ALTERs or data backfills; earlier development databases require explicit recreation. Down scripts remove data in reverted tables. After release, append future scripts with matching inverses. Validated name-only histories become batch 1; incompatible older pre-release formats remain unsupported and fail without clearing data. No active message-to-scope materialization; authorization composes mail access, assignments/inherited filters and personal filters. Mirror exposes every primary normal/smart folder; Independent initializes primary normal organization once and owns its own smart definitions. Smart results and global search include filed mail and exclude primary Trash. Reference-safe collection releases physical content only after all views release it.
+- Search status/rebuild are administrator HTTP operations and offline CLI commands. HTTP rebuild allows SMTP ingestion; CLI status reads SQL without writer lock, CLI rebuild requires the installation lock. Index schema/checksum validation precedes recovery; indexing worker failure stops supervised listeners. In-flight work can finish with already-read facts; later requests re-read roles/policies. Credential-bound sessions are invalidated on password change, and administrators cannot grant authority they lack. SMTP listener settings come only from process configuration and require a restart to change; the interface exposes them read-only.
 - Refresh waits for its captured committed index watermark, then rechecks visibility/session before IDs; SSE `ready` also waits. SMTP acknowledgement depends on SQL commit and direct reads remain immediately available. Shutdown releases index locks even if handles survive; closed writers reject mutations/wake waits. Temporary coordinators fence rebuild against outbox pruning and retry or fail under sustained acknowledgement churn.
 - Administrators cannot edit credentials or delete users whose authority exceeds their own; this prevents privilege escalation by credential reset. Owners can manage all accounts.
