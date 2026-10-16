@@ -8,8 +8,7 @@ use crate::boundary::{
 use napi::Result;
 use napi_derive::napi;
 use sandpost_application::{
-    NewAccount, NewSmtpAccessRequest, ScopePreview, SmtpAccessUpdate, SmtpServerUpdate,
-    UpdateAccount,
+    NewAccount, NewSmtpAccessRequest, ScopePreview, SmtpAccessUpdate, UpdateAccount,
 };
 use sandpost_core::{Scope, View};
 use serde_json::Value;
@@ -24,20 +23,6 @@ impl NativeRuntime {
             self.application
                 .authorized(&user)
                 .smtp_server()
-                .await
-                .map_err(application_error)?,
-        )
-    }
-
-    /// Persist the global SMTP server address and rebind its listener.
-    #[napi]
-    pub async fn smtp_server_save(&self, input: Value) -> Result<Value> {
-        let user = self.ensure_authenticated().await?;
-        let update: SmtpServerUpdate = deserialize(input, "invalid SMTP server")?;
-        serialize(
-            self.application
-                .authorized(&user)
-                .save_smtp_server(update)
                 .await
                 .map_err(application_error)?,
         )
