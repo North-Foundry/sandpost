@@ -1,0 +1,220 @@
+name: Release CLI
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Validate release versions
+        id: version
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import re
+          import tomllib
+
+          version = tomllib.loads(Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version']
+          number = r'(?:0|[1-9][0-9]*)'
+          if not re.fullmatch(rf'{number}\.{number}\.{number}(?:-(?:alpha|beta|rc)\.[1-9][0-9]*)?', version):
+              raise SystemExit(f'Unsupported release version: {version}')
+          if os.environ['GITHUB_REF_TYPE'] == 'tag' and os.environ['GITHUB_REF_NAME'] != f'v{version}':
+              raise SystemExit(f'Tag must be v{version}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={version}\nprerelease={str("-" in version).lower()}\n')
+
+  build:
+    needs: version
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+            executable-suffix: ""
+          - runner: macos-15-intel
+            platform: macos-x86_64
+            target: x86_64-apple-darwin
+            executable-suffix: ""
+          - runner: ubuntu-22.04
+            platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            executable-suffix: ""
+          - runner: windows-2022
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            executable-suffix: .exe
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+      RUST_TARGET: ${{ matrix.target }}
+      BINARY_PATH: target/${{ matrix.target }}/release/sandpost${{ matrix.executable-suffix }}
+      CARGO_TERM_COLOR: always
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: corepack enable
+      - run: yarn install --immutable
+      - name: Build embedded frontend
+        run: yarn workspace @sandpost/frontend build
+      - name: Verify Rust formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      - name: Check Rust workspace
+        if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test Rust workspace
+        if: runner.os == 'Linux'
+        run: cargo test --workspace --locked
+      - name: Test CLI on macOS and Windows
+        if: runner.os != 'Linux'
+        run: cargo test --locked -p sandpost --target "$RUST_TARGET"
+      - name: Test frontend
+        if: runner.os == 'Linux'
+        run: yarn workspace @sandpost/frontend test
+      - name: Compile release CLI
+        run: cargo build --release --locked -p sandpost --bin sandpost --target "$RUST_TARGET"
+      - name: Smoke test release CLI and embedded frontend
+        run: python scripts/smoke.py --binary "$BINARY_PATH" --frontend apps/frontend/dist
+      - name: Package release CLI
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          binary = Path(os.environ['BINARY_PATH'])
+          if not binary.is_file():
+              raise SystemExit(f'Missing release binary: {binary}')
+          destination = Path('dist')
+          destination.mkdir(exist_ok=True)
+          archive_name = f'sandpost-{os.environ["RELEASE_VERSION"]}-{os.environ["RELEASE_PLATFORM"]}'
+          if os.environ['RUNNER_OS'] == 'Windows':
+              with zipfile.ZipFile(destination / f'{archive_name}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+                  for source in (binary, Path('LICENSE')):
+                      archive.write(source, arcname=source.name)
+          else:
+              with tarfile.open(destination / f'{archive_name}.tar.gz', 'w:gz') as archive:
+                  for source in (binary, Path('LICENSE')):
+                      archive.add(source, arcname=source.name)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sandpost-cli-build-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_TAG: v${{ needs.version.outputs.version }}
+      RELEASE_PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sandpost-cli-build-*
+          merge-multiple: true
+          path: dist
+      - name: Verify archive set and create checksums
+        shell: python
+        run: |
+          import hashlib
+          import os
+          from pathlib import Path
+
+          destination = Path('dist')
+          prefix = f'sandpost-{os.environ["RELEASE_VERSION"]}-'
+          expected = {prefix + suffix for suffix in (
+              'macos-arm64.tar.gz', 'macos-x86_64.tar.gz',
+              'linux-x86_64.tar.gz', 'windows-x86_64.zip',
+          )}
+          archives = sorted(destination.iterdir())
+          if {archive.name for archive in archives} != expected:
+              raise SystemExit('Release must contain exactly the four expected CLI archives')
+          with (destination / 'SHA256SUMS').open('w', encoding='utf-8', newline='\n') as checksums:
+              for archive in archives:
+                  with archive.open('rb') as source:
+                      digest = hashlib.file_digest(source, 'sha256').hexdigest()
+                  checksums.write(f'{digest}  {archive.name}\n')
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sandpost-cli-release-${{ needs.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+      - name: Create or update draft release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > "$RUNNER_TEMP/release-is-draft"; then
+            if [[ "$(cat "$RUNNER_TEMP/release-is-draft")" != 'true' ]]; then
+              echo 'Refusing to replace assets of a published release' >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+            gh release edit "$RELEASE_TAG" --draft=true --prerelease="$RELEASE_PRERELEASE"
+          else
+            release_flags=()
+            if [[ "$RELEASE_PRERELEASE" == 'true' ]]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" dist/* --verify-tag --draft \
+              --title "Sandpost $RELEASE_VERSION" --generate-notes "${release_flags[@]}"
+          fi

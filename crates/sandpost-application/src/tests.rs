@@ -1115,7 +1115,11 @@ async fn query_validation_reports_positions() {
     let application = application(storage).await;
     let authorized = application.authorized(&session(&user));
     assert!(authorized.validate_query("").valid);
-    assert!(authorized.validate_query("to.domain == \"recipient.test\"").valid);
+    assert!(
+        authorized
+            .validate_query("to.domain == \"recipient.test\"")
+            .valid
+    );
     let invalid = authorized.validate_query("subject == ");
     assert!(!invalid.valid);
     let diagnostic = invalid.error.unwrap();

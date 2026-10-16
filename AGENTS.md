@@ -21,6 +21,7 @@ source of conventions/contracts; read applicable documents before editing:
 - `.agents/docs/imap-operation-matrix.md` — IMAP lifecycle audit, operation matrix and mode ownership decisions.
 - `.agents/docs/imap-implementation-report.md` — completed specification review, implementation changes, test evidence and compatibility limits.
 - `.agents/docs/commits.md` — commit format and workflow.
+- `.agents/docs/versioning.md` — shared release versions, tags, artifacts and current release workflow.
 
 When changing `.agents/docs/`, check that this index's paths/descriptions match
 all documents present; index only documents inside `.agents/`. Other changes do

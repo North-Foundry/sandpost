@@ -26,9 +26,9 @@ cargo build --workspace --locked
 cargo run -p sandpost --locked
 ```
 
-Defaults are HTTP `127.0.0.1:8025`, SMTP `127.0.0.1:1025`, and IMAP `127.0.0.1:1143`. `sandpost-web-api` embeds `apps/frontend/dist` at compile time when it exists, so a build after `yarn frontend:build` serves the web interface from the single binary and a frontend change recompiles it. Without `dist`, HTTP serves only the API. The runtime serves the embedded assets and uses `index.html` for non-API SPA paths; unknown `/api` paths remain 404. Node is a build dependency only; the runtime needs no external frontend directory.
+Defaults are HTTP `127.0.0.1:8025`, SMTP `127.0.0.1:1025`, and IMAP `127.0.0.1:1143`. `sandpost-web-api` embeds `apps/frontend/dist` at compile time when it exists, so a build after `yarn workspace @sandpost/frontend build` serves the web interface from the single binary and a frontend change recompiles it. Without `dist`, HTTP serves only the API. The runtime serves the embedded assets and uses `index.html` for non-API SPA paths; unknown `/api` paths remain 404. Node is a build dependency only; the runtime needs no external frontend directory.
 
-Root scripts: `yarn frontend:dev` runs Vite with the explicit mock client; `yarn frontend:dev:http` proxies HTTP to the local Rust server; `yarn frontend:build` type-checks and builds; `yarn frontend:test` runs frontend tests. `yarn desktop:dev` builds the native addon and Electron main/preload, runs Vite on 1420, and launches Electron; browser Vite uses 5173. `yarn native:build` builds/copies the napi-rs 3 addon to `apps/desktop/native/<platform>-<architecture>/sandpost.node`; `yarn native:test`, `yarn desktop:check`, `yarn desktop:test`, `yarn desktop:smoke`, and `yarn desktop:smoke --dev` exercise the native, IPC, and Electron paths. `yarn desktop:build:dir` creates an unsigned unpacked app; `yarn desktop:build` packages the current host. Electron ships Vue assets and native artifacts outside ASAR; packaged users need no toolchain. Targets are macOS ARM64/x64, Linux x64, and Windows x64; only CI/local-built targets count as validated. Signing and notarization are not configured.
+Use `yarn workspace @sandpost/frontend dev:mock` for Vite with the explicit mock client, `yarn workspace @sandpost/frontend build` to type-check and build, and `yarn workspace @sandpost/frontend test` for frontend tests. `yarn workspace @sandpost/desktop dev` builds the native addon and Electron main/preload, runs Vite on 1420, and launches Electron; browser Vite uses 5173. The desktop workspace's `native:build`, `check`, `test`, `smoke`, `smoke:preview`, `build:dir`, and `build` scripts cover addon, IPC, Electron and packaging tasks. Run `node scripts/native-smoke.cjs` for native runtime smoke coverage after building the addon. Pass `--dev` to desktop smoke for the development app. Electron ships Vue assets and native artifacts outside ASAR; packaged users need no toolchain. The CLI release workflow builds macOS ARM64/x64, Ubuntu 22.04 GNU x86_64 and Windows x86_64 binaries. Ubuntu 22.04 is the Linux compatibility baseline; Alpine and other Linux distributions are not promised. macOS builds are unsigned and not notarized. Until release CI has run successfully, only macOS ARM64 has local native/release build verification; the other targets are configured, not validated.
 
 The mock has 24 synthetic messages and supports inbox creation, search, deletion, decoded attachments, raw MIME, keyset pages, and ready events. Its mutations last only for the client lifetime and do not exercise Rust. Normal Vite/build uses HTTP; Electron's explicit `window.sandpost` preload API takes precedence over mock configuration. Browser bundles contain no Electron imports or native shims.
 
@@ -362,27 +362,27 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo build --workspace --locked
 python3 scripts/smoke.py
-yarn frontend:build
-yarn frontend:test
-yarn desktop:check
-yarn desktop:test
-yarn native:build
-yarn native:test
-yarn desktop:smoke
-yarn desktop:smoke --dev
+yarn workspace @sandpost/frontend build
+yarn workspace @sandpost/frontend test
+yarn workspace @sandpost/desktop check
+yarn workspace @sandpost/desktop test
+yarn workspace @sandpost/desktop native:build
+node scripts/native-smoke.cjs
+yarn workspace @sandpost/desktop smoke
+yarn workspace @sandpost/desktop smoke --dev
 cargo build --workspace --locked
 python3 scripts/smoke.py --frontend apps/frontend/dist
 ```
 
-`cargo test --workspace --locked` and `yarn frontend:test` run the suites; the root smoke starts the binary with isolated ports/data, sends SMTP, checks MIME, HTTP authorization/search/raw/SSE, then uses independent Python `imaplib` for login, LIST/SELECT/FETCH/SEARCH/STORE/IDLE push/MOVE and verifies restart persistence, UIDVALIDITY, UIDs and flags. `--frontend apps/frontend/dist` additionally checks embedded assets, deep SPA routes and API 404 boundaries against that directory; build the frontend and then rebuild Rust before running it. The flag supplies expected bytes for verification and does not configure the server.
+`cargo test --workspace --locked` and `yarn workspace @sandpost/frontend test` run the suites; the root smoke starts the binary with isolated ports/data, sends SMTP, checks MIME, HTTP authorization/search/raw/SSE, then uses independent Python `imaplib` for login, LIST/SELECT/FETCH/SEARCH/STORE/IDLE push/MOVE and verifies restart persistence, UIDVALIDITY, UIDs and flags. `--frontend apps/frontend/dist` additionally checks embedded assets, deep SPA routes and API 404 boundaries against that directory; build the frontend and then rebuild Rust before running it. The flag supplies expected bytes for verification and does not configure the server.
 
-`yarn desktop:check`/`desktop:test` cover main/preload typing and IPC/security. `yarn native:test` after addon build covers real SMTP, events, reads, Buffer fidelity, HTTP parity, cancellation, shutdown/restart. Electron smoke sends real MIME and checks notifications, list/detail/raw IPC, exact bytes, Vue UI, HTML isolation and blocked HTTP API. Production uses the local app protocol; dev permits Vite/HMR but blocks `/api`. For unpacked app use `yarn desktop:smoke --packaged <absolute executable path>` (macOS executable: `SandPost.app/Contents/MacOS/SandPost`).
+The desktop workspace's `check` and `test` cover main/preload typing and IPC/security. After building the native addon, `node scripts/native-smoke.cjs` exercises real SMTP, events, reads, Buffer fidelity, HTTP parity, cancellation, shutdown and restart. Electron smoke sends real MIME and checks notifications, list/detail/raw IPC, exact bytes, Vue UI, HTML isolation and blocked HTTP API. Production uses the local app protocol; dev permits Vite/HMR but blocks `/api`. For unpacked app use `yarn workspace @sandpost/desktop smoke --packaged <absolute executable path>` (macOS executable: `SandPost.app/Contents/MacOS/SandPost`).
 
-`yarn desktop:smoke --preview` (or `yarn workspace @sandpost/desktop smoke:preview`) exercises inline inspection through SMTP, preload, Vue and Chromium; add `--dev` or `--packaged <absolute executable path>`. It checks real DOM/inline CSS, blocked script/Node/preload/storage, exclusive DevTools target, one window, resize bounds, themed first frame/readiness loader, live/reopened light/dark theme, toolbar close/reopen, stable normal/malformed HTML inspection, minimum size, and teardown on Plain text/unmount. Because MIME may provide HTML for text/plain, it explicitly selects Plain text mode. It checks Elements selection, computed style, box model, minimize/restore. `SANDPOST_PREVIEW_CAPTURE=1` saves DevTools/email captures and loader frame in the system temp directory. Frontend/desktop tests also cover browser fallback, lifecycle, theme/toggle races, clipping/geometry, IPC policy/zoom, destruction and cleanup.
+`yarn workspace @sandpost/desktop smoke:preview` exercises inline inspection through SMTP, preload, Vue and Chromium; add `--dev` or `--packaged <absolute executable path>`. It checks real DOM/inline CSS, blocked script/Node/preload/storage, exclusive DevTools target, one window, resize bounds, themed first frame/readiness loader, live/reopened light/dark theme, toolbar close/reopen, stable normal/malformed HTML inspection, minimum size, and teardown on Plain text/unmount. Because MIME may provide HTML for text/plain, it explicitly selects Plain text mode. It checks Elements selection, computed style, box model, minimize/restore. `SANDPOST_PREVIEW_CAPTURE=1` saves DevTools/email captures and loader frame in the system temp directory. Frontend/desktop tests also cover browser fallback, lifecycle, theme/toggle races, clipping/geometry, IPC policy/zoom, destruction and cleanup.
 
 Manual inspection: test normal and malformed styled/table HTML; Inspect, select via native picker, inspect Styles/Computed/box model and Console/Sources/Network. Drag divider to limits; resize/zoom/minimize/restore; close/reopen; change HTML while open; switch Plain text/Headers, routes and folders; open menus/dialogs and scroll to verify clipping/restoration. Repeat with scripts, handlers, remote images, forms, popups and navigation and confirm they stay blocked. Browser preview has no Inspect.
 
-Local migration validation covered macOS ARM64 native debug/release, Vite dev, production assets and unsigned `.app`. Windows, Linux and macOS x64 are configured CI targets, not locally verified releases. Installer images, signing and notarization are unvalidated.
+Local migration validation covered macOS ARM64 native debug/release, Vite dev, production assets and unsigned `.app`. The CLI release workflow's Windows, Linux and macOS x64 targets remain unvalidated until its CI builds complete. Desktop installer images are not built by that workflow; signing and notarization are not configured.
 
 ## Architecture and operational limits
 

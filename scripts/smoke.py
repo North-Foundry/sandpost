@@ -48,7 +48,7 @@ def assert_failed_startup(server_binary, environment_variables):
     """Require a startup error to exit unsuccessfully without announcing readiness."""
     completed_process = subprocess.run(
         [str(server_binary)], env=environment_variables, capture_output=True,
-        text=True, timeout=10,
+        text=True, encoding='utf-8', timeout=10,
     )
     output_text = completed_process.stdout + completed_process.stderr
     assert completed_process.returncode != 0, output_text
@@ -62,7 +62,7 @@ def main():
     """Exercise the built server across SMTP ingestion, HTTP, persistence, and restart."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=Path(__file__).resolve().parents[1] / 'target/debug/sandpost')
-    parser.add_argument('--frontend', type=Path, help='also verify a built static frontend directory')
+    parser.add_argument('--frontend', type=Path, help='built frontend directory expected to be embedded in the Rust binary')
     parsed_arguments = parser.parse_args()
     server_binary = parsed_arguments.binary.resolve()
     if not server_binary.is_file():
@@ -106,22 +106,23 @@ def main():
         raise AssertionError(f'index did not converge to {expected_count} messages: {rows}')
 
     with tempfile.TemporaryDirectory(prefix='sandpost-smoke-') as data_directory:
-        environment_variables = dict(os.environ, SANDPOST_DATA_DIR=data_directory,
+        environment_variables = dict(os.environ, SANDPOST_DATA_DIRECTORY=data_directory,
                    SANDPOST_DATABASE_PATH=str(Path(data_directory) / 'sandpost.sqlite3'),
-                   SANDPOST_HTTP_LISTEN=f'127.0.0.1:{web_port}',
-                   SANDPOST_SMTP_LISTEN=f'127.0.0.1:{mail_port}',
-                   SANDPOST_IMAP_LISTEN=f'127.0.0.1:{imap_port}',
+                   SANDPOST_HTTP_BIND_ADDRESS='127.0.0.1', SANDPOST_HTTP_PORT=str(web_port),
+                   SANDPOST_SMTP_BIND_ADDRESS='127.0.0.1', SANDPOST_SMTP_PORT=str(mail_port),
+                   SANDPOST_IMAP_ENABLED='true', SANDPOST_IMAP_BIND_ADDRESS='127.0.0.1',
+                   SANDPOST_IMAP_PORT=str(imap_port),
                    SANDPOST_LOG_LEVEL='info',
                    SMTP_PASSWORD='sandpost-smoke-secret-sentinel')
         environment_variables.pop('SANDPOST_MAX_SCOPE_DEPTH', None)
+        environment_variables.pop('SANDPOST_CONFIG', None)
         environment_variables.pop('SANDPOST_SMTP_ENDPOINT', None)
         environment_variables.pop('SANDPOST_SMTP_ENDPOINTS', None)
-        environment_variables.pop('SANDPOST_FRONTEND_DIR', None)
+        for legacy_listener in ('SANDPOST_HTTP_LISTEN', 'SANDPOST_SMTP_LISTEN', 'SANDPOST_IMAP_LISTEN'):
+            environment_variables.pop(legacy_listener, None)
         for imap_setting in ('SANDPOST_IMAP_TLS', 'SANDPOST_IMAP_TLS_MODE', 'SANDPOST_IMAP_TLS_CERTIFICATE',
                              'SANDPOST_IMAP_TLS_PRIVATE_KEY', 'SANDPOST_IMAP_HOST', 'SANDPOST_IMAP_MAX_CONNECTIONS'):
             environment_variables.pop(imap_setting, None)
-        if frontend_directory:
-            environment_variables['SANDPOST_FRONTEND_DIR'] = str(frontend_directory)
         server_log_path = Path(data_directory) / 'server.log'
         server_error_path = Path(data_directory) / 'server.err'
 
@@ -132,37 +133,45 @@ def main():
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
                     if server_process.poll() is not None:
-                        raise RuntimeError(server_log_path.read_text() + server_error_path.read_text())
+                        raise RuntimeError(server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8'))
                     try:
                         assert fetch_response_data('/api/v1/health')['status'] == 'ok'
                         return server_process
                     except (OSError, AssertionError):
                         time.sleep(0.05)
-                raise RuntimeError('server readiness timeout: ' + server_log_path.read_text() + server_error_path.read_text())
+                raise RuntimeError('server readiness timeout: ' + server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8'))
             except BaseException:
                 stop_server(server_process)
                 raise
 
         def stop_server(server_process):
-            """Stop the server gracefully and fail if it cannot drain promptly."""
-            if server_process.poll() is None:
-                server_process.send_signal(signal.SIGTERM)
+            """Stop the server, requiring graceful draining where the runtime supports signals."""
+            was_running = server_process.poll() is None
+            if was_running:
+                if os.name == 'nt':
+                    server_process.terminate()
+                else:
+                    server_process.send_signal(signal.SIGTERM)
             try:
                 exit_code = server_process.wait(timeout=9)
             except subprocess.TimeoutExpired:
                 server_process.kill()
                 server_process.wait()
-                raise AssertionError('server did not drain on SIGTERM')
-            assert exit_code == 0, server_log_path.read_text()
+                raise AssertionError('server did not stop within 9 seconds')
+            output_text = server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
+            assert was_running, f'server exited before shutdown ({exit_code}): {output_text}'
+            # Python's Windows terminate() calls TerminateProcess with exit code 1.
+            expected_exit_code = 1 if os.name == 'nt' else 0
+            assert exit_code == expected_exit_code, output_text
 
         with server_log_path.open('a') as server_log_file, server_error_path.open('a') as server_error_file:
             server_process = start_server(server_log_file, server_error_file)
             event_stream_connection = http.client.HTTPConnection('127.0.0.1', web_port, timeout=3)
             try:
-                assert_startup_summary(server_log_path.read_text(), Path(data_directory) / 'sandpost.sqlite3', web_port, mail_port, imap_port, 1)
-                assert '\x1b' not in server_log_path.read_text() + server_error_path.read_text()
-                assert 'sandpost-smoke-secret-sentinel' not in server_log_path.read_text() + server_error_path.read_text()
-                assert 'Ready to receive mail.' not in server_error_path.read_text()
+                assert_startup_summary(server_log_path.read_text(encoding='utf-8'), Path(data_directory) / 'sandpost.sqlite3', web_port, mail_port, imap_port, 1)
+                assert '\x1b' not in server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
+                assert 'sandpost-smoke-secret-sentinel' not in server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
+                assert 'Ready to receive mail.' not in server_error_path.read_text(encoding='utf-8')
                 if frontend_directory:
                     expected_index = (frontend_directory / 'index.html').read_bytes()
                     for resource_path in ['/', '/mail', '/mail/00000000-0000-4000-8000-000000000001']:
@@ -183,7 +192,7 @@ def main():
                     finally:
                         missing_connection.close()
                 assert fetch_response_data('/api/v1/instance') == {'initialized': False, 'setupKeyRequired': True}
-                secret = re.search(r'Bootstrap secret:\s*(SP-[A-F0-9-]+)', server_log_path.read_text()).group(1)
+                secret = re.search(r'Bootstrap secret:\s*(SP-[A-F0-9-]+)', server_log_path.read_text(encoding='utf-8')).group(1)
                 credentials = {'email': 'owner@example.test', 'password': 'smoke test owner password'}
                 authorization = post_json('/api/v1/setup/authorize', {'setupKey': secret})['authorization']
                 assert authorization != secret
@@ -252,9 +261,9 @@ def main():
                 assert fetch_response_data('/api/v1/search?' + query)[0]['id'] == message_identifier
                 assert post_json('/api/v1/search/rebuild', {})['pending_operations'] == 0
                 assert fetch_response_data('/api/v1/messages')[0]['id'] == message_identifier
-                status = subprocess.run([str(server_binary), 'search', 'status'], env=environment_variables, capture_output=True, text=True, timeout=10)
+                status = subprocess.run([str(server_binary), 'search', 'status'], env=environment_variables, capture_output=True, text=True, encoding='utf-8', timeout=10)
                 assert status.returncode == 0 and 'pending=0' in status.stdout, status.stderr
-                locked = subprocess.run([str(server_binary), 'search', 'rebuild'], env=environment_variables, capture_output=True, text=True, timeout=10)
+                locked = subprocess.run([str(server_binary), 'search', 'rebuild'], env=environment_variables, capture_output=True, text=True, encoding='utf-8', timeout=10)
                 assert locked.returncode != 0 and 'search writer is already running' in locked.stderr, locked.stderr
 
                 # IMAP through Python's independent imaplib client: account issuing, LIST, SELECT,
@@ -318,7 +327,7 @@ def main():
                     imap_client.shutdown()
                     raise
                 assert len(wait_for_messages(2)) == 2
-                assert imap_password not in server_log_path.read_text() + server_error_path.read_text()
+                assert imap_password not in server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
 
             finally:
                 event_stream_response.close() if 'event_stream_response' in locals() else None
@@ -326,13 +335,13 @@ def main():
                 stop_server(server_process)
             server_process = start_server(server_log_file, server_error_file)
             try:
-                assert_startup_summary(server_log_path.read_text(), Path(data_directory) / 'sandpost.sqlite3', web_port, mail_port, imap_port, 2)
-                assert '\x1b' not in server_log_path.read_text() + server_error_path.read_text()
-                assert 'sandpost-smoke-secret-sentinel' not in server_log_path.read_text() + server_error_path.read_text()
-                assert smtp_password not in server_log_path.read_text() + server_error_path.read_text()
-                assert 'Ready to receive mail.' not in server_error_path.read_text()
+                assert_startup_summary(server_log_path.read_text(encoding='utf-8'), Path(data_directory) / 'sandpost.sqlite3', web_port, mail_port, imap_port, 2)
+                assert '\x1b' not in server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
+                assert 'sandpost-smoke-secret-sentinel' not in server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
+                assert smtp_password not in server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
+                assert 'Ready to receive mail.' not in server_error_path.read_text(encoding='utf-8')
                 assert fetch_response_data('/api/v1/instance') == {'initialized': True, 'setupKeyRequired': False}
-                assert server_log_path.read_text().count('Bootstrap secret:') == 1
+                assert server_log_path.read_text(encoding='utf-8').count('Bootstrap secret:') == 1
                 session_token = post_json('/api/v1/login', credentials)['token']
                 assert message_identifier in [row['id'] for row in fetch_response_data('/api/v1/messages')]
                 with smtplib.SMTP('127.0.0.1', mail_port, timeout=3) as mail_server:
@@ -364,7 +373,7 @@ def main():
             finally:
                 stop_server(server_process)
 
-        rebuilt = subprocess.run([str(server_binary), 'search', 'rebuild'], env=environment_variables, capture_output=True, text=True, timeout=30)
+        rebuilt = subprocess.run([str(server_binary), 'search', 'rebuild'], env=environment_variables, capture_output=True, text=True, encoding='utf-8', timeout=30)
         assert rebuilt.returncode == 0 and 'pending=0' in rebuilt.stdout, rebuilt.stderr
         assert 'Bootstrap secret:' not in rebuilt.stdout
         with sqlite3.connect(Path(data_directory) / 'sandpost.sqlite3') as database_connection:
@@ -373,9 +382,10 @@ def main():
             assert database_connection.execute('select raw_message from mail where identifier=?', (message_identifier,)).fetchone()[0] == captured_message
             assert database_connection.execute('select last_used_at from smtp_accesses').fetchone()[0] is not None
 
-        assert 'shutting down listeners' in server_error_path.read_text()
-        assert 'shutting down listeners' not in server_log_path.read_text()
-        assert '\x1b' not in server_log_path.read_text() + server_error_path.read_text()
+        if os.name != 'nt':
+            assert 'shutting down listeners' in server_error_path.read_text(encoding='utf-8')
+        assert 'shutting down listeners' not in server_log_path.read_text(encoding='utf-8')
+        assert '\x1b' not in server_log_path.read_text(encoding='utf-8') + server_error_path.read_text(encoding='utf-8')
 
         occupied_mail_socket = socket.socket()
         occupied_mail_socket.bind(('127.0.0.1', 0))
@@ -383,10 +393,10 @@ def main():
         try:
             failed_environment = dict(
                 environment_variables,
-                SANDPOST_SMTP_LISTEN=f'127.0.0.1:{occupied_mail_socket.getsockname()[1]}',
+                SANDPOST_SMTP_PORT=str(occupied_mail_socket.getsockname()[1]),
             )
             bind_error = assert_failed_startup(server_binary, failed_environment)
-            assert 'address already in use' in bind_error.lower(), bind_error
+            assert 'address already in use' in bind_error.lower() or '10048' in bind_error, bind_error
         finally:
             occupied_mail_socket.close()
 
@@ -402,15 +412,15 @@ def main():
         port_zero_database = port_zero_directory / 'sandpost.sqlite3'
         port_zero_environment = dict(
             environment_variables,
-            SANDPOST_DATA_DIR=str(port_zero_directory),
+            SANDPOST_DATA_DIRECTORY=str(port_zero_directory),
             SANDPOST_DATABASE_PATH=str(port_zero_database),
-            SANDPOST_HTTP_LISTEN='127.0.0.1:0',
-            SANDPOST_SMTP_LISTEN='127.0.0.1:0',
-            SANDPOST_IMAP_LISTEN='127.0.0.1:0',
+            SANDPOST_HTTP_PORT='0',
+            SANDPOST_SMTP_PORT='0',
+            SANDPOST_IMAP_PORT='0',
             SANDPOST_LOG_LEVEL='off',
         )
         with server_log_path.open('a') as server_log_file, server_error_path.open('a') as server_error_file:
-            output_offset = len(server_log_path.read_text())
+            output_offset = len(server_log_path.read_text(encoding='utf-8'))
             port_zero_process = subprocess.Popen(
                 [str(server_binary)], env=port_zero_environment,
                 stdout=server_log_file, stderr=server_error_file,
@@ -418,13 +428,13 @@ def main():
             try:
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
-                    port_zero_output = server_log_path.read_text()[output_offset:]
+                    port_zero_output = server_log_path.read_text(encoding='utf-8')[output_offset:]
                     if 'Ready to receive mail.' in port_zero_output:
                         break
                     if port_zero_process.poll() is not None:
-                        raise RuntimeError(port_zero_output + server_error_path.read_text())
+                        raise RuntimeError(port_zero_output + server_error_path.read_text(encoding='utf-8'))
                     time.sleep(0.05)
-                port_zero_output = server_log_path.read_text()[output_offset:]
+                port_zero_output = server_log_path.read_text(encoding='utf-8')[output_offset:]
                 bound_ports = [int(port) for port in re.findall(r'Listening\s+127\.0\.0\.1:(\d+)', port_zero_output)]
                 # Summary order: SMTP, IMAP, then HTTP.
                 assert len(bound_ports) == 3 and all(bound_ports), port_zero_output
@@ -435,9 +445,9 @@ def main():
                     assert mail_connection.recv(128).startswith(b'220 ')
                 with socket.create_connection(('127.0.0.1', bound_ports[1]), timeout=3) as imap_connection:
                     assert imap_connection.recv(256).startswith(b'* OK [CAPABILITY IMAP4rev1 ')
-                assert '\x1b' not in port_zero_output + server_error_path.read_text()
-                assert 'sandpost-smoke-secret-sentinel' not in port_zero_output + server_error_path.read_text()
-                assert 'Ready to receive mail.' not in server_error_path.read_text()
+                assert '\x1b' not in port_zero_output + server_error_path.read_text(encoding='utf-8')
+                assert 'sandpost-smoke-secret-sentinel' not in port_zero_output + server_error_path.read_text(encoding='utf-8')
+                assert 'Ready to receive mail.' not in server_error_path.read_text(encoding='utf-8')
             finally:
                 stop_server(port_zero_process)
     print('PASS: startup summary, bind/storage failures, port 0, SMTP, normalization, API, raw MIME, SSE, search status/rebuild/locking, IMAP (imaplib, IDLE, MOVE, UID persistence), persistence, restart, shutdown' + (', static assets and SPA routing' if frontend_directory else ''))
