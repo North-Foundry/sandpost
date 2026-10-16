@@ -1,0 +1,2 @@
+DROP TRIGGER imap_message_placements_folder_account_insert;
+DROP TRIGGER imap_message_placements_folder_account_update;

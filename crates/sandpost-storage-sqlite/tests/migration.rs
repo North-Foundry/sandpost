@@ -4,19 +4,15 @@ mod common;
 
 use common::connection as open_connection;
 use sandpost_core::{
-    GlobalRole, ImapAccountIdentifier, MailAccess, Message, MessageFacts, MessageIdentifier,
-    ScopeIdentifier, UserIdentifier,
+    GlobalRole, MailAccess, Message, MessageFacts, MessageIdentifier, ScopeIdentifier,
+    UserIdentifier,
 };
 use sandpost_storage::{
-    ImapStorage, MessageListQuery, MessageStorage, NewImapAccount, NewUser, ScopeStorage,
-    StorageError, UserStorage,
+    MessageListQuery, MessageStorage, NewUser, ScopeStorage, StorageError, UserStorage,
 };
 use sandpost_storage_sqlite::SqliteStorage;
 use sqlx::Connection;
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::path::{Path, PathBuf};
 
 /// Own an isolated temporary data directory for the duration of a test.
 struct TestDirectory(PathBuf);
@@ -76,341 +72,53 @@ async fn a_fresh_database_ignores_arbitrary_user_version() {
     drop(SqliteStorage::open(&path).await.unwrap());
 
     let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut expected: Vec<String> = std::fs::read_dir(migration_directory)
+    let mut expected: Vec<String> = std::fs::read_dir(&migration_directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     expected.sort();
+    for (index, migration_name) in expected.iter().enumerate() {
+        assert_eq!(
+            migration_name.split('_').next().unwrap(),
+            format!("{:04}", index + 1),
+            "migration numbering must be consecutive"
+        );
+        let script = std::fs::read_to_string(migration_directory.join(migration_name)).unwrap();
+        assert!(
+            !script.to_ascii_uppercase().contains("ALTER TABLE"),
+            "forward migration {migration_name} must define the baseline schema directly"
+        );
+    }
+    let users_script =
+        std::fs::read_to_string(migration_directory.join("0002_create_users_table.sql")).unwrap();
+    assert!(users_script.contains("message_flag_modification"));
 
     let mut connection = open_connection(&path).await;
     let actual = migration_history(&mut connection).await;
-    assert_eq!(expected.len(), 56);
+    assert_eq!(expected.len(), 46);
     assert_eq!(actual, expected);
+    let legacy_smtp_server_table: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'smtp_server'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(legacy_smtp_server_table, 0);
     let columns: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('migrations') ORDER BY cid")
             .fetch_all(&mut connection)
             .await
             .unwrap();
-    assert_eq!(columns, ["migration"]);
+    assert_eq!(columns, ["migration", "batch"]);
     assert_eq!(user_version(&path).await, 847);
     connection.close().await.unwrap();
 }
 
-/// Upgrade the first 25 scripts while preserving existing folders, mail, and mailbox state.
+/// Upgrade an early baseline while preserving mail, mailbox UIDs, and message flags.
 #[tokio::test]
-async fn first_25_scripts_migrate_forward_without_losing_imap_state() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    let mut connection = open_connection(&path).await;
-    let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut initial_scripts: Vec<_> = std::fs::read_dir(&migration_directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .collect();
-    initial_scripts.sort();
-    initial_scripts.truncate(25);
-    for migration_path in initial_scripts {
-        let name = migration_path.file_name().unwrap().to_string_lossy();
-        let script = std::fs::read_to_string(&migration_path).unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(script.as_str()))
-            .execute(&mut connection)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO migrations(migration) VALUES (?1)")
-            .bind(name.as_ref())
-            .execute(&mut connection)
-            .await
-            .unwrap();
-    }
-    let user_identifier = uuid::Uuid::new_v4().to_string();
-    let account_identifier = uuid::Uuid::new_v4().to_string();
-    let peer_account_identifier = uuid::Uuid::new_v4().to_string();
-    let folder_identifier = uuid::Uuid::new_v4().to_string();
-    let peer_folder_identifier = uuid::Uuid::new_v4().to_string();
-    let mailbox_identifier = uuid::Uuid::new_v4().to_string();
-    let peer_mailbox_identifier = uuid::Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO users(identifier, name, email, password_hash, global_role, mail_access, created_at, updated_at) VALUES (?, 'Folder owner', 'folder-owner@example.test', 'hash', 'member', 'all', 1, 1)",
-    )
-    .bind(&user_identifier)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_accounts(identifier, owner_identifier, name, username, password_hash, created_at, updated_at) VALUES (?, ?, 'Peer account', 'peer-account', 'hash', 1, 1)",
-    )
-    .bind(&peer_account_identifier)
-    .bind(&user_identifier)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_accounts(identifier, owner_identifier, name, username, password_hash, created_at, updated_at) VALUES (?, ?, 'Existing account', 'existing-account', 'hash', 1, 1)",
-    )
-    .bind(&account_identifier)
-    .bind(&user_identifier)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at) VALUES (?, ?, 'Foo', 'subject contains \"peer\"', 0, 2, 2)",
-    )
-    .bind(&peer_folder_identifier)
-    .bind(&peer_account_identifier)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at) VALUES (?, ?, 'Foo', 'subject contains \"existing\"', 1, 1, 1)",
-    )
-    .bind(&folder_identifier)
-    .bind(&account_identifier)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO mail(identifier, subject, text_body, markup_body, raw_message, received_at, size) VALUES ('migration-mail', 'Migration mail', '', '', X'00', 1, 1)",
-    )
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    let mail_sequence: i64 =
-        sqlx::query_scalar("SELECT sequence FROM mail WHERE identifier = 'migration-mail'")
-            .fetch_one(&mut connection)
-            .await
-            .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_mailboxes(identifier, account_identifier, source, folder_identifier, uid_validity, uid_next, recent_through, examined_sequence, definition_fingerprint) VALUES (?, ?, 'folder', ?, 77, 6, 4, ?, 'folder-filter')",
-    )
-    .bind(&mailbox_identifier)
-    .bind(&account_identifier)
-    .bind(&folder_identifier)
-    .bind(mail_sequence)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_mailbox_messages(mailbox_identifier, uid, mail_sequence) VALUES (?, 5, ?)",
-    )
-    .bind(&mailbox_identifier)
-    .bind(mail_sequence)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_mailboxes(identifier, account_identifier, source, folder_identifier, uid_validity, uid_next, recent_through, examined_sequence, definition_fingerprint) VALUES (?, ?, 'folder', ?, 88, 10, 8, ?, 'peer-folder-filter')",
-    )
-    .bind(&peer_mailbox_identifier)
-    .bind(&peer_account_identifier)
-    .bind(&peer_folder_identifier)
-    .bind(mail_sequence)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO imap_mailbox_messages(mailbox_identifier, uid, mail_sequence) VALUES (?, 9, ?)",
-    )
-    .bind(&peer_mailbox_identifier)
-    .bind(mail_sequence)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    connection.close().await.unwrap();
-
-    drop(SqliteStorage::open(&path).await.unwrap());
-    let mut connection = open_connection(&path).await;
-    let history = migration_history(&mut connection).await;
-    let mut expected: Vec<_> = std::fs::read_dir(&migration_directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-        .collect();
-    expected.sort();
-    assert_eq!(history.len(), expected.len());
-    assert_eq!(history, expected);
-    let table_exists: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='user_message_deletions')",
-    )
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(table_exists, 1);
-    let migrated_folder: (String, String) =
-        sqlx::query_as("SELECT owner_identifier, name FROM imap_user_folders WHERE identifier = ?")
-            .bind(&folder_identifier)
-            .fetch_one(&mut connection)
-            .await
-            .unwrap();
-    assert_eq!(migrated_folder, (user_identifier.clone(), "Foo".into()));
-    let mapped_folder: (String, String) = sqlx::query_as(
-        "SELECT account_identifier, local_folder_identifier FROM imap_user_folder_accounts WHERE folder_identifier = ?",
-    )
-    .bind(&folder_identifier)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(mapped_folder.0, account_identifier);
-    assert_ne!(
-        mapped_folder.1, folder_identifier,
-        "primary projection is separate from preserved independent state"
-    );
-    let per_account_projection_counts: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT account_identifier, count(*) FROM imap_user_folder_accounts GROUP BY account_identifier ORDER BY account_identifier",
-    )
-    .fetch_all(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(per_account_projection_counts.len(), 2);
-    assert!(
-        per_account_projection_counts
-            .iter()
-            .all(|(_, count)| *count == 2)
-    );
-    let preserved_original_projections: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM imap_user_folder_accounts WHERE (account_identifier = ?1 AND local_folder_identifier = ?2) OR (account_identifier = ?3 AND local_folder_identifier = ?4)",
-    )
-    .bind(&account_identifier)
-    .bind(&folder_identifier)
-    .bind(&peer_account_identifier)
-    .bind(&peer_folder_identifier)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(preserved_original_projections, 0);
-    let independent_original_folders: i64 = sqlx::query_scalar("SELECT count(*) FROM imap_local_folders WHERE identifier IN(?1,?2) AND organization_mode='independent'")
-        .bind(&folder_identifier).bind(&peer_folder_identifier).fetch_one(&mut connection).await.unwrap();
-    assert_eq!(independent_original_folders, 2);
-    let preserved_membership: (i64, i64, i64) = sqlx::query_as(
-        "SELECT membership.uid, mailbox.uid_validity, mailbox.recent_through FROM imap_mailbox_messages AS membership JOIN imap_mailboxes AS mailbox ON mailbox.identifier = membership.mailbox_identifier WHERE mailbox.identifier = ?",
-    )
-    .bind(&mailbox_identifier)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(preserved_membership, (5, 77, 4));
-
-    let preserved_peer_membership: (i64, i64, i64) = sqlx::query_as(
-        "SELECT membership.uid, mailbox.uid_validity, mailbox.recent_through FROM imap_mailbox_messages AS membership JOIN imap_mailboxes AS mailbox ON mailbox.identifier = membership.mailbox_identifier WHERE mailbox.identifier = ?",
-    )
-    .bind(&peer_mailbox_identifier)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(preserved_peer_membership, (9, 88, 8));
-    let owner_definitions: Vec<(String, String)> = sqlx::query_as(
-        "SELECT name, filter FROM imap_user_folders WHERE owner_identifier = ? ORDER BY filter",
-    )
-    .bind(&user_identifier)
-    .fetch_all(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(
-        owner_definitions,
-        [
-            ("Foo".into(), "subject contains \"existing\"".into()),
-            ("Foo".into(), "subject contains \"peer\"".into()),
-        ]
-    );
-    connection.close().await.unwrap();
-
-    // The migrated owner definitions are visible from both legacy accounts, despite sharing a
-    // display name, and account operations continue to project those definitions consistently.
-    let storage = SqliteStorage::open(&path).await.unwrap();
-    let account_one = ImapAccountIdentifier::from_str(&account_identifier).unwrap();
-    let account_two = ImapAccountIdentifier::from_str(&peer_account_identifier).unwrap();
-    let expected_folders = [
-        ("Foo".to_owned(), "subject contains \"existing\"".to_owned()),
-        ("Foo".to_owned(), "subject contains \"peer\"".to_owned()),
-    ];
-    for account in [account_one, account_two] {
-        let folders = storage.list_imap_local_folders(account).await.unwrap();
-        let mut projected: Vec<_> = folders
-            .into_iter()
-            .map(|folder| {
-                assert!(folder.name.starts_with("Foo"));
-                ("Foo".into(), folder.filter)
-            })
-            .collect();
-        projected.sort();
-        assert_eq!(projected, expected_folders);
-    }
-
-    let account_three = storage
-        .create_imap_account(&NewImapAccount {
-            owner_identifier: UserIdentifier::from_str(&user_identifier).unwrap(),
-            name: "New account".into(),
-            username: format!("new-{}", uuid::Uuid::new_v4()),
-            password_hash: "hash".into(),
-            mirror_views: false,
-            mode: sandpost_core::ImapAccountMode::Mirror,
-            initial_authorization: sandpost_query::Expression::True,
-            created_at: 3,
-        })
-        .await
-        .unwrap();
-    let folders = storage
-        .list_imap_local_folders(account_three.identifier)
-        .await
-        .unwrap();
-    let mut projected: Vec<_> = folders
-        .into_iter()
-        .map(|folder| {
-            assert!(folder.name.starts_with("Foo"));
-            ("Foo".into(), folder.filter)
-        })
-        .collect();
-    projected.sort();
-    assert_eq!(projected, expected_folders);
-
-    assert!(storage.delete_imap_account(account_one).await.unwrap());
-    for account in [account_two, account_three.identifier] {
-        let folders = storage.list_imap_local_folders(account).await.unwrap();
-        let mut projected: Vec<_> = folders
-            .into_iter()
-            .map(|folder| {
-                assert!(folder.name.starts_with("Foo"));
-                ("Foo".into(), folder.filter)
-            })
-            .collect();
-        projected.sort();
-        assert_eq!(projected, expected_folders);
-    }
-    assert!(
-        storage
-            .list_imap_local_folders(account_one)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    drop(storage);
-
-    let mut connection = open_connection(&path).await;
-    let remaining_definitions: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM imap_user_folders WHERE owner_identifier = ? AND name = 'Foo'",
-    )
-    .bind(user_identifier)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(remaining_definitions, 2);
-    let peer_membership_after_delete: (i64, i64, i64) = sqlx::query_as(
-        "SELECT membership.uid, mailbox.uid_validity, mailbox.recent_through FROM imap_mailbox_messages AS membership JOIN imap_mailboxes AS mailbox ON mailbox.identifier = membership.mailbox_identifier WHERE mailbox.identifier = ?",
-    )
-    .bind(peer_mailbox_identifier)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(peer_membership_after_delete, (9, 88, 8));
-    connection.close().await.unwrap();
-}
-
-/// Upgrade the first 27 scripts while preserving mailbox and deletion state.
-#[tokio::test]
-async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
+async fn a_baseline_prefix_upgrade_preserves_imap_state_and_uses_final_table_shapes() {
     let directory = TestDirectory::new();
     let path = directory.database();
     let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
@@ -420,18 +128,16 @@ async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 56);
+    assert_eq!(scripts.len(), 46);
 
     let owner = uuid::Uuid::new_v4().to_string();
     let account = uuid::Uuid::new_v4().to_string();
-    let peer_account = uuid::Uuid::new_v4().to_string();
     let folder = uuid::Uuid::new_v4().to_string();
-    let peer_folder = uuid::Uuid::new_v4().to_string();
     let mailbox = uuid::Uuid::new_v4().to_string();
-    let (live_sequence, deleted_sequence): (i64, i64);
+    let message_sequence: i64;
     {
         let mut connection = open_connection(&path).await;
-        for migration_path in scripts.iter().take(27) {
+        for migration_path in scripts.iter().take(25) {
             let name = migration_path.file_name().unwrap().to_string_lossy();
             let script = std::fs::read_to_string(migration_path).unwrap();
             sqlx::raw_sql(sqlx::AssertSqlSafe(script.as_str()))
@@ -444,156 +150,92 @@ async fn first_27_scripts_migrate_forward_without_losing_imap_state() {
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO users(identifier, name, email, password_hash, global_role, mail_access, created_at, updated_at) VALUES (?1, 'Owner', 'first-27-owner@example.test', 'hash', 'member', 'all', 1, 1)")
-            .bind(&owner).execute(&mut connection).await.unwrap();
-        for (identifier, username) in [
-            (&account, "first-27-primary"),
-            (&peer_account, "first-27-peer"),
+
+        for (table, expected_columns) in [
+            ("users", vec!["message_flag_modification"]),
+            ("imap_accounts", vec!["mode", "mode_generation"]),
+            (
+                "imap_local_folders",
+                vec!["kind", "definition_identifier", "organization_mode"],
+            ),
+            ("imap_mailboxes", vec!["organization_mode"]),
         ] {
-            sqlx::query("INSERT INTO imap_accounts(identifier, owner_identifier, name, username, password_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?3, 'hash', 1, 1)")
-                .bind(identifier).bind(&owner).bind(username).execute(&mut connection).await.unwrap();
+            let columns: Vec<String> =
+                sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+                    .bind(table)
+                    .fetch_all(&mut connection)
+                    .await
+                    .unwrap();
+            for expected_column in expected_columns {
+                assert!(
+                    columns.iter().any(|column| column == expected_column),
+                    "{table} is missing final baseline column {expected_column}"
+                );
+            }
         }
-        sqlx::query("INSERT INTO imap_user_folders(identifier, owner_identifier, name, filter, include_in_inbox, created_at, updated_at) VALUES (?1, ?2, 'Legacy folder', 'true', 1, 1, 1)")
-            .bind(&folder).bind(&owner).execute(&mut connection).await.unwrap();
-        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at) VALUES (?1, ?2, 'Legacy folder', 'true', 1, 1, 1)")
+
+        sqlx::query("INSERT INTO users(identifier, name, email, password_hash, global_role, mail_access, created_at, updated_at) VALUES (?1, 'Owner', 'baseline-owner@example.test', 'hash', 'owner', 'all', 1, 1)")
+            .bind(&owner).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO imap_accounts(identifier, owner_identifier, name, username, password_hash, created_at, updated_at) VALUES (?1, ?2, 'Account', 'baseline-account', 'hash', 1, 1)")
+            .bind(&account).bind(&owner).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at) VALUES (?1, ?2, 'Projects', 'true', 0, 1, 1)")
             .bind(&folder).bind(&account).execute(&mut connection).await.unwrap();
-        sqlx::query("INSERT INTO imap_local_folders(identifier, account_identifier, name, filter, include_in_inbox, created_at, updated_at) VALUES (?1, ?2, 'Legacy folder', 'true', 1, 1, 1)")
-            .bind(&peer_folder).bind(&peer_account).execute(&mut connection).await.unwrap();
-        sqlx::query("INSERT INTO imap_user_folder_accounts(account_identifier, folder_identifier, local_folder_identifier) VALUES (?1, ?2, ?3), (?4, ?2, ?5)")
-            .bind(&account).bind(&folder).bind(&folder).bind(&peer_account).bind(&peer_folder).execute(&mut connection).await.unwrap();
-        sqlx::query("INSERT INTO mail(identifier, subject, text_body, markup_body, raw_message, received_at, size) VALUES ('live-first-27-mail', 'Live', '', '', X'00', 1, 1), ('deleted-first-27-mail', 'Deleted', '', '', X'00', 2, 1)")
+        sqlx::query("INSERT INTO mail(identifier, subject, text_body, markup_body, raw_message, received_at, size) VALUES ('baseline-mail', 'Persisted baseline mail', 'body', '', X'00', 1, 1)")
             .execute(&mut connection).await.unwrap();
-        live_sequence =
-            sqlx::query_scalar("SELECT sequence FROM mail WHERE identifier = 'live-first-27-mail'")
+        message_sequence =
+            sqlx::query_scalar("SELECT sequence FROM mail WHERE identifier = 'baseline-mail'")
                 .fetch_one(&mut connection)
                 .await
                 .unwrap();
-        deleted_sequence = sqlx::query_scalar(
-            "SELECT sequence FROM mail WHERE identifier = 'deleted-first-27-mail'",
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO imap_mailboxes(identifier, account_identifier, source, folder_identifier, uid_validity, uid_next, recent_through, examined_sequence, definition_fingerprint) VALUES (?1, ?2, 'folder', ?3, 77, 6, 4, ?4, 'legacy-fingerprint')")
-            .bind(&mailbox).bind(&account).bind(&folder).bind(live_sequence).execute(&mut connection).await.unwrap();
-        sqlx::query("INSERT INTO imap_mailbox_messages(mailbox_identifier, uid, mail_sequence, deleted, modification) VALUES (?1, 5, ?2, 1, 9), (?1, 6, ?3, 0, 0)")
-            .bind(&mailbox).bind(live_sequence).bind(deleted_sequence).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO imap_mailboxes(identifier, account_identifier, source, folder_identifier, uid_validity, uid_next, recent_through, examined_sequence, definition_fingerprint) VALUES (?1, ?2, 'folder', ?3, 77, 6, 4, ?4, 'baseline-fingerprint')")
+            .bind(&mailbox).bind(&account).bind(&folder).bind(message_sequence).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO imap_mailbox_messages(mailbox_identifier, uid, mail_sequence, deleted, modification) VALUES (?1, 5, ?2, 1, 9)")
+            .bind(&mailbox).bind(message_sequence).execute(&mut connection).await.unwrap();
         sqlx::query("INSERT INTO imap_message_flags(account_identifier, mail_sequence, seen, answered, flagged, draft, keywords, modification) VALUES (?1, ?2, 1, 1, 0, 1, '$Work', 77)")
-            .bind(&account).bind(live_sequence).execute(&mut connection).await.unwrap();
-        sqlx::query(
-            "INSERT INTO user_message_deletions(user_identifier, mail_sequence) VALUES (?1, ?2)",
-        )
-        .bind(&owner)
-        .bind(deleted_sequence)
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        let member_count: i64 = sqlx::query_scalar("SELECT count(*) FROM imap_mailbox_messages WHERE mailbox_identifier = ? AND mail_sequence = ?")
-            .bind(&mailbox).bind(deleted_sequence).fetch_one(&mut connection).await.unwrap();
-        assert_eq!(
-            member_count, 0,
-            "the deletion tombstone trigger removes membership"
-        );
+            .bind(&account).bind(message_sequence).execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
     }
 
     drop(SqliteStorage::open(&path).await.unwrap());
     let mut connection = open_connection(&path).await;
     let history = migration_history(&mut connection).await;
-    assert_eq!(history.len(), 56);
-    assert_eq!(history[27], "0028_add_imap_local_folder_kinds.sql");
+    let expected: Vec<String> = scripts
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(history, expected);
 
-    let preserved_folder: (String, String, Option<String>) = sqlx::query_as(
-        "SELECT identifier, kind, definition_identifier FROM imap_local_folders WHERE identifier = ?",
-    )
-    .bind(&folder)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(preserved_folder, (folder.clone(), "smart".into(), None));
-    let preserved_mailbox: (String, String, i64, i64, i64, i64, Option<String>) = sqlx::query_as(
-        "SELECT identifier, folder_identifier, uid_validity, uid_next, recent_through, examined_sequence, definition_fingerprint FROM imap_mailboxes WHERE identifier = ?",
+    let preserved_membership: (i64, i64, i64, i64, String) = sqlx::query_as(
+        "SELECT membership.uid, mailbox.uid_validity, mailbox.uid_next, membership.modification, mailbox.organization_mode FROM imap_mailbox_messages AS membership JOIN imap_mailboxes AS mailbox ON mailbox.identifier = membership.mailbox_identifier WHERE mailbox.identifier = ?",
     )
     .bind(&mailbox)
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(
-        preserved_mailbox,
-        (
-            mailbox.clone(),
-            folder.clone(),
-            77,
-            6,
-            4,
-            live_sequence,
-            None
-        )
-    );
-    let preserved_member: (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT uid, mail_sequence, deleted, modification FROM imap_mailbox_messages WHERE mailbox_identifier = ?",
-    )
-    .bind(&mailbox)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(preserved_member, (5, live_sequence, 1, 9));
+    assert_eq!(preserved_membership, (5, 77, 6, 9, "independent".into()));
     let preserved_flags: (i64, i64, i64, i64, String, i64) = sqlx::query_as(
         "SELECT seen, answered, flagged, draft, keywords, modification FROM imap_message_flags WHERE account_identifier = ? AND mail_sequence = ?",
     )
     .bind(&account)
-    .bind(live_sequence)
+    .bind(message_sequence)
     .fetch_one(&mut connection)
     .await
     .unwrap();
     assert_eq!(preserved_flags, (1, 1, 0, 1, "$Work".into(), 77));
-    let preserved_tombstone: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM user_message_deletions WHERE user_identifier = ? AND mail_sequence = ?",
-    )
-    .bind(&owner)
-    .bind(deleted_sequence)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(preserved_tombstone, 1);
-    let preserved_projection: (String, String) = sqlx::query_as(
-        "SELECT account_identifier, local_folder_identifier FROM imap_user_folder_accounts WHERE folder_identifier = ? AND account_identifier = ?",
-    )
-    .bind(&folder)
-    .bind(&account)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(preserved_projection.0, account);
-    assert_ne!(preserved_projection.1, folder);
-    let modes: (String, String) = sqlx::query_as("SELECT account.mode, local.organization_mode FROM imap_accounts AS account JOIN imap_local_folders AS local ON local.account_identifier=account.identifier WHERE local.identifier=?")
-        .bind(&folder).fetch_one(&mut connection).await.unwrap();
-    assert_eq!(modes, ("independent".into(), "independent".into()));
-    let peer_projection: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM imap_user_folder_accounts WHERE folder_identifier = ? AND account_identifier = ?",
-    )
-    .bind(&folder)
-    .bind(&peer_account)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(peer_projection, 1);
-    let preserved_peer_projection: String = sqlx::query_scalar(
-        "SELECT local_folder_identifier FROM imap_user_folder_accounts WHERE folder_identifier = ? AND account_identifier = ?",
-    )
-    .bind(&folder)
-    .bind(&peer_account)
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_ne!(preserved_peer_projection, peer_folder);
-    let peer_independent: String =
-        sqlx::query_scalar("SELECT organization_mode FROM imap_local_folders WHERE identifier=?")
-            .bind(&peer_folder)
+    let preserved_mail: (String, String, Vec<u8>) =
+        sqlx::query_as("SELECT identifier, subject, raw_message FROM mail WHERE sequence = ?")
+            .bind(message_sequence)
             .fetch_one(&mut connection)
             .await
             .unwrap();
-    assert_eq!(peer_independent, "independent");
+    assert_eq!(
+        preserved_mail,
+        (
+            "baseline-mail".into(),
+            "Persisted baseline mail".into(),
+            vec![0]
+        )
+    );
     connection.close().await.unwrap();
 }
 
@@ -691,7 +333,7 @@ async fn a_missing_middle_migration_is_rejected_without_repair() {
     let path = directory.database();
     drop(SqliteStorage::open(&path).await.unwrap());
     let mut connection = open_connection(&path).await;
-    sqlx::query("DELETE FROM migrations WHERE migration = '0013_create_search_outbox_table.sql'")
+    sqlx::query("DELETE FROM migrations WHERE migration = '0012_create_search_outbox_table.sql'")
         .execute(&mut connection)
         .await
         .unwrap();
@@ -796,9 +438,9 @@ async fn an_old_batch_format_history_is_rejected_unchanged() {
     connection.close().await.unwrap();
 }
 
-/// A failed final script rolls back every schema and history change in the suffix transaction.
+/// A foreign-key violation during upgrade rolls back suffix schema and migration history.
 #[tokio::test]
-async fn a_failed_migration_suffix_rolls_back_atomically() {
+async fn a_foreign_key_violation_rolls_back_the_migration_suffix() {
     let directory = TestDirectory::new();
     let path = directory.database();
     let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
@@ -809,11 +451,9 @@ async fn a_failed_migration_suffix_rolls_back_atomically() {
         .collect();
     scripts.sort();
 
-    let account = uuid::Uuid::new_v4().to_string();
-    let sequence: i64;
     {
         let mut connection = open_connection(&path).await;
-        for migration_path in scripts.iter().take(25) {
+        for migration_path in scripts.iter().take(24) {
             let name = migration_path.file_name().unwrap().to_string_lossy();
             let script = std::fs::read_to_string(migration_path).unwrap();
             sqlx::raw_sql(sqlx::AssertSqlSafe(script.as_str()))
@@ -826,69 +466,48 @@ async fn a_failed_migration_suffix_rolls_back_atomically() {
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO mail(identifier, subject, text_body, markup_body, raw_message, received_at, size) VALUES ('rollback-mail', 'Rollback', '', '', X'00', 1, 1)")
-            .execute(&mut connection).await.unwrap();
-        sequence =
-            sqlx::query_scalar("SELECT sequence FROM mail WHERE identifier = 'rollback-mail'")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap();
         sqlx::query("PRAGMA foreign_keys = OFF")
             .execute(&mut connection)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO imap_mailboxes(identifier, account_identifier, source, uid_validity, uid_next, recent_through, examined_sequence, definition_fingerprint) VALUES ('rollback-trash', ?1, 'trash', 1, 1, 0, ?2, 'rollback')")
-            .bind(&account).bind(sequence).execute(&mut connection).await.unwrap();
-        sqlx::query("INSERT INTO imap_mailbox_messages(mailbox_identifier, uid, mail_sequence) VALUES ('rollback-trash', 1, ?1)")
-            .bind(sequence).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO imap_mailboxes(identifier, account_identifier, source, uid_validity, uid_next, recent_through, examined_sequence) VALUES ('orphan-mailbox', 'missing-account', 'trash', 1, 1, 0, 0)")
+            .execute(&mut connection)
+            .await
+            .unwrap();
         connection.close().await.unwrap();
     }
 
     assert!(matches!(
         SqliteStorage::open(&path).await,
-        Err(StorageError::Migration(message)) if message.contains("0034_backfill_imap_trash_copies.sql")
+        Err(StorageError::Migration(_))
     ));
     let mut connection = open_connection(&path).await;
-    assert_eq!(migration_history(&mut connection).await.len(), 25);
-    let placements_column: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM pragma_table_info('imap_local_folders') WHERE name = 'kind'",
+    assert_eq!(migration_history(&mut connection).await.len(), 24);
+    for (object_type, object_name) in [
+        ("table", "user_message_deletions"),
+        ("table", "imap_user_folders"),
+        ("table", "imap_account_messages"),
+        ("trigger", "user_message_deletions_remove_imap_memberships"),
+    ] {
+        let object_exists: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sqlite_schema WHERE type = ?1 AND name = ?2")
+                .bind(object_type)
+                .bind(object_name)
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            object_exists, 0,
+            "suffix object {object_name} survived rollback"
+        );
+    }
+    let mailbox_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM imap_mailboxes WHERE identifier = 'orphan-mailbox'",
     )
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    let copies_table: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'imap_message_copies'",
-    )
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    let deletions_table: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'user_message_deletions'",
-    )
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    let folders_table: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'imap_user_folders'",
-    )
-    .fetch_one(&mut connection)
-    .await
-    .unwrap();
-    assert_eq!(
-        (
-            placements_column,
-            copies_table,
-            deletions_table,
-            folders_table
-        ),
-        (0, 0, 0, 0)
-    );
-    let mail_count: i64 = sqlx::query_scalar("SELECT count(*) FROM mail WHERE sequence = ?")
-        .bind(sequence)
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
-    assert_eq!(mail_count, 1);
+    assert_eq!(mailbox_count, 1);
     connection.close().await.unwrap();
 }
 
@@ -969,125 +588,4 @@ async fn a_foreign_key_violation_is_rejected_on_open() {
     connection.close().await.unwrap();
 
     assert!(SqliteStorage::open(&path).await.is_err());
-}
-
-/// Upgrading the previous release preserves inherited Web folder/Trash state and explicit overrides.
-#[tokio::test]
-async fn previous_release_organization_becomes_independent_without_uid_loss() {
-    let directory = TestDirectory::new();
-    let path = directory.database();
-    let mut connection = open_connection(&path).await;
-    let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut scripts: Vec<_> = std::fs::read_dir(migration_directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .collect();
-    scripts.sort();
-    for script in scripts.iter().take(41) {
-        sqlx::raw_sql(sqlx::AssertSqlSafe(
-            std::fs::read_to_string(script).unwrap(),
-        ))
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO migrations(migration) VALUES(?)")
-            .bind(script.file_name().unwrap().to_str().unwrap())
-            .execute(&mut connection)
-            .await
-            .unwrap();
-    }
-    let owner = UserIdentifier::new();
-    let account = ImapAccountIdentifier::new();
-    let primary_folder = sandpost_core::ImapFolderIdentifier::new();
-    let local_folder = sandpost_core::ImapFolderIdentifier::new();
-    let mailbox = sandpost_core::ImapMailboxIdentifier::new();
-    sqlx::query("INSERT INTO users(identifier,name,email,password_hash,global_role,mail_access,created_at,updated_at) VALUES(?1,'Owner','upgrade@example.test','hash','owner','all',1,1)").bind(owner.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO imap_accounts(identifier,owner_identifier,name,username,password_hash,created_at,updated_at) VALUES(?1,?2,'Legacy','legacy','hash',1,1)").bind(account.to_string()).bind(owner.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO web_folders(identifier,owner_identifier,name,created_at,updated_at) VALUES(?1,?2,'Projects',1,1)").bind(primary_folder.to_string()).bind(owner.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO imap_local_folders(identifier,account_identifier,name,filter,created_at,updated_at,kind,definition_identifier) VALUES(?1,?2,'__web_projects','true',1,1,'manual',?3)").bind(local_folder.to_string()).bind(account.to_string()).bind(primary_folder.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO web_folder_accounts(folder_identifier,account_identifier,local_folder_identifier) VALUES(?1,?2,?3)").bind(primary_folder.to_string()).bind(account.to_string()).bind(local_folder.to_string()).execute(&mut connection).await.unwrap();
-    let collision_folder = sandpost_core::ImapFolderIdentifier::new();
-    sqlx::query("INSERT INTO imap_local_folders(identifier,account_identifier,name,filter,created_at,updated_at,kind) VALUES(?1,?2,'__web_projects_mirror','true',1,1,'private')").bind(collision_folder.to_string()).bind(account.to_string()).execute(&mut connection).await.unwrap();
-    for sequence in 1..=3 {
-        sqlx::query("INSERT INTO mail(sequence,identifier,subject,text_body,markup_body,message_identifier,raw_message,received_at,size) VALUES(?1,?2,?3,'body','','',X'74657374',1,4)").bind(sequence).bind(MessageIdentifier::new().to_string()).bind(format!("Message {sequence}")).execute(&mut connection).await.unwrap();
-    }
-    sqlx::query("INSERT INTO user_message_placements(owner_identifier,mail_sequence,folder_identifier) VALUES(?1,1,?2)").bind(owner.to_string()).bind(primary_folder.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO user_message_trash(owner_identifier,mail_sequence,trashed_at) VALUES(?1,2,1),(?1,3,1)").bind(owner.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO imap_message_placements(account_identifier,mail_sequence,target_kind) VALUES(?1,3,'inbox')").bind(account.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO imap_mailboxes(identifier,account_identifier,source,folder_identifier,uid_validity,uid_next) VALUES(?1,?2,'folder',?3,77,18)").bind(mailbox.to_string()).bind(account.to_string()).bind(local_folder.to_string()).execute(&mut connection).await.unwrap();
-    sqlx::query(
-        "INSERT INTO imap_mailbox_messages(mailbox_identifier,uid,mail_sequence) VALUES(?1,17,1)",
-    )
-    .bind(mailbox.to_string())
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    connection.close().await.unwrap();
-
-    let storage = SqliteStorage::open(&path).await.unwrap();
-    let restored = storage.get_imap_account(account).await.unwrap().unwrap();
-    assert_eq!(restored.mode, sandpost_core::ImapAccountMode::Independent);
-    let folders = storage.list_imap_local_folders(account).await.unwrap();
-    assert!(
-        folders
-            .iter()
-            .any(|folder| folder.identifier == collision_folder
-                && folder.name == "__web_projects_mirror"),
-        "legacy names that resemble projection keys survive upgrade"
-    );
-    assert_eq!(folders[0].identifier, local_folder);
-    assert_eq!(folders[0].name, "Projects");
-    assert_eq!(folders[0].kind, sandpost_core::ImapFolderKind::Private);
-    let states = storage
-        .reconcile_imap_mailboxes(
-            account,
-            &[
-                sandpost_core::ImapMailboxSource::Inbox,
-                sandpost_core::ImapMailboxSource::Trash,
-                sandpost_core::ImapMailboxSource::LocalFolder(local_folder),
-            ],
-            None,
-        )
-        .await
-        .unwrap();
-    for state in &states {
-        storage
-            .synchronize_imap_mailbox(
-                state.identifier,
-                &sandpost_storage::ImapMembershipDefinition {
-                    expected_mode_generation: None,
-                    filter: sandpost_query::Expression::True,
-                    fingerprint: "upgrade-all".into(),
-                },
-            )
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        storage
-            .imap_mailbox_members(states[0].identifier, 0)
-            .await
-            .unwrap()
-            .len(),
-        1,
-        "explicit Inbox overrides inherited Trash"
-    );
-    assert_eq!(
-        storage
-            .imap_mailbox_members(states[1].identifier, 0)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-    let filed = storage
-        .imap_mailbox_members(states[2].identifier, 0)
-        .await
-        .unwrap();
-    assert_eq!(filed.len(), 1);
-    assert_eq!(filed[0].uid, 17);
-    assert_eq!(states[2].identifier, mailbox);
-    assert_eq!(states[2].uid_validity, 77);
-    storage.close().await;
 }

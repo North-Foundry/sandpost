@@ -3,7 +3,7 @@ use crate::SqliteStorage;
 use crate::error::StorageResult;
 use crate::records::{invalid_column, parse_identifier};
 use async_trait::async_trait;
-use sandpost_core::{UserIdentifier, View, ViewIdentifier};
+use sandpost_core::{UserIdentifier, View, ViewIdentifier, normalize_inbox_address};
 use sandpost_storage::{StorageError, ViewStorage};
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 
@@ -94,7 +94,7 @@ async fn create_recipient_view(
     name: &str,
     address: &str,
 ) -> Result<View, StorageError> {
-    if !valid_local_address(address) {
+    if !valid_normalized_inbox_address(address) {
         return Err(StorageError::InvalidInboxAddress);
     }
     let filter = format!("envelope.to.address == \"{address}\"");
@@ -132,20 +132,9 @@ async fn create_recipient_view(
     Ok(view)
 }
 
-/// Accept only normalized local addresses that cannot alter the generated DSL string.
-pub(crate) fn valid_local_address(address: &str) -> bool {
-    let Some((local_part, domain)) = address.split_once('@') else {
-        return false;
-    };
-    domain == "sandpost.local"
-        && address == address.to_ascii_lowercase()
-        && !local_part.is_empty()
-        && local_part.len() <= 64
-        && !local_part.starts_with('.')
-        && !local_part.ends_with('.')
-        && local_part
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+/// Accept only normalized inbox addresses that cannot alter the generated DSL string.
+pub(crate) fn valid_normalized_inbox_address(address: &str) -> bool {
+    normalize_inbox_address(address).as_deref() == Some(address)
 }
 
 #[async_trait]
@@ -172,7 +161,7 @@ impl ViewStorage for SqliteStorage {
         delete_view(self, identifier).await
     }
 
-    /// Create a personal view for a validated local address with duplicate protection.
+    /// Create a personal view for a validated inbox address with duplicate protection.
     async fn create_recipient_view(
         &self,
         user: UserIdentifier,

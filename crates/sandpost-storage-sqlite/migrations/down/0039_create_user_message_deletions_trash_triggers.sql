@@ -1,0 +1,1 @@
+DROP TRIGGER user_message_deletions_remove_trash;

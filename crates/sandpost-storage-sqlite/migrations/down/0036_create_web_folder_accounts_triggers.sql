@@ -1,0 +1,2 @@
+DROP TRIGGER web_folder_accounts_ownership_insert;
+DROP TRIGGER web_folder_accounts_ownership_update;

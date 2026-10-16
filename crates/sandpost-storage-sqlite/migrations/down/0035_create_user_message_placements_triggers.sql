@@ -1,0 +1,2 @@
+DROP TRIGGER user_message_placements_folder_owner_insert;
+DROP TRIGGER user_message_placements_folder_owner_update;

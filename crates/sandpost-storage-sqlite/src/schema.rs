@@ -59,16 +59,24 @@ fn normalized_definition(definition: &str) -> String {
 }
 
 /// Construct the expected schema after the first `applied` checked-in scripts.
-async fn expected_schema(applied: usize) -> Result<SqliteConnection, StorageError> {
+async fn expected_schema(
+    applied: usize,
+    legacy_history: bool,
+) -> Result<SqliteConnection, StorageError> {
     let mut connection = SqliteConnectOptions::new()
         .in_memory(true)
         .foreign_keys(true)
         .connect()
         .await
         .storage()?;
-    for (_, script) in MIGRATIONS.iter().take(applied) {
+    for (index, (_, script)) in MIGRATIONS.iter().take(applied).enumerate() {
+        let script = if index == 0 && legacy_history {
+            "CREATE TABLE migrations (migration TEXT PRIMARY KEY NOT NULL);"
+        } else {
+            *script
+        };
         // Use the Send executor future for multi-statement scripts during startup.
-        sqlx::Executor::execute(&mut connection, sqlx::raw_sql(*script))
+        sqlx::Executor::execute(&mut connection, sqlx::raw_sql(script))
             .await
             .storage()?;
     }
@@ -86,7 +94,8 @@ pub(crate) async fn schema_is_empty(
 pub(crate) async fn matches_schema(
     connection: &mut SqliteConnection,
     applied: usize,
+    legacy_history: bool,
 ) -> Result<bool, StorageError> {
-    let mut expected = expected_schema(applied).await?;
+    let mut expected = expected_schema(applied, legacy_history).await?;
     Ok(schema_objects(connection).await? == schema_objects(&mut expected).await?)
 }

@@ -1,0 +1,1 @@
+DROP VIEW imap_effective_message_flags;

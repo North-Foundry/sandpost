@@ -1,0 +1,9 @@
+DROP TRIGGER mail_recipients_search_revision_insert;
+DROP TRIGGER mail_recipients_search_revision_delete;
+DROP TRIGGER mail_recipients_search_revision_update;
+DROP TRIGGER mail_headers_search_revision_insert;
+DROP TRIGGER mail_headers_search_revision_delete;
+DROP TRIGGER mail_headers_search_revision_update;
+DROP TRIGGER mail_attachments_search_revision_insert;
+DROP TRIGGER mail_attachments_search_revision_delete;
+DROP TRIGGER mail_attachments_search_revision_update;

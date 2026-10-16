@@ -13,6 +13,7 @@ mod users;
 mod views;
 
 pub use connection::SqliteStorage;
+pub use migrations::AppliedMigration;
 pub use sandpost_storage::{
     ImapStorage, MessageStorage, ScopeStorage, SearchSynchronizationStorage, SmtpServerStorage,
     Storage, StorageError, StorageHealth, UserStorage, ViewStorage,

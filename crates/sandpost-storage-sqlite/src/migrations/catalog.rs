@@ -3,8 +3,8 @@
 /// One checked-in migration script and its file name.
 pub(crate) type MigrationScript = (&'static str, &'static str);
 
-/// Apply each script once, in order; append new scripts to evolve existing databases.
-pub(crate) const MIGRATIONS: [MigrationScript; 56] = [
+/// Apply each script once, in order; append new scripts to evolve released databases.
+pub(crate) const MIGRATIONS: [MigrationScript; 46] = [
     (
         "0001_create_migrations_table.sql",
         include_str!("../../migrations/0001_create_migrations_table.sql"),
@@ -14,219 +14,179 @@ pub(crate) const MIGRATIONS: [MigrationScript; 56] = [
         include_str!("../../migrations/0002_create_users_table.sql"),
     ),
     (
-        "0003_create_smtp_server_table.sql",
-        include_str!("../../migrations/0003_create_smtp_server_table.sql"),
+        "0003_create_smtp_accesses_table.sql",
+        include_str!("../../migrations/0003_create_smtp_accesses_table.sql"),
     ),
     (
-        "0004_create_smtp_accesses_table.sql",
-        include_str!("../../migrations/0004_create_smtp_accesses_table.sql"),
+        "0004_create_scopes_table.sql",
+        include_str!("../../migrations/0004_create_scopes_table.sql"),
     ),
     (
-        "0005_create_scopes_table.sql",
-        include_str!("../../migrations/0005_create_scopes_table.sql"),
+        "0005_create_scope_memberships_table.sql",
+        include_str!("../../migrations/0005_create_scope_memberships_table.sql"),
     ),
     (
-        "0006_create_scope_memberships_table.sql",
-        include_str!("../../migrations/0006_create_scope_memberships_table.sql"),
+        "0006_create_views_table.sql",
+        include_str!("../../migrations/0006_create_views_table.sql"),
     ),
     (
-        "0007_create_views_table.sql",
-        include_str!("../../migrations/0007_create_views_table.sql"),
+        "0007_create_mail_table.sql",
+        include_str!("../../migrations/0007_create_mail_table.sql"),
     ),
     (
-        "0008_create_mail_table.sql",
-        include_str!("../../migrations/0008_create_mail_table.sql"),
+        "0008_create_mail_recipients_table.sql",
+        include_str!("../../migrations/0008_create_mail_recipients_table.sql"),
     ),
     (
-        "0009_create_mail_recipients_table.sql",
-        include_str!("../../migrations/0009_create_mail_recipients_table.sql"),
+        "0009_create_mail_headers_table.sql",
+        include_str!("../../migrations/0009_create_mail_headers_table.sql"),
     ),
     (
-        "0010_create_mail_headers_table.sql",
-        include_str!("../../migrations/0010_create_mail_headers_table.sql"),
+        "0010_create_mail_attachments_table.sql",
+        include_str!("../../migrations/0010_create_mail_attachments_table.sql"),
     ),
     (
-        "0011_create_mail_attachments_table.sql",
-        include_str!("../../migrations/0011_create_mail_attachments_table.sql"),
+        "0011_create_search_outbox_state_table.sql",
+        include_str!("../../migrations/0011_create_search_outbox_state_table.sql"),
     ),
     (
-        "0012_create_search_outbox_state_table.sql",
-        include_str!("../../migrations/0012_create_search_outbox_state_table.sql"),
+        "0012_create_search_outbox_table.sql",
+        include_str!("../../migrations/0012_create_search_outbox_table.sql"),
     ),
     (
-        "0013_create_search_outbox_table.sql",
-        include_str!("../../migrations/0013_create_search_outbox_table.sql"),
+        "0013_create_mail_immutability_triggers.sql",
+        include_str!("../../migrations/0013_create_mail_immutability_triggers.sql"),
     ),
     (
-        "0014_create_mail_immutability_triggers.sql",
-        include_str!("../../migrations/0014_create_mail_immutability_triggers.sql"),
+        "0014_create_mail_search_outbox_triggers.sql",
+        include_str!("../../migrations/0014_create_mail_search_outbox_triggers.sql"),
     ),
     (
-        "0015_create_mail_search_outbox_triggers.sql",
-        include_str!("../../migrations/0015_create_mail_search_outbox_triggers.sql"),
+        "0015_create_mail_child_fact_triggers.sql",
+        include_str!("../../migrations/0015_create_mail_child_fact_triggers.sql"),
     ),
     (
-        "0016_create_mail_child_fact_triggers.sql",
-        include_str!("../../migrations/0016_create_mail_child_fact_triggers.sql"),
+        "0016_create_imap_accounts_table.sql",
+        include_str!("../../migrations/0016_create_imap_accounts_table.sql"),
     ),
     (
-        "0017_create_imap_accounts_table.sql",
-        include_str!("../../migrations/0017_create_imap_accounts_table.sql"),
+        "0017_create_imap_account_views_table.sql",
+        include_str!("../../migrations/0017_create_imap_account_views_table.sql"),
     ),
     (
-        "0018_create_imap_account_views_table.sql",
-        include_str!("../../migrations/0018_create_imap_account_views_table.sql"),
+        "0018_create_imap_local_folders_table.sql",
+        include_str!("../../migrations/0018_create_imap_local_folders_table.sql"),
     ),
     (
-        "0019_create_imap_local_folders_table.sql",
-        include_str!("../../migrations/0019_create_imap_local_folders_table.sql"),
+        "0019_create_imap_uid_validity_table.sql",
+        include_str!("../../migrations/0019_create_imap_uid_validity_table.sql"),
     ),
     (
-        "0020_create_imap_uid_validity_table.sql",
-        include_str!("../../migrations/0020_create_imap_uid_validity_table.sql"),
+        "0020_create_imap_mailboxes_table.sql",
+        include_str!("../../migrations/0020_create_imap_mailboxes_table.sql"),
     ),
     (
-        "0021_create_imap_mailboxes_table.sql",
-        include_str!("../../migrations/0021_create_imap_mailboxes_table.sql"),
+        "0021_create_imap_mailbox_messages_table.sql",
+        include_str!("../../migrations/0021_create_imap_mailbox_messages_table.sql"),
     ),
     (
-        "0022_create_imap_mailbox_messages_table.sql",
-        include_str!("../../migrations/0022_create_imap_mailbox_messages_table.sql"),
+        "0022_create_imap_mailbox_exclusions_table.sql",
+        include_str!("../../migrations/0022_create_imap_mailbox_exclusions_table.sql"),
     ),
     (
-        "0023_create_imap_mailbox_exclusions_table.sql",
-        include_str!("../../migrations/0023_create_imap_mailbox_exclusions_table.sql"),
+        "0023_create_imap_message_flags_table.sql",
+        include_str!("../../migrations/0023_create_imap_message_flags_table.sql"),
     ),
     (
-        "0024_create_imap_message_flags_table.sql",
-        include_str!("../../migrations/0024_create_imap_message_flags_table.sql"),
+        "0024_create_imap_unsubscribed_mailboxes_table.sql",
+        include_str!("../../migrations/0024_create_imap_unsubscribed_mailboxes_table.sql"),
     ),
     (
-        "0025_create_imap_unsubscribed_mailboxes_table.sql",
-        include_str!("../../migrations/0025_create_imap_unsubscribed_mailboxes_table.sql"),
+        "0025_create_user_message_deletions_table.sql",
+        include_str!("../../migrations/0025_create_user_message_deletions_table.sql"),
     ),
     (
-        "0026_create_user_message_deletions_table.sql",
-        include_str!("../../migrations/0026_create_user_message_deletions_table.sql"),
+        "0026_create_imap_user_folders_table.sql",
+        include_str!("../../migrations/0026_create_imap_user_folders_table.sql"),
     ),
     (
-        "0027_create_owner_imap_folders.sql",
-        include_str!("../../migrations/0027_create_owner_imap_folders.sql"),
+        "0027_create_imap_user_folder_accounts_table.sql",
+        include_str!("../../migrations/0027_create_imap_user_folder_accounts_table.sql"),
     ),
     (
-        "0028_add_imap_local_folder_kinds.sql",
-        include_str!("../../migrations/0028_add_imap_local_folder_kinds.sql"),
+        "0028_create_web_folders_table.sql",
+        include_str!("../../migrations/0028_create_web_folders_table.sql"),
     ),
     (
-        "0029_create_web_folders_table.sql",
-        include_str!("../../migrations/0029_create_web_folders_table.sql"),
+        "0029_create_web_folder_accounts_table.sql",
+        include_str!("../../migrations/0029_create_web_folder_accounts_table.sql"),
     ),
     (
-        "0030_create_web_folder_accounts_table.sql",
-        include_str!("../../migrations/0030_create_web_folder_accounts_table.sql"),
+        "0030_create_user_message_placements_table.sql",
+        include_str!("../../migrations/0030_create_user_message_placements_table.sql"),
     ),
     (
-        "0031_create_user_message_placements_table.sql",
-        include_str!("../../migrations/0031_create_user_message_placements_table.sql"),
+        "0031_create_imap_message_placements_table.sql",
+        include_str!("../../migrations/0031_create_imap_message_placements_table.sql"),
     ),
     (
-        "0032_create_imap_message_placements_table.sql",
-        include_str!("../../migrations/0032_create_imap_message_placements_table.sql"),
+        "0032_create_imap_message_copies_table.sql",
+        include_str!("../../migrations/0032_create_imap_message_copies_table.sql"),
     ),
     (
-        "0033_create_imap_message_copies_table.sql",
-        include_str!("../../migrations/0033_create_imap_message_copies_table.sql"),
+        "0033_create_imap_message_placements_triggers.sql",
+        include_str!("../../migrations/0033_create_imap_message_placements_triggers.sql"),
     ),
     (
-        "0034_backfill_imap_trash_copies.sql",
-        include_str!("../../migrations/0034_backfill_imap_trash_copies.sql"),
+        "0034_create_imap_message_copies_triggers.sql",
+        include_str!("../../migrations/0034_create_imap_message_copies_triggers.sql"),
     ),
     (
-        "0035_create_imap_message_placements_triggers.sql",
-        include_str!("../../migrations/0035_create_imap_message_placements_triggers.sql"),
+        "0035_create_user_message_placements_triggers.sql",
+        include_str!("../../migrations/0035_create_user_message_placements_triggers.sql"),
     ),
     (
-        "0036_create_imap_message_copies_triggers.sql",
-        include_str!("../../migrations/0036_create_imap_message_copies_triggers.sql"),
+        "0036_create_web_folder_accounts_triggers.sql",
+        include_str!("../../migrations/0036_create_web_folder_accounts_triggers.sql"),
     ),
     (
-        "0037_create_user_message_placements_triggers.sql",
-        include_str!("../../migrations/0037_create_user_message_placements_triggers.sql"),
+        "0037_create_imap_subscribed_mailboxes_table.sql",
+        include_str!("../../migrations/0037_create_imap_subscribed_mailboxes_table.sql"),
     ),
     (
-        "0038_create_web_folder_accounts_triggers.sql",
-        include_str!("../../migrations/0038_create_web_folder_accounts_triggers.sql"),
+        "0038_create_user_message_trash_table.sql",
+        include_str!("../../migrations/0038_create_user_message_trash_table.sql"),
     ),
     (
-        "0039_create_imap_subscribed_mailboxes_table.sql",
-        include_str!("../../migrations/0039_create_imap_subscribed_mailboxes_table.sql"),
+        "0039_create_user_message_deletions_trash_triggers.sql",
+        include_str!("../../migrations/0039_create_user_message_deletions_trash_triggers.sql"),
     ),
     (
-        "0040_create_user_message_trash_table.sql",
-        include_str!("../../migrations/0040_create_user_message_trash_table.sql"),
+        "0040_create_imap_account_messages_table.sql",
+        include_str!("../../migrations/0040_create_imap_account_messages_table.sql"),
     ),
     (
-        "0041_create_user_message_deletions_trash_triggers.sql",
-        include_str!("../../migrations/0041_create_user_message_deletions_trash_triggers.sql"),
+        "0041_create_mail_independent_references_trigger.sql",
+        include_str!("../../migrations/0041_create_mail_independent_references_trigger.sql"),
     ),
     (
-        "0042_add_imap_account_modes.sql",
-        include_str!("../../migrations/0042_add_imap_account_modes.sql"),
+        "0042_create_user_message_copies_table.sql",
+        include_str!("../../migrations/0042_create_user_message_copies_table.sql"),
     ),
     (
-        "0043_add_imap_folder_modes.sql",
-        include_str!("../../migrations/0043_add_imap_folder_modes.sql"),
+        "0043_create_user_message_copies_ownership_triggers.sql",
+        include_str!("../../migrations/0043_create_user_message_copies_ownership_triggers.sql"),
     ),
     (
-        "0044_backfill_imap_mode_folder_projections.sql",
-        include_str!("../../migrations/0044_backfill_imap_mode_folder_projections.sql"),
+        "0044_create_user_message_flags_table.sql",
+        include_str!("../../migrations/0044_create_user_message_flags_table.sql"),
     ),
     (
-        "0045_add_imap_mailbox_modes.sql",
-        include_str!("../../migrations/0045_add_imap_mailbox_modes.sql"),
+        "0045_create_imap_effective_message_flags_view.sql",
+        include_str!("../../migrations/0045_create_imap_effective_message_flags_view.sql"),
     ),
     (
-        "0046_create_imap_account_messages_table.sql",
-        include_str!("../../migrations/0046_create_imap_account_messages_table.sql"),
-    ),
-    (
-        "0047_backfill_imap_account_messages.sql",
-        include_str!("../../migrations/0047_backfill_imap_account_messages.sql"),
-    ),
-    (
-        "0048_create_mail_independent_references_trigger.sql",
-        include_str!("../../migrations/0048_create_mail_independent_references_trigger.sql"),
-    ),
-    (
-        "0049_create_user_message_copies_table.sql",
-        include_str!("../../migrations/0049_create_user_message_copies_table.sql"),
-    ),
-    (
-        "0050_create_user_message_copies_ownership_triggers.sql",
-        include_str!("../../migrations/0050_create_user_message_copies_ownership_triggers.sql"),
-    ),
-    (
-        "0051_add_users_message_flag_cursor.sql",
-        include_str!("../../migrations/0051_add_users_message_flag_cursor.sql"),
-    ),
-    (
-        "0052_create_user_message_flags_table.sql",
-        include_str!("../../migrations/0052_create_user_message_flags_table.sql"),
-    ),
-    (
-        "0053_create_imap_effective_message_flags_view.sql",
-        include_str!("../../migrations/0053_create_imap_effective_message_flags_view.sql"),
-    ),
-    (
-        "0054_replace_primary_deletion_membership_trigger.sql",
-        include_str!("../../migrations/0054_replace_primary_deletion_membership_trigger.sql"),
-    ),
-    (
-        "0055_backfill_independent_primary_organization.sql",
-        include_str!("../../migrations/0055_backfill_independent_primary_organization.sql"),
-    ),
-    (
-        "0056_invalidate_imap_membership_policies.sql",
-        include_str!("../../migrations/0056_invalidate_imap_membership_policies.sql"),
+        "0046_create_user_message_deletions_membership_triggers.sql",
+        include_str!("../../migrations/0046_create_user_message_deletions_membership_triggers.sql"),
     ),
 ];

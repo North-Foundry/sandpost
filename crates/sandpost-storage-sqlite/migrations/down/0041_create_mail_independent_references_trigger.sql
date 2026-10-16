@@ -1,0 +1,1 @@
+DROP TRIGGER mail_seed_independent_references;

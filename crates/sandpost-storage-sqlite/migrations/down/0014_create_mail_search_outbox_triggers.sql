@@ -1,0 +1,4 @@
+DROP TRIGGER mail_search_outbox_insert;
+DROP TRIGGER mail_search_outbox_delete;
+DROP TRIGGER mail_search_outbox_update;
+DROP TRIGGER mail_search_revision_guard;

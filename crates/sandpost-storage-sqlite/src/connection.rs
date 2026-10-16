@@ -1,8 +1,12 @@
 //! SQLite pool configuration, asynchronous initialization, and lifecycle.
-use crate::{StorageError, error::StorageResult, migrations::migrate};
+use crate::{
+    AppliedMigration, StorageError,
+    error::StorageResult,
+    migrations::{self, migrate},
+};
 use sandpost_storage::StorageHealth;
 use sqlx::{
-    SqliteConnection, SqlitePool,
+    ConnectOptions, Connection, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteSynchronous},
 };
 use std::{path::Path, time::Duration};
@@ -21,6 +25,36 @@ pub struct SqliteStorage {
 }
 
 impl SqliteStorage {
+    /// Inspect applied batches without running pending migrations or creating a database.
+    pub async fn migration_history(
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<AppliedMigration>, StorageError> {
+        let mut connection = connection_options()
+            .filename(path)
+            .read_only(true)
+            .connect()
+            .await
+            .storage()?;
+        let result = migrations::status(&mut connection).await;
+        connection.close().await.storage()?;
+        result
+    }
+
+    /// Revert the last batch without first applying pending scripts. Stop all database users first.
+    /// Reversing table or column creation removes their data, as with ordinary down migrations.
+    pub async fn rollback_last_migration_batch(
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<AppliedMigration>, StorageError> {
+        let mut connection = connection_options()
+            .filename(path)
+            .connect()
+            .await
+            .storage()?;
+        let result = migrations::rollback(&mut connection).await;
+        connection.close().await.storage()?;
+        result
+    }
+
     /// Open or create a file database, validating and migrating it before opening readers.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let options = connection_options().filename(path).create_if_missing(true);

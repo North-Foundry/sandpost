@@ -1,6 +1,5 @@
-//! Async adapter for SMTP listener configuration and submission credentials.
+//! Async adapter for SMTP submission credentials.
 mod accesses;
-mod listener;
 
 use crate::SqliteStorage;
 use crate::error::StorageResult;
@@ -8,23 +7,9 @@ use accesses::{AccessUpdateValue, mechanism_flags};
 use async_trait::async_trait;
 use sandpost_core::{SmtpAccess, SmtpAccessIdentifier, SmtpAuthenticationMechanism};
 use sandpost_storage::{NewSmtpAccess, SmtpAccessCredential, SmtpServerStorage, StorageError};
-use std::net::SocketAddr;
 
 #[async_trait]
 impl SmtpServerStorage for SqliteStorage {
-    /// Read the global SMTP listener address, or None when disabled.
-    async fn smtp_listen_address(&self) -> Result<Option<SocketAddr>, StorageError> {
-        listener::listen_address(self).await
-    }
-
-    /// Replace or disable the global SMTP listener address.
-    async fn save_smtp_listen_address(
-        &self,
-        address: Option<SocketAddr>,
-    ) -> Result<(), StorageError> {
-        listener::save_listen_address(self, address).await
-    }
-
     /// List SMTP accesses without exposing password hashes.
     async fn list_smtp_accesses(&self) -> Result<Vec<SmtpAccess>, StorageError> {
         accesses::list_accesses(self).await
