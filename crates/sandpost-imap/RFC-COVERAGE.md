@@ -102,8 +102,8 @@ Tested with independent implementations:
 
 - [`imap-codec`](https://crates.io/crates/imap-codec) parses every response in the
   integration tests.
-- Python's standard-library `imaplib` drives the real `sandpost` binary in
-  `scripts/smoke.py`: capabilities, failed and successful LOGIN, LIST, SELECT,
+- Independent Rust wire clients drive the real `sandpost` binary in
+  [`sandpost-test-runner`](../sandpost-test-runner/src/mail.rs): capabilities, failed and successful LOGIN, LIST, SELECT,
   UID FETCH, byte-exact BODY[], SEARCH, STORE, IDLE with a message pushed from
   SMTP, UID MOVE, STATUS, and UIDVALIDITY/UID/flag persistence across restart.
 

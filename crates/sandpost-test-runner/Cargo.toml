@@ -1,0 +1,20 @@
+[package]
+name = "sandpost-test-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "sandpost-test-runner"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

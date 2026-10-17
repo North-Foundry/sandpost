@@ -37,6 +37,7 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
 | `sandpost-web-api` | HTTP/session middleware/SSE/SPA hosting, embedded at build time or served from a directory. |
 | `sandpost` | CLI/config/bootstrap/listeners, SMTP delivery and IMAP backend adapters, embedded runtime. |
 | `sandpost-node` | Electron Node-API boundary. |
+| `sandpost-test-runner` | `sandpost-test-runner smoke-test`: real-binary SMTP/HTTP/SSE/IMAP, SQLite/search, startup and restart verification with independent Rust clients. |
 
 Services/application and SQLite depend on the storage contract, never the reverse.
 Bootstrap selects one `Arc<dyn Storage>`; SQLite is the sole implemented backend.

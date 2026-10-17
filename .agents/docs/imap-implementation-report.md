@@ -120,7 +120,7 @@ a competing writer lock. Migration tests cover supported upgrades and atomic fai
 | `yarn desktop:check` | Passed. |
 | `yarn desktop:test` | Passed: 29 tests. |
 | `yarn native:build` and `yarn native:test` | Passed with the real darwin-arm64 addon, SMTP, modes, primary COPY/flags, Trash, HTTP parity, events and restart. |
-| `python3 scripts/smoke.py --frontend apps/frontend/dist` | Passed using the real server and independent Python imaplib, including IDLE, MOVE, UID/flag persistence, HTTP/search/SSE, static assets and restart. The script now validates migration filenames and explicitly selects Independent for its local MOVE scenario. |
+| `cargo run --locked -p sandpost-test-runner -- smoke-test --frontend apps/frontend/dist` | Passed using the real server and independent Rust wire clients, including IDLE, MOVE, UID/flag persistence, HTTP/search/SSE, static assets and restart. The runner validates migration filenames and explicitly selects Independent for its local MOVE scenario. It replaces the former Python smoke script. |
 | `git diff --check` | Passed. |
 
 Detailed local logs use `/tmp/sandpost-*-final.log`. They are local verification

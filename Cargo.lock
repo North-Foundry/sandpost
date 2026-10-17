@@ -1996,6 +1996,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandpost-test-runner"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "libc",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sandpost-web-api"
 version = "0.1.0-alpha.1"
 dependencies = [

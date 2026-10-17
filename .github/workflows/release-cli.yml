@@ -116,7 +116,7 @@ jobs:
       - name: Compile release CLI
         run: cargo build --release --locked -p sandpost --bin sandpost --target "$RUST_TARGET"
       - name: Smoke test release CLI and embedded frontend
-        run: python scripts/smoke.py --binary "$BINARY_PATH" --frontend apps/frontend/dist
+        run: cargo run --locked -p sandpost-test-runner -- smoke-test --binary "$BINARY_PATH" --frontend apps/frontend/dist
       - name: Package release CLI
         shell: python
         run: |

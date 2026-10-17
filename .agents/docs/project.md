@@ -361,7 +361,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo build --workspace --locked
-python3 scripts/smoke.py
+cargo run --locked -p sandpost-test-runner -- smoke-test
 yarn workspace @sandpost/frontend build
 yarn workspace @sandpost/frontend test
 yarn workspace @sandpost/desktop check
@@ -371,10 +371,12 @@ node scripts/native-smoke.cjs
 yarn workspace @sandpost/desktop smoke
 yarn workspace @sandpost/desktop smoke --dev
 cargo build --workspace --locked
-python3 scripts/smoke.py --frontend apps/frontend/dist
+cargo run --locked -p sandpost-test-runner -- smoke-test --frontend apps/frontend/dist
 ```
 
-`cargo test --workspace --locked` and `yarn workspace @sandpost/frontend test` run the suites; the root smoke starts the binary with isolated ports/data, sends SMTP, checks MIME, HTTP authorization/search/raw/SSE, then uses independent Python `imaplib` for login, LIST/SELECT/FETCH/SEARCH/STORE/IDLE push/MOVE and verifies restart persistence, UIDVALIDITY, UIDs and flags. `--frontend apps/frontend/dist` additionally checks embedded assets, deep SPA routes and API 404 boundaries against that directory; build the frontend and then rebuild Rust before running it. The flag supplies expected bytes for verification and does not configure the server.
+`cargo test --workspace --locked` and `yarn workspace @sandpost/frontend test` run the suites. The `sandpost-test-runner` crate provides `sandpost-test-runner smoke-test`: it starts the binary with isolated configuration, ports and temporary data, sends SMTP, checks MIME, HTTP authorization/search/raw/SSE, then uses independent Rust wire clients for IMAP login, LIST/SELECT/FETCH/SEARCH/STORE/IDLE push/MOVE and verifies restart persistence, UIDVALIDITY, UIDs and flags. It also checks startup summaries, bind/storage failures, port zero and offline search maintenance. No Python interpreter is required. The default server executable is `sandpost` beside the runner; `--binary PATH` selects another build. `--frontend apps/frontend/dist` additionally checks embedded assets, deep SPA routes and API 404 boundaries against that directory; build the frontend and then rebuild Rust before running it. The flag supplies expected bytes for verification and does not configure the server. Run from a source checkout so migration filenames can be compared with the SQLite history.
+
+The Rust smoke runner reports numbered phases to stderr with `[RUN ]`, `[PASS]` or `[FAIL]`, per-phase duration and total elapsed time. An error or assertion failure marks the active phase failed and preserves the original diagnostic. Colors require an interactive terminal, no `NO_COLOR`, and `TERM` other than `dumb`; redirected/CI output stays plain text with one line per status. Checks still run in a separate server process with temporary configuration/data and dedicated loopback ports; cleanup kills/reaps unfinished children and removes temporary files on failure too.
 
 The desktop workspace's `check` and `test` cover main/preload typing and IPC/security. After building the native addon, `node scripts/native-smoke.cjs` exercises real SMTP, events, reads, Buffer fidelity, HTTP parity, cancellation, shutdown and restart. Electron smoke sends real MIME and checks notifications, list/detail/raw IPC, exact bytes, Vue UI, HTML isolation and blocked HTTP API. Production uses the local app protocol; dev permits Vite/HMR but blocks `/api`. For unpacked app use `yarn workspace @sandpost/desktop smoke --packaged <absolute executable path>` (macOS executable: `SandPost.app/Contents/MacOS/SandPost`).
 
