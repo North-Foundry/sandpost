@@ -28,10 +28,13 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-native-certs = "0.8"
 rcgen = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 sqlx = { version = "0.9", default-features = false, features = ["sqlite-bundled", "runtime-tokio"] }
 async-trait = "0.1"
