@@ -1,5 +1,5 @@
 //! Installation metadata, ephemeral bootstrap credentials, and shared Owner sessions.
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use sandpost_core::{GlobalRole, MailAccess, User, UserIdentifier};
 use sandpost_storage::{NewUser, Storage, StorageError};
 use serde::{Deserialize, Serialize};
@@ -381,10 +381,8 @@ pub(crate) fn hash_password(password: &str) -> Result<String, InstanceError> {
             "password must contain 12 to 1024 bytes".into(),
         ));
     }
-    let salt = SaltString::encode_b64(&random_bytes::<16>()?)
-        .map_err(|error| InstanceError::Cryptography(error.to_string()))?;
     Ok(Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map_err(|error| InstanceError::Cryptography(error.to_string()))?
         .to_string())
 }

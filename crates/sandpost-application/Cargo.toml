@@ -18,7 +18,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
-argon2 = "0.5"
+argon2 = "0.6"
 getrandom = "0.4"
 subtle = "2"
 
