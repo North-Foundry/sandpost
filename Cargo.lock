@@ -2000,10 +2000,12 @@ name = "sandpost-test-runner"
 version = "0.1.0-alpha.1"
 dependencies = [
  "libc",
+ "mail-parser",
  "serde_json",
  "sqlx",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -1,39 +1,45 @@
+mod burst;
 mod http;
 mod mail;
 mod progress;
 mod server;
 mod smoke;
+mod smtp;
 
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const USAGE: &str = "Usage: sandpost-test-runner smoke-test [--binary PATH] [--frontend DIRECTORY]\n\nRun the real Sandpost binary through SMTP, HTTP/SSE, IMAP, search and restart checks.\nPrint each phase, its result and duration to stderr, including the active phase on failure.\nBuild the server first with cargo build -p sandpost. --frontend verifies embedded assets.";
+const USAGE: &str = "Usage: sandpost-test-runner <command>\n\nCommands:\n  smoke-test      Verify a real Sandpost binary with isolated data\n  mail-burst      Send synthetic SMTP traffic to an existing server\n\nUse <command> --help for options.";
+const SMOKE_USAGE: &str = "Usage: sandpost-test-runner smoke-test [--binary PATH] [--frontend DIRECTORY]\n\nRun the real Sandpost binary through SMTP, HTTP/SSE, IMAP, search and restart checks.\nPrint each phase, its result and duration to stderr, including the active phase on failure.\nBuild the server first with cargo build -p sandpost. --frontend verifies embedded assets.";
 
-/// Parse the smoke-test subcommand and report failures with an unsuccessful exit status.
+/// Dispatch smoke checks or synthetic traffic, preserving unsuccessful and interrupted exit statuses.
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<ExitCode> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "--help" || argument == "-h")
-    {
-        println!("{USAGE}");
-        return Ok(());
+    match arguments.first().and_then(|argument| argument.to_str()) {
+        Some("--help" | "-h") => {
+            println!("{USAGE}");
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("smoke-test") => {
+            run_smoke(&arguments[1..]).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("mail-burst") => burst::run(&arguments[1..]).await,
+        _ => Err(USAGE.into()),
     }
-    if arguments
-        .first()
-        .is_none_or(|argument| argument != "smoke-test")
-    {
-        return Err(USAGE.into());
-    }
+}
+
+/// Parse smoke-specific paths without imposing server-build requirements on traffic generation.
+async fn run_smoke(arguments: &[OsString]) -> Result<()> {
     let mut binary = None;
     let mut frontend = None;
-    let mut remaining = arguments[1..].iter();
+    let mut remaining = arguments.iter();
     while let Some(argument) = remaining.next() {
         match argument.to_str() {
             Some("--help" | "-h") => {
-                println!("{USAGE}");
+                println!("{SMOKE_USAGE}");
                 return Ok(());
             }
             Some("--binary") => {
@@ -47,9 +53,11 @@ async fn main() -> Result<()> {
                 ))
             }
             _ => {
-                return Err(
-                    format!("unknown argument: {}\n{USAGE}", argument.to_string_lossy()).into(),
-                );
+                return Err(format!(
+                    "unknown argument: {}\n{SMOKE_USAGE}",
+                    argument.to_string_lossy()
+                )
+                .into());
             }
         }
     }

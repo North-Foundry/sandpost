@@ -11,10 +11,12 @@ name = "sandpost-test-runner"
 path = "src/main.rs"
 
 [dependencies]
+mail-parser.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 tempfile = "3"
+uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

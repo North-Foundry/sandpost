@@ -1,4 +1,4 @@
-//! Synchronous SMTP and IMAP clients used by the end-to-end smoke runner.
+//! Synchronous IMAP client and mail smoke helpers used by the end-to-end runner.
 
 use std::error::Error;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -20,30 +20,14 @@ pub fn send_mail(
     message: &[u8],
     credentials: Option<(&str, &str)>,
 ) -> Result<()> {
-    let mut client = SmtpClient::connect(port)?;
-    client.command("EHLO smoke.test", 250)?;
-    if let Some((username, password)) = credentials {
-        client.command("AUTH LOGIN", 334)?;
-        client.command(&base64(username.as_bytes()), 334)?;
-        client.command(&base64(password.as_bytes()), 235)?;
-    }
-    client.command(&format!("MAIL FROM:<{sender}>"), 250)?;
-    client.command(&format!("RCPT TO:<{recipient}>"), 250)?;
-    client.command("DATA", 354)?;
-    client.write_message(message)?;
-    client.expect_code(250)?;
-    client.command("QUIT", 221)?;
-    Ok(())
+    let mut client = crate::smtp::SmtpClient::connect("127.0.0.1", port, credentials)?;
+    client.send(sender, recipient, message)?;
+    client.quit()
 }
 
 /// Verify that an invalid SMTP password is rejected with reply code 535.
 pub fn reject_smtp_password(port: u16, username: &str) -> Result<()> {
-    let mut client = SmtpClient::connect(port)?;
-    client.command("EHLO smoke.test", 250)?;
-    client.command("AUTH LOGIN", 334)?;
-    client.command(&base64(username.as_bytes()), 334)?;
-    client.command(&base64(b"not the generated password"), 535)?;
-    Ok(())
+    crate::smtp::reject_password(port, username)
 }
 
 /// Exercise IMAP authentication, mailbox operations, literal fetches, IDLE delivery, and MOVE.
@@ -196,76 +180,6 @@ pub fn check_imap_restart(port: u16, username: &str, password: &str, validity: &
     Ok(())
 }
 
-/// A buffered SMTP connection that reads complete multiline replies.
-struct SmtpClient {
-    stream: BufReader<TcpStream>,
-}
-
-impl SmtpClient {
-    /// Connect to the loopback SMTP listener and consume its greeting.
-    fn connect(port: u16) -> Result<Self> {
-        let stream = connect(port)?;
-        let mut client = Self {
-            stream: BufReader::new(stream),
-        };
-        client.expect_code(220)?;
-        Ok(client)
-    }
-
-    /// Write one SMTP command and require the expected reply code.
-    fn command(&mut self, command: &str, expected: u16) -> Result<Vec<u8>> {
-        self.stream.get_mut().write_all(command.as_bytes())?;
-        self.stream.get_mut().write_all(b"\r\n")?;
-        self.expect_code(expected)
-    }
-
-    /// Read an SMTP multiline reply and require its numeric code.
-    fn expect_code(&mut self, expected: u16) -> Result<Vec<u8>> {
-        let mut reply = Vec::new();
-        loop {
-            let mut line = Vec::new();
-            self.stream.read_until(b'\n', &mut line)?;
-            if line.len() < 4 || !line[..3].iter().all(u8::is_ascii_digit) {
-                return Err(error(format!(
-                    "malformed SMTP reply: {}",
-                    String::from_utf8_lossy(&line)
-                )));
-            }
-            let code = std::str::from_utf8(&line[..3])?.parse::<u16>()?;
-            if code != expected {
-                return Err(error(format!(
-                    "SMTP reply {code}, expected {expected}: {}",
-                    String::from_utf8_lossy(&line)
-                )));
-            }
-            let complete = line[3] == b' ';
-            reply.extend_from_slice(&line);
-            if complete {
-                return Ok(reply);
-            }
-        }
-    }
-
-    /// Send message bytes using SMTP dot transparency and terminate DATA.
-    fn write_message(&mut self, message: &[u8]) -> Result<()> {
-        let mut data = Vec::with_capacity(message.len());
-        let mut line_start = true;
-        for byte in message {
-            if line_start && *byte == b'.' {
-                data.push(b'.');
-            }
-            data.push(*byte);
-            line_start = *byte == b'\n';
-        }
-        if !message.ends_with(b"\r\n") {
-            data.extend_from_slice(b"\r\n");
-        }
-        data.extend_from_slice(b".\r\n");
-        self.stream.get_mut().write_all(&data)?;
-        Ok(())
-    }
-}
-
 /// An IMAP connection that preserves response literals as raw bytes.
 struct ImapClient {
     stream: BufReader<TcpStream>,
@@ -381,30 +295,6 @@ fn connect(port: u16) -> Result<TcpStream> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     Ok(stream)
-}
-
-/// Encode bytes as unwrapped standard Base64 for SMTP AUTH LOGIN.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::new();
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = *chunk.get(1).unwrap_or(&0);
-        let third = *chunk.get(2).unwrap_or(&0);
-        encoded.push(ALPHABET[(first >> 2) as usize] as char);
-        encoded.push(ALPHABET[(((first & 3) << 4) | (second >> 4)) as usize] as char);
-        encoded.push(if chunk.len() > 1 {
-            ALPHABET[(((second & 15) << 2) | (third >> 6)) as usize] as char
-        } else {
-            '='
-        });
-        encoded.push(if chunk.len() > 2 {
-            ALPHABET[(third & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    encoded
 }
 
 /// Quote an IMAP astring, escaping backslashes and double quotes.
@@ -543,16 +433,12 @@ fn error(message: impl Into<String>) -> Box<dyn Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        base64, literal_length, literal_payload, response_has_line, response_has_value,
-        tagged_status,
+        literal_length, literal_payload, response_has_line, response_has_value, tagged_status,
     };
 
-    /// Check SMTP Base64 padding and IMAP literal length parsing.
+    /// Check IMAP literal length parsing and response matching.
     #[test]
-    fn protocol_encodings_preserve_lengths_and_padding() {
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
+    fn imap_response_parsing_preserves_lengths_and_matches_exact_values() {
         assert_eq!(literal_length(b"* 1 FETCH (BODY[] {3}\r\n"), Some(3));
         assert_eq!(literal_length(b"* 1 FETCH (FLAGS (\\Seen))\r\n"), None);
         assert_eq!(literal_length(b"* 1 FETCH (BODY[] {3} trailing}\r\n"), None);

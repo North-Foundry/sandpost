@@ -72,7 +72,22 @@ docker run --name sandpost --rm \
 
 Read the key using `docker logs sandpost`. The volume preserves SQLite and `instance.json`. Mounting a TOML file and pointing `SANDPOST_CONFIG` at it configures the process from that file; environment values override TOML. A non-loopback SMTP bind requires AUTH by default; create an SMTP access or explicitly set `SANDPOST_SMTP_AUTH=optional`. The example disables IMAP. Non-loopback IMAP needs a certificate (`SANDPOST_IMAP_TLS_CERTIFICATE`/`_PRIVATE_KEY`, or the SMTP pair) and a published port, e.g. `-p 127.0.0.1:993:993 -e SANDPOST_IMAP_ENABLED=true -e SANDPOST_IMAP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_IMAP_PORT=993`; without a certificate startup refuses it unless `SANDPOST_IMAP_TLS=off`, which permits clear-text passwords.
 
-`python3 scripts/mail_bursts.py` sends repeating traffic; `--cycles 1` sends one cycle (106 messages). Each cycle sends 100 immediately, waits 30 seconds, then sends 6 at five-second intervals. Defaults are `127.0.0.1:1025`, overridable with `--host`/`--port`; pass `--username` and set `SANDPOST_SMTP_PASSWORD` for AUTH, keeping the password out of command arguments.
+`sandpost-test-runner mail-burst` sends synthetic traffic to an already running SMTP server, defaulting to `127.0.0.1:1025`. It shares the runner package with `smoke-test`, which starts its own isolated server. Run through Cargo as follows:
+
+```sh
+# Send 50,000 messages consecutively, then exit.
+cargo run --locked -p sandpost-test-runner -- mail-burst full --count 50k
+
+# Send four groups, with ten seconds between them; one cycle by default.
+cargo run --locked -p sandpost-test-runner -- mail-burst tiny --pattern '50,10,1,50' --interval 10s
+
+# Custom pauses and a freshly sampled inclusive random count, repeated twenty times.
+cargo run --locked -p sandpost-test-runner -- mail-burst tiny --pattern '50,10s,10,1s,rand(10,100)' --cycles 20
+```
+
+`full` requires a positive `--count` and has no artificial pauses. `tiny` requires `--pattern`; counts are positive integers with optional decimal `k`/`K` suffixes, and `rand(min,max)` samples a new inclusive integer each time that group runs. An explicit pause after a quantity overrides `--interval` for that boundary. Durations are nonnegative integers with `ms`, `s`, or `m` units. The default interval is one second; it also separates the final group of one cycle from the first group of the next. No pause follows the final finite group, including an explicitly written trailing pause. `--cycles` defaults to one; zero repeats until Ctrl+C. Quote patterns so the shell does not interpret parentheses. Malformed patterns, incompatible options and finite count overflows fail before sending.
+
+Both modes accept `--host`, `--port`, `--username`, and `--password-env`. AUTH LOGIN reads its password from `SANDPOST_SMTP_PASSWORD` by default, keeping it out of command arguments and logs. One SMTP connection is reused within each group and closed before pauses; the generator neither adds TLS nor automatically retries a failed message. Messages have unique IDs, dates and cycle/group/message metadata. Only final successful SMTP DATA replies count as accepted; a lost reply can leave delivery unconfirmed and is never retried. Terminal output reports cycle/group progress, accepted counts, elapsed time, average throughput and pauses. Ctrl+C stops between operations or interrupts a pause promptly, prints the confirmed totals and exits 130; an in-flight network operation is bounded by its five-second socket timeout. SMTP failures print partial totals and exit unsuccessfully.
 
 ### Security and native preview
 
