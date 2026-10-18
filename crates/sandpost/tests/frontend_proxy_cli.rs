@@ -139,6 +139,10 @@ fn serve_frontend(listener: TcpListener, body: &'static str) -> thread::JoinHand
                 Err(error) => panic!("frontend listener failed: {error}"),
             }
         };
+        // BSD and macOS inherit the listener's non-blocking flag in `accept`, so a timed
+        // read would fail with WouldBlock before the proxy request arrives. Linux does not
+        // inherit it, which made this failure platform-specific.
+        stream.set_nonblocking(false).unwrap();
         stream.set_read_timeout(Some(NETWORK_WAIT)).unwrap();
         let mut request = [0; 4096];
         let _ = stream.read(&mut request).unwrap();
