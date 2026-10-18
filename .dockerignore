@@ -10,8 +10,6 @@
 !apps/
 !apps/frontend/
 !apps/frontend/**
-!apps/desktop/
-!apps/desktop/package.json
 !packages/
 !packages/*/
 !packages/*/package.json
