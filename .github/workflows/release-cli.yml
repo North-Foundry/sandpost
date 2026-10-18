@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   version:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
@@ -53,19 +53,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: macos-26
             platform: macos-arm64
             target: aarch64-apple-darwin
             executable-suffix: ""
-          - runner: macos-15-intel
+          - runner: macos-26-intel
             platform: macos-x86_64
             target: x86_64-apple-darwin
             executable-suffix: ""
-          - runner: ubuntu-22.04
+          - runner: ubuntu-26.04
             platform: linux-x86_64
             target: x86_64-unknown-linux-gnu
             executable-suffix: ""
-          - runner: windows-2022
+          - runner: windows-2025
             platform: windows-x86_64
             target: x86_64-pc-windows-msvc
             executable-suffix: .exe
@@ -149,7 +149,7 @@ jobs:
 
   release:
     needs: [version, build]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     env:
