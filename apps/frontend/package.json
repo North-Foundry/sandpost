@@ -33,13 +33,14 @@
   },
   "devDependencies": {
     "@sandpost/typescript-config": "workspace:*",
+    "@sandpost/vite-plugin-hot-file": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.19.2",
     "@vitejs/plugin-vue": "^6.0.10",
     "shadcn-vue": "^2.8.2",
     "tailwindcss": "^4.3.3",
     "tw-animate-css": "^1.4.0",
-    "typescript": "~6.0.3",
+    "typescript": "^6.0.3",
     "vite": "^8.3.4",
     "vitest": "^5.0.5",
     "vue-tsc": "^3.3.13"
