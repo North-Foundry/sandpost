@@ -285,8 +285,13 @@ pub async fn run(binary: &Path, frontend: Option<&Path>) -> Result<()> {
         occupied.local_addr()?.port().to_string(),
     );
     let errors = check_failed_startup(&configuration, &mut command)?;
+    // strerror text differs per libc: glibc and macOS report "Address already in
+    // use", musl reports "Address in use". Windows reports its own error code.
+    let lowercase_errors = errors.to_lowercase();
     assert!(
-        errors.to_lowercase().contains("address already in use") || errors.contains("10048"),
+        lowercase_errors.contains("address already in use")
+            || lowercase_errors.contains("address in use")
+            || errors.contains("10048"),
         "{errors}"
     );
     drop(occupied);
