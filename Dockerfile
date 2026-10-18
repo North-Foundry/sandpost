@@ -46,6 +46,7 @@ COPY --from=frontend /work/apps/frontend/dist apps/frontend/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,id=rust-target-${TARGETARCH},target=/target \
+    find crates -name '*.rs' -exec touch {} + && \
     rust_target="$(cat /rust-target)" && \
     cargo build --release --locked -p sandpost --target "$rust_target" && \
     mkdir -p /out && \
