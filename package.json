@@ -7,6 +7,14 @@
   },
   "workspaces": [
     "apps/*",
-    "packages/*"
-  ]
+    "packages/*",
+    "crates/sandpost"
+  ],
+  "devDependencies": {
+    "turbo": "^2.11.9"
+  },
+  "scripts": {
+    "sandpost-cli:build": "turbo run build --filter=@sandpost/sandpost",
+    "sandpost-cli:dev": "turbo run dev --filter=@sandpost/frontend --filter=@sandpost/sandpost"
+  }
 }
