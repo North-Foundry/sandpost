@@ -226,8 +226,8 @@ pub(super) async fn http_request(
     ).as_bytes()).await.unwrap();
     let mut response = Vec::new();
     timeout(CLIENT_WAIT, connection.read_to_end(&mut response))
-    .await
-    .unwrap()
-    .unwrap();
+        .await
+        .unwrap()
+        .unwrap();
     String::from_utf8(response).unwrap()
 }
