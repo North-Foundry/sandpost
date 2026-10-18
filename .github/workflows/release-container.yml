@@ -1,0 +1,168 @@
+name: Release container
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-container-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-26.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      stable: ${{ steps.version.outputs.stable }}
+      image: ${{ steps.version.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate version and select GHCR image
+        id: version
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import re
+          import tomllib
+
+          version = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
+          number = r'(?:0|[1-9][0-9]*)'
+          if not re.fullmatch(rf'{number}\.{number}\.{number}(?:-(?:alpha|beta|rc)\.[1-9][0-9]*)?', version):
+              raise SystemExit(f'Unsupported release version: {version}')
+          if os.environ['GITHUB_EVENT_NAME'] == 'release':
+              if os.environ['GITHUB_REF_NAME'] != f'v{version}':
+                  raise SystemExit(f'Release tag must be v{version}')
+          image = 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'].lower()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\nstable={str("-" not in version).lower()}\nimage={image}\n')
+
+  build:
+    needs: version
+    name: Build and verify ${{ matrix.architecture }}
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-26.04
+            architecture: amd64
+          - runner: ubuntu-26.04-arm
+            architecture: arm64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Verify musl binary and embedded frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: verification
+          platforms: linux/${{ matrix.architecture }}
+          cache-from: type=gha,scope=container-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.architecture }}
+      - name: Load runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.architecture }}
+          load: true
+          tags: sandpost:verify
+      - name: Verify rootless container startup and restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker logs sandpost-verify; docker rm -f sandpost-verify; docker volume rm sandpost-verify-data' EXIT
+          test "$(docker image inspect sandpost:verify --format '{{.Config.User}}')" = '65532:65532'
+          docker run --detach --name sandpost-verify --read-only \
+            --mount type=volume,source=sandpost-verify-data,target=/data \
+            --publish 127.0.0.1:8025:8025 sandpost:verify
+          curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-all-errors --max-time 2 \
+            http://127.0.0.1:8025/api/v1/health
+          curl --fail --silent --show-error http://127.0.0.1:8025/ | grep -i '<!doctype html>'
+          docker stop --time 10 sandpost-verify
+          test "$(docker inspect sandpost-verify --format '{{.State.ExitCode}}')" = '0'
+          docker start sandpost-verify
+          curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-all-errors --max-time 2 \
+            http://127.0.0.1:8025/api/v1/health
+          docker stop --time 10 sandpost-verify
+          test "$(docker inspect sandpost-verify --format '{{.State.ExitCode}}')" = '0'
+          docker image inspect sandpost:verify --format 'Runtime image size: {{.Size}} bytes'
+      - name: Log in to GHCR
+        if: github.event_name == 'release'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push verified image by digest
+        if: github.event_name == 'release'
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.architecture }}
+          outputs: type=image,name=${{ needs.version.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record digest
+        if: github.event_name == 'release'
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${IMAGE_DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'release'
+        with:
+          name: container-digest-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          retention-days: 1
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [version, build]
+    permissions:
+      packages: write
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: container-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish multi-platform version
+        env:
+          CONTAINER_IMAGE: ${{ needs.version.outputs.image }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          STABLE_RELEASE: ${{ needs.version.outputs.stable }}
+        working-directory: ${{ runner.temp }}/digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          tags=(--tag "$CONTAINER_IMAGE:$RELEASE_VERSION")
+          if [[ "$STABLE_RELEASE" == 'true' ]]; then
+            tags+=(--tag "$CONTAINER_IMAGE:latest")
+          fi
+          images=()
+          for digest in *; do
+            images+=("$CONTAINER_IMAGE@sha256:$digest")
+          done
+          test "${#images[@]}" -eq 2
+          docker buildx imagetools create "${tags[@]}" "${images[@]}"
+          docker buildx imagetools inspect "$CONTAINER_IMAGE:$RELEASE_VERSION"

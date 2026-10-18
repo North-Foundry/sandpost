@@ -9,3 +9,31 @@ The [CLI release workflow](../../.github/workflows/release-cli.yml) supports two
 The CLI artifacts contain the executable and `LICENSE`, named with version, platform and architecture. Unix archives use `.tar.gz`, Windows uses `.zip`, and `SHA256SUMS` lists the downloadable artifacts. For a release, update manifests and lockfile, verify and commit the changes, push the commit, then create and push its annotated version tag (for example, `git tag -a v0.1.0-alpha.1 -m v0.1.0-alpha.1` followed by `git push origin v0.1.0-alpha.1`). A tag run waits for all target builds to succeed, then creates a GitHub draft release with the artifacts; prerelease versions are marked prerelease. Review and publish the draft manually. The workflow does not create tags, publish releases automatically, or build desktop installers. The existing CI workflow remains manually dispatched and unchanged.
 
 Platform support is validated by successful release workflow builds and smoke tests; configuring a target alone does not establish compatibility. See [project build and release limits](project.md#build-and-run) for platform compatibility and signing status.
+
+## Container publication
+
+The root `Dockerfile` and `.dockerignore` are the container build entry points.
+The [container release workflow](../../.github/workflows/release-container.yml)
+builds Linux `amd64` and `arm64` musl images on native Ubuntu 26.04 runners.
+Each architecture first builds the `verification` target, which runs the existing
+real-binary smoke suite with embedded frontend verification, then starts and
+restarts the final rootless `scratch` image with a read-only root filesystem and
+a persistent named volume. Successful workflow runs establish compatibility;
+the Docker build and image size have not yet been validated locally.
+
+The image name follows the lowercase GitHub repository path, for example
+`ghcr.io/north-foundry/sandpost`. Publishing uses the workflow's `GITHUB_TOKEN`
+with `packages: write`; no registry secret is needed. After the first publication,
+set the GHCR package visibility to public if users should be able to pull without
+authentication. If the package already exists, ensure this repository has Actions
+access to it.
+
+A manual `workflow_dispatch` run builds and verifies both architectures without
+logging into GHCR or publishing. Publishing a GitHub release triggers
+verification of its checked-out version tag, builds and tests both architectures,
+then publishes a multi-platform image tagged with the exact manifest version
+without `v`, such as `ghcr.io/north-foundry/sandpost:0.1.0-alpha.1`. Only stable
+versions also update `latest`. Draft releases and tag pushes alone do not publish images.
+Each architecture is uploaded by digest after its checks; the public version tag
+is assembled only after both builds pass. Container publication failure does not
+unpublish an already published GitHub release.

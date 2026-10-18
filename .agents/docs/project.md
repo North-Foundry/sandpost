@@ -60,19 +60,47 @@ Setup validation/server errors appear inline. If another client initializes the 
 
 Electron is trusted: native status says no setup key is required, and `NativeRuntime::setup` injects the boot key through origin-checked IPC; the renderer supplies only Owner fields. The mock uses `sandpost-test-secret`, the same authorization flow, and a 12-byte minimum password.
 
-For containers, mount `/data` persistently and set `SANDPOST_DATA_DIRECTORY` (replace `IMAGE`):
+### Container image
+
+The root `Dockerfile` builds the Vue frontend with Node.js 24 and the Rust CLI
+with the musl target, then copies the static executable into `scratch`. Node,
+Rust, package managers and a shell are not included in the runtime image. The
+runtime includes a CA trust bundle for HTTPS frontend proxy connections and runs
+as UID/GID `65532:65532`. The image defaults to HTTP/SMTP on `0.0.0.0`, stores
+data in `/data`, and disables IMAP until explicitly configured. SMTP retains its
+ordinary AUTH policy, requiring credentials on the wildcard bind.
+
+Build from the repository root:
+
+```sh
+docker build -t sandpost:local .
+```
+
+The `verification` build target compiles the existing smoke runner and checks the
+musl executable, embedded frontend, SMTP/HTTP/IMAP, indexing and restart behavior
+inside the builder. The runner and its dependencies do not enter the runtime image:
+
+```sh
+docker build --target verification .
+```
+
+Mount all of `/data` persistently, including the derived `search/` directory.
+Keeping only SQLite forces an index rebuild before listeners open on the next
+startup. The image prepares `/data` for its runtime user; Docker named volumes
+inherit this ownership when initially populated. Host bind mounts must already
+be writable by UID/GID `65532:65532`. The runtime supports a read-only root
+filesystem with `/data` writable.
+
+Run the local image, or replace `sandpost:local` with a published version:
 
 ```sh
 docker run --name sandpost --rm \
   -p 127.0.0.1:8025:8025 -p 127.0.0.1:1025:1025 \
   --mount type=volume,source=sandpost-data,target=/data \
-  -e SANDPOST_HTTP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_HTTP_PORT=8025 \
-  -e SANDPOST_SMTP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_SMTP_PORT=1025 \
-  -e SANDPOST_IMAP_ENABLED=false \
-  -e SANDPOST_DATA_DIRECTORY=/data IMAGE
+  --read-only sandpost:local
 ```
 
-Read the key using `docker logs sandpost`. The volume preserves SQLite and `instance.json`. Mounting a TOML file and pointing `SANDPOST_CONFIG` at it configures the process from that file; environment values override TOML. A non-loopback SMTP bind requires AUTH by default; create an SMTP access or explicitly set `SANDPOST_SMTP_AUTH=optional`. The example disables IMAP. Non-loopback IMAP needs a certificate (`SANDPOST_IMAP_TLS_CERTIFICATE`/`_PRIVATE_KEY`, or the SMTP pair) and a published port, e.g. `-p 127.0.0.1:993:993 -e SANDPOST_IMAP_ENABLED=true -e SANDPOST_IMAP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_IMAP_PORT=993`; without a certificate startup refuses it unless `SANDPOST_IMAP_TLS=off`, which permits clear-text passwords.
+Read the key using `docker logs sandpost`. The volume preserves SQLite, the search index and `instance.json`. Mounting a TOML file and pointing `SANDPOST_CONFIG` at it configures the process from that file; environment values override TOML. A non-loopback SMTP bind requires AUTH by default; create an SMTP access or explicitly set `SANDPOST_SMTP_AUTH=optional`. The example disables IMAP. Non-loopback IMAP needs a certificate (`SANDPOST_IMAP_TLS_CERTIFICATE`/`_PRIVATE_KEY`, or the SMTP pair) and a published port, e.g. `-p 127.0.0.1:993:993 -e SANDPOST_IMAP_ENABLED=true -e SANDPOST_IMAP_BIND_ADDRESS=0.0.0.0 -e SANDPOST_IMAP_PORT=993`; without a certificate startup refuses it unless `SANDPOST_IMAP_TLS=off`, which permits clear-text passwords. Image publication is configured in [versioning.md](versioning.md#container-publication).
 
 `sandpost-test-runner mail-burst` sends synthetic traffic to an already running SMTP server, defaulting to `127.0.0.1:1025`. It shares the runner package with `smoke-test`, which starts its own isolated server. Run through Cargo as follows:
 
