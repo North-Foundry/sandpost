@@ -91,8 +91,13 @@ impl Display for StartupSummary<'_> {
         };
         write_section(formatter, "IMAP", &imap_rows)?;
         let mut web_rows = Vec::new();
-        if sandpost_web_api::EMBEDDED_FRONTEND {
+        let frontend_available =
+            sandpost_web_api::EMBEDDED_FRONTEND || self.configuration.frontend_proxy_url.is_some();
+        if frontend_available {
             web_rows.push(("Web UI", web_url.clone()));
+        }
+        if let Some(url) = &self.configuration.frontend_proxy_url {
+            web_rows.push(("Frontend proxy", url.clone()));
         }
         // Link to an implemented resource; the API prefix itself has no route.
         web_rows.push(("API", format!("{web_url}/api/v1/messages")));

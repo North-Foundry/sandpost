@@ -1,5 +1,77 @@
 use super::*;
 
+/// Frontend CLI values override TOML before URL validation; omission keeps embedded serving.
+#[test]
+fn frontend_proxy_configuration_and_cli_precedence() {
+    assert!(
+        Configuration::from_values(|_| None)
+            .unwrap()
+            .frontend_proxy_url
+            .is_none()
+    );
+    let directory = ConfigurationDirectory::new();
+    let path = directory.configuration_path();
+    std::fs::write(&path, "[frontend]\nproxy_url = 'http://frontend:8080'\n").unwrap();
+    let configuration =
+        Configuration::from_sources(|_| None, Some(shared_file(path.clone()))).unwrap();
+    assert_eq!(
+        configuration.frontend_proxy_url.as_deref(),
+        Some("http://frontend:8080")
+    );
+    let configuration = Configuration::from_sources_with_frontend_proxy_url(
+        |_| None,
+        Some(shared_file(path.clone())),
+        Some("http://localhost:5173"),
+    )
+    .unwrap();
+    assert_eq!(
+        configuration.frontend_proxy_url.as_deref(),
+        Some("http://localhost:5173")
+    );
+    std::fs::write(&path, "[frontend]\nproxy_url = 'ftp://frontend:8080'\n").unwrap();
+    assert!(Configuration::from_sources(|_| None, Some(shared_file(path.clone()))).is_err());
+    let configuration = Configuration::from_sources_with_frontend_proxy_url(
+        |_| None,
+        Some(shared_file(path.clone())),
+        Some("http://localhost:5173"),
+    )
+    .unwrap();
+    assert_eq!(
+        configuration.frontend_proxy_url.as_deref(),
+        Some("http://localhost:5173")
+    );
+    std::fs::write(&path, "[frontend]\nproxy_url = 'http://frontend:8080'\n").unwrap();
+    assert!(
+        Configuration::from_sources_with_frontend_proxy_url(
+            |_| None,
+            Some(shared_file(path.clone())),
+            Some("ftp://localhost:5173"),
+        )
+        .is_err()
+    );
+}
+
+/// Invalid frontend section fields and URL strings fail without silently selecting embedded assets.
+#[test]
+fn invalid_frontend_proxy_settings_are_rejected() {
+    let directory = ConfigurationDirectory::new();
+    let path = directory.configuration_path();
+    for contents in [
+        "[frontend]\nproxy_url = 42\n",
+        "[frontend]\nproxy_url = ''\n",
+        "[frontend]\nproxy_url = 'http://frontend:8080/path'\n",
+        "[frontend]\nproxy_url = 'http://frontend:8080/?query=1'\n",
+        "[frontend]\nproxy_url = 'http://user:password@frontend:8080'\n",
+        "[frontend]\nunknown = true\n",
+    ] {
+        std::fs::write(&path, contents).unwrap();
+        assert!(
+            Configuration::from_sources(|_| None, Some(shared_file(path.clone()))).is_err(),
+            "{contents}"
+        );
+    }
+}
+
 /// Preserve environment directory and database overrides above platform defaults.
 #[test]
 fn storage_environment_overrides() {

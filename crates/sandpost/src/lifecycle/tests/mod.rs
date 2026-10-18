@@ -204,3 +204,104 @@ async fn runtime_serves_the_compiled_frontend_and_preserves_api_misses() {
 
 mod imap;
 mod smtp;
+
+/// Proxy serving overrides embedded assets while API routes and failures remain local.
+#[tokio::test]
+async fn frontend_proxy_overrides_embedded_assets_and_preserves_api_routes() {
+    let frontend = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let frontend_address = frontend.local_addr().unwrap();
+    let (mut configuration, _directory) = test_configuration();
+    configuration.frontend_proxy_url = Some(format!("http://{frontend_address}"));
+    let running = SandpostRuntime::start(configuration).await.unwrap();
+    for (path, expected_status) in [
+        ("/api/v1/health", "200 OK"),
+        ("/api/v1/not-a-route", "404 Not Found"),
+    ] {
+        let response = proxy_http_request(running.web_listen_address, path).await;
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {expected_status}\r\n")),
+            "{response}"
+        );
+    }
+    let frontend_task = tokio::spawn(async move {
+        let (mut connection, _) = frontend.accept().await.unwrap();
+        let mut request = vec![0; 4096];
+        let length = connection.read(&mut request).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&request[..length])
+                .starts_with("GET /mail/deep/link?development=1 HTTP/1.1\r\n")
+        );
+        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 22\r\nConnection: close\r\n\r\n<h1>Vite sources</h1>\n").await.unwrap();
+    });
+    let response =
+        proxy_http_request(running.web_listen_address, "/mail/deep/link?development=1").await;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert!(response.ends_with("<h1>Vite sources</h1>\n"), "{response}");
+    frontend_task.await.unwrap();
+    let response = proxy_http_request(running.web_listen_address, "/").await;
+    assert!(
+        response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+        "{response}"
+    );
+    running.shutdown().await.unwrap();
+}
+
+/// Read one complete response from an isolated runtime with a bounded connection lifetime.
+async fn proxy_http_request(address: std::net::SocketAddr, path: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+        connection
+            .write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        connection.read_to_string(&mut response).await.unwrap();
+        response
+    })
+    .await
+    .unwrap()
+}
+
+/// Invalid proxy origins fail validation before any installation data is created.
+#[tokio::test]
+async fn invalid_frontend_proxy_fails_before_opening_storage() {
+    let (mut configuration, directory) = test_configuration();
+    configuration.frontend_proxy_url = Some("ftp://example.com:5173".into());
+    let error = match SandpostRuntime::start(configuration).await {
+        Ok(running) => {
+            running.shutdown().await.unwrap();
+            panic!("unsupported frontend schemes must be rejected");
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("--frontend-proxy-url"),
+        "{error}"
+    );
+    assert!(!directory.0.exists());
+}
+
+/// A frontend origin pointing at this backend is rejected before opening its installation.
+#[tokio::test]
+async fn self_proxying_frontend_proxy_fails_before_opening_storage() {
+    let (mut configuration, directory) = test_configuration();
+    configuration.web_listen_address = "0.0.0.0:8025".parse().unwrap();
+    configuration.frontend_proxy_url = Some("http://127.0.0.1:8025".into());
+    let error = match SandpostRuntime::start(configuration).await {
+        Ok(running) => {
+            running.shutdown().await.unwrap();
+            panic!("frontend requests must not be proxied back into the backend");
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("must not target the Sandpost HTTP listener"),
+        "{error}"
+    );
+    assert!(!directory.0.exists());
+}

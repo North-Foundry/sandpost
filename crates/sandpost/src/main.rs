@@ -1,21 +1,42 @@
 //! Configure tracing and host the shared runtime until a process termination signal.
 
-use sandpost::{Configuration, MaintenanceCommand, RuntimeError, SandpostRuntime, StartupSummary};
+use sandpost::{Configuration, RuntimeError, SandpostRuntime, StartupSummary};
 use std::io::{IsTerminal, Write};
 use tracing_subscriber::EnvFilter;
+
+mod command_line;
 
 /// Run a maintenance command, or start the catcher, report bound listeners, and drain on
 /// signals or service failure.
 #[tokio::main]
 async fn main() -> Result<(), RuntimeError> {
-    let configuration = Configuration::from_environment()?;
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let command_line = command_line::parse(&arguments)?;
+    #[cfg(debug_assertions)]
+    let frontend_proxy_url = match (
+        command_line.frontend_proxy_url,
+        command_line.frontend_proxy_file,
+    ) {
+        (Some(url), _) => Some(url),
+        (None, Some(path)) => Some(tokio::select! {
+            signal = wait_for_termination_signal() => {
+                signal?;
+                return Ok(());
+            }
+            result = command_line::read_frontend_proxy_file(path) => result?,
+        }),
+        (None, None) => None,
+    };
+    #[cfg(not(debug_assertions))]
+    let frontend_proxy_url = command_line.frontend_proxy_url;
+    let configuration =
+        Configuration::from_environment_with_frontend_proxy_url(frontend_proxy_url.as_deref())?;
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_new(&configuration.log_level)?)
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
         .try_init()?;
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(command) = MaintenanceCommand::parse(&arguments)? {
+    if let Some(command) = command_line.maintenance {
         return command.run(&configuration).await;
     }
     let mut running = SandpostRuntime::start(configuration.clone()).await?;

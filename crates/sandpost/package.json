@@ -1,0 +1,11 @@
+{
+  "name": "@sandpost/sandpost",
+  "private": true,
+  "dependencies": {
+    "@sandpost/frontend": "workspace:*"
+  },
+  "scripts": {
+    "build": "cargo build --release --locked -p sandpost",
+    "dev": "cargo run --locked -p sandpost -- --frontend-proxy-file ../../.vite-hot-file"
+  }
+}

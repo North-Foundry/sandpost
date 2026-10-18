@@ -2,6 +2,7 @@
 
 mod bootstrap;
 pub mod configuration;
+mod frontend_proxy;
 mod imap_backend;
 mod imap_listener;
 mod lifecycle;

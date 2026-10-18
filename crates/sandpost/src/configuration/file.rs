@@ -1,4 +1,4 @@
-//! Strictly typed TOML listener and storage settings, before defaults and environment overrides.
+//! Strictly typed TOML listener, frontend, and storage settings before runtime overrides.
 
 use super::{
     CONFIGURATION_PATH_SETTING, ConfigurationError, ImapEncryptionMode, ImapEncryptionSetting,
@@ -20,6 +20,14 @@ pub(super) struct FileConfiguration {
     pub http: ListenerConfiguration,
     pub smtp: MailConfiguration,
     pub imap: ImapConfiguration,
+    pub frontend: FrontendConfiguration,
+}
+
+/// Optional external frontend origin; omission retains embedded frontend serving.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct FrontendConfiguration {
+    pub proxy_url: Option<String>,
 }
 
 /// Global application settings, independently overridden by environment fields.

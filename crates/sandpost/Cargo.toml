@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+autobins = false
+
+[[bin]]
+name = "sandpost"
+path = "src/main.rs"
 
 [dependencies]
 sandpost-core.workspace = true
@@ -15,6 +20,10 @@ sandpost-storage-sqlite.workspace = true
 sandpost-web-api.workspace = true
 sandpost-application.workspace = true
 axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rustls-native-certs.workspace = true
+tokio-rustls.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

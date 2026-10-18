@@ -1,5 +1,28 @@
 use super::*;
 
+/// Proxy mode advertises the backend entry point even without embedded frontend assets.
+#[test]
+fn frontend_proxy_reports_the_same_origin_web_url() {
+    let mut configuration = Configuration::from_values(|_| None).unwrap();
+    configuration.frontend_proxy_url = Some("http://127.0.0.1:5173".into());
+    let output = StartupSummary {
+        mail_listen_address: "127.0.0.1:1025".parse().unwrap(),
+        mail_authentication_required: false,
+        mail_encryption: MailListenerEncryption::None,
+        web_listen_address: "127.0.0.1:8025".parse().unwrap(),
+        configuration: &configuration,
+        imap: None,
+        bootstrap_secret: Some("development-setup-secret"),
+    }
+    .to_string();
+    assert_eq!(row_value(&output, "Web UI"), "http://127.0.0.1:8025");
+    assert_eq!(
+        row_value(&output, "Frontend proxy"),
+        "http://127.0.0.1:5173"
+    );
+    assert!(output.contains("Local setup URL: http://127.0.0.1:8025/setup"));
+}
+
 /// Read an aligned row without depending on column spacing.
 fn row_value<'output>(output: &'output str, label: &str) -> &'output str {
     output

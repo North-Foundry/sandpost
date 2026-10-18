@@ -101,6 +101,8 @@ pub struct MailCertificatePaths {
 #[derive(Debug, Clone)]
 pub struct Configuration {
     pub web_listen_address: SocketAddr,
+    /// Optional frontend origin from the CLI override or `[frontend].proxy_url`.
+    pub frontend_proxy_url: Option<String>,
     /// SMTP listener address from environment, TOML, or the 127.0.0.1:1025 default.
     pub mail_listen_address: SocketAddr,
     /// SMTP AUTH requirement, from `smtp.auth` or `SANDPOST_SMTP_AUTH`.
@@ -141,6 +143,22 @@ impl Configuration {
             setting_name,
             reason: reason.into(),
         };
+        if let Some(url) = &self.frontend_proxy_url {
+            let proxy = crate::frontend_proxy::FrontendProxy::from_url(url).map_err(|error| {
+                invalid(
+                    "frontend.proxy_url / --frontend-proxy-url",
+                    &error.to_string(),
+                )
+            })?;
+            proxy
+                .validate_listener(self.web_listen_address)
+                .map_err(|error| {
+                    invalid(
+                        "frontend.proxy_url / --frontend-proxy-url",
+                        &error.to_string(),
+                    )
+                })?;
+        }
         let smtp_needs_certificate = self.mail_encryption == MailEncryptionSetting::Required
             || (self.mail_encryption != MailEncryptionSetting::Disabled
                 && self.mail_encryption_mode == MailEncryptionMode::Implicit);
@@ -229,13 +247,27 @@ impl Configuration {
     /// `SANDPOST_CONFIG` names an explicit file that must exist; without it the shared home file
     /// is read when present.
     pub fn from_environment() -> Result<Self, ConfigurationError> {
+        Self::from_environment_with_frontend_proxy_url(None)
+    }
+
+    /// Resolve CLI frontend selection above the TOML value before validating the configuration.
+    pub fn from_environment_with_frontend_proxy_url(
+        frontend_proxy_url: Option<&str>,
+    ) -> Result<Self, ConfigurationError> {
         reject_legacy_listeners(&|name| {
             std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
         })?;
-        Self::from_environment_values(|setting_name| std::env::var(setting_name).ok())
+        let environment_value = |setting_name: &str| std::env::var(setting_name).ok();
+        let configuration_file = configuration_file(&environment_value)?;
+        Self::from_sources_with_frontend_proxy_url(
+            environment_value,
+            configuration_file,
+            frontend_proxy_url,
+        )
     }
 
     /// Resolve the configuration file from a supplied lookup, which keeps tests off the process environment.
+    #[cfg(test)]
     pub(crate) fn from_environment_values(
         environment_value: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, ConfigurationError> {
@@ -244,9 +276,19 @@ impl Configuration {
     }
 
     /// Merge an optional file's settings below environment values without changing the process.
+    #[cfg(test)]
     fn from_sources(
         environment_value: impl Fn(&str) -> Option<String>,
         configuration_file: Option<ConfigurationFile>,
+    ) -> Result<Self, ConfigurationError> {
+        Self::from_sources_with_frontend_proxy_url(environment_value, configuration_file, None)
+    }
+
+    /// Merge the frontend CLI override before checking the effective file and environment settings.
+    fn from_sources_with_frontend_proxy_url(
+        environment_value: impl Fn(&str) -> Option<String>,
+        configuration_file: Option<ConfigurationFile>,
+        frontend_proxy_url: Option<&str>,
     ) -> Result<Self, ConfigurationError> {
         reject_legacy_listeners(&environment_value)?;
         let file = configuration_file
@@ -260,6 +302,7 @@ impl Configuration {
             &environment_value,
             file.as_ref(),
             configuration_file.as_ref().map(|file| file.path.as_path()),
+            frontend_proxy_url,
         )?;
         if file.is_some() {
             configuration.configuration_path = configuration_file.map(|file| file.path);
@@ -279,6 +322,7 @@ impl Configuration {
         environment_value: &impl Fn(&str) -> Option<String>,
         file: Option<&file::FileConfiguration>,
         configuration_path: Option<&std::path::Path>,
+        frontend_proxy_url: Option<&str>,
     ) -> Result<Self, ConfigurationError> {
         let defaults = file::FileConfiguration::default();
         let file = file.unwrap_or(&defaults);
@@ -376,6 +420,9 @@ impl Configuration {
         let configuration = Self {
             imap,
             web_listen_address,
+            frontend_proxy_url: frontend_proxy_url
+                .map(str::to_owned)
+                .or_else(|| file.frontend.proxy_url.clone()),
             mail_listen_address,
             mail_authentication,
             mail_encryption,

@@ -78,17 +78,25 @@ impl SandpostRuntime {
         ) == AuthenticationPolicy::Required;
         let startup_encryption = mail_encryption.describe(configuration.mail_listen_address);
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-        let application_router = if sandpost_web_api::EMBEDDED_FRONTEND {
+        let web_listener = TcpListener::bind(configuration.web_listen_address).await?;
+        let web_listen_address = web_listener.local_addr()?;
+        let application_router = if let Some(url) = &configuration.frontend_proxy_url {
+            let proxy = crate::frontend_proxy::FrontendProxy::from_url(url)?;
+            proxy.validate_listener(web_listen_address)?;
+            proxy.router(
+                application.clone(),
+                shutdown_receiver.clone(),
+                web_listen_address,
+            )
+        } else if sandpost_web_api::EMBEDDED_FRONTEND {
             sandpost_web_api::router_with_embedded_frontend(application.clone())
         } else {
             sandpost_web_api::router(application.clone())
-        }
-        .layer(axum::middleware::from_fn_with_state(
+        };
+        let application_router = application_router.layer(axum::middleware::from_fn_with_state(
             shutdown_receiver.clone(),
             http::cancel_on_shutdown,
         ));
-        let web_listener = TcpListener::bind(configuration.web_listen_address).await?;
-        let web_listen_address = web_listener.local_addr()?;
         let imap =
             crate::imap_listener::bind(&configuration.imap, prepared_imap, &application).await?;
         // The SMTP listener starts serving immediately, so it binds after every fallible step.

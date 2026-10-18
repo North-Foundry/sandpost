@@ -10,7 +10,7 @@ use sandpost_application::SearchCoordinator;
 use sandpost_storage_sqlite::SqliteStorage;
 
 /// Complete command-line usage of the `sandpost` binary.
-const USAGE: &str = "usage: sandpost [search rebuild|search status|migrate [up|status|rollback]]";
+const USAGE: &str = "usage: sandpost [--frontend-proxy-url URL|search rebuild|search status|migrate [up|status|rollback]]";
 /// Usage of the `migrate` command and its operations.
 const MIGRATION_USAGE: &str = "usage: sandpost migrate [up|status|rollback]";
 
