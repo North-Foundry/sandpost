@@ -721,6 +721,7 @@ async fn shared_views_require_global_administration() {
         identifier: ViewIdentifier::new(),
         owner_identifier: owner,
         name: "Receipts".into(),
+        icon: None,
         filter: "subject contains \"receipt\"".into(),
     };
     let viewer_application = application.authorized(&session(&viewer));
@@ -746,6 +747,105 @@ async fn shared_views_require_global_administration() {
         .create_inbox("QA".into(), "qa@sandpost.local".into())
         .await
         .unwrap();
+}
+
+/**
+ * Icons round-trip through saved Views, can be cleared, and malformed names are rejected.
+ *
+ * Unknown canonical names are accepted to leave Lucide version choice to the renderer.
+ */
+#[tokio::test]
+async fn view_icons_validate_round_trip_and_reset() {
+    let storage = empty_storage().await;
+    let member = create_user(
+        &storage,
+        "Icon member",
+        GlobalRole::Member,
+        MailAccess::All,
+        None,
+    )
+    .await;
+    let caller = application(storage.clone())
+        .await
+        .authorized(&session(&member));
+    let mut item = View {
+        identifier: ViewIdentifier::new(),
+        owner_identifier: Some(member.identifier),
+        name: "Icon view".into(),
+        icon: Some("not-a-current-lucide-icon".into()),
+        filter: "true".into(),
+    };
+    caller.save_view(item.clone()).await.unwrap();
+    assert_eq!(
+        storage
+            .get_view(item.identifier)
+            .await
+            .unwrap()
+            .unwrap()
+            .icon,
+        item.icon
+    );
+
+    item.icon = None;
+    caller.save_view(item.clone()).await.unwrap();
+    assert_eq!(
+        storage
+            .get_view(item.identifier)
+            .await
+            .unwrap()
+            .unwrap()
+            .icon,
+        None
+    );
+
+    for invalid in [
+        "Mail",
+        "mail_box",
+        "mail--box",
+        "-mail",
+        "mail-",
+        "2-mail",
+        "é",
+        &"a".repeat(65),
+    ] {
+        item.icon = Some(invalid.to_owned());
+        assert!(matches!(
+            caller.save_view(item.clone()).await,
+            Err(crate::ApplicationError::InvalidInput(_))
+        ));
+    }
+}
+
+/**
+ * Web-folder requests accept omitted icons and apply the same bounded name validation.
+ *
+ * This checks request deserialization and the shared application validation path.
+ */
+#[test]
+fn web_folder_request_icon_defaults_and_validates() {
+    let request: crate::WebFolderRequest = serde_json::from_value(serde_json::json!({
+        "name": "Manual"
+    }))
+    .unwrap();
+    assert_eq!(request.icon, None);
+    assert!(request.exposed_accounts.is_empty());
+    for icon in [Some("map-pin".to_owned()), Some("mail-2".to_owned()), None] {
+        let request = crate::WebFolderRequest {
+            name: "Manual".into(),
+            icon,
+            exposed_accounts: vec![],
+        };
+        assert!(crate::AuthorizedApplication::validate_web_folder(request).is_ok());
+    }
+    let request = crate::WebFolderRequest {
+        name: "Manual".into(),
+        icon: Some("MapPin".into()),
+        exposed_accounts: vec![],
+    };
+    assert!(matches!(
+        crate::AuthorizedApplication::validate_web_folder(request),
+        Err(crate::ApplicationError::InvalidInput(_))
+    ));
 }
 
 /// Arbitrary-domain inboxes normalize, appear in listings, filter mail, and reject unsafe syntax.
@@ -783,6 +883,7 @@ async fn inboxes_accept_safe_arbitrary_domain_addresses() {
         identifier: ViewIdentifier::new(),
         owner_identifier: Some(member.identifier),
         name: "Previously accepted shape".into(),
+        icon: None,
         filter: "envelope.to.address == \"qa..tag@sandpost.local\"".into(),
     };
     storage.save_view(&legacy_view).await.unwrap();
@@ -1864,6 +1965,7 @@ async fn user_deletion_is_shared_across_reads_and_preserves_global_search() {
         identifier: ViewIdentifier::new(),
         owner_identifier: Some(first.identifier),
         name: "Shared".into(),
+        icon: None,
         filter: "true".into(),
     };
     first_application.save_view(view.clone()).await.unwrap();

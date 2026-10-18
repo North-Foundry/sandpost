@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { computed, ref, type Component } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   AtSignIcon, CheckIcon, CopyIcon, EllipsisIcon, FolderIcon, FolderSearchIcon, InboxIcon, PencilIcon, PlusIcon, RotateCwIcon, Trash2Icon,
@@ -22,22 +22,12 @@ import BusyDialog from '@/components/BusyDialog.vue'
 import AddressInboxDialog from '@/features/mail/AddressInboxDialog.vue'
 import SmartFolderDialog from '@/features/mail/SmartFolderDialog.vue'
 import WebFolderDialog from '@/features/mail/WebFolderDialog.vue'
+import { folderIcon } from '@/features/mail/folderIcons'
 import SidebarNavItem from './SidebarNavItem.vue'
-import { DEFAULT_INBOX, TRASH_FOLDER_ID, UNREAD_COUNT_LIMIT, useWorkspace, type MailFolder, type MailFolderKind } from './workspace'
+import { DEFAULT_INBOX, TRASH_FOLDER_ID, UNREAD_COUNT_LIMIT, useWorkspace, type MailFolder } from './workspace'
 import { useCopy } from '@/composables/useCopy'
 
 const { t, n } = useI18n()
-
-/**
- * Folder kinds share one family of icons so manual and smart folders read as related.
- */
-const FOLDER_ICONS: Record<MailFolderKind, Component> = {
-  inbox: InboxIcon,
-  address: AtSignIcon,
-  smart: FolderSearchIcon,
-  folder: FolderIcon,
-  trash: Trash2Icon,
-}
 
 const route = useRoute()
 const router = useRouter()
@@ -45,6 +35,7 @@ const workspace = useWorkspace()
 const addressOpen = ref(false)
 const smartOpen = ref(false)
 const editingView = ref<SavedView | null>(null)
+const editingAddress = ref<string | null>(null)
 const editingManualFolder = ref<WebFolder | null>(null)
 const manualFolderOpen = ref(false)
 const deleteTarget = ref<MailFolder | null>(null)
@@ -114,8 +105,9 @@ function editManualFolder(folder: WebFolder | null): void {
 /**
  * Open the smart folder editor, empty or for an existing view.
  */
-function editSmartFolder(view: SavedView | null): void {
+function editSmartFolder(view: SavedView | null, address: string | null = null): void {
   editingView.value = view
+  editingAddress.value = address
   smartOpen.value = true
 }
 
@@ -223,7 +215,7 @@ async function deleteFolder(): Promise<void> {
             v-for="folder in workspace.folders.value"
             :key="folder.id"
             :to="folderLocation(folder)"
-            :icon="FOLDER_ICONS[folder.kind]"
+            :icon="folderIcon(folder.view?.icon ?? folder.manual?.icon, folder.kind)"
             :label="folder.name"
             :hint="folder.address ?? undefined"
             :badge="folder.kind === 'inbox' ? inboxUnread?.badge : undefined"
@@ -252,6 +244,7 @@ async function deleteFolder(): Promise<void> {
                       <CheckIcon v-if="copiedFolder === folder.id" class="text-success! *:text-success!" /><CopyIcon v-else />{{ copiedFolder === folder.id ? t('common.copied') : t('common.copyAddress') }}
                     </DropdownMenuItem>
                     <DropdownMenuItem v-if="folder.kind === 'smart' && manageable(folder)" @select="editSmartFolder(folder.view)"><PencilIcon />{{ t('common.editQuery') }}</DropdownMenuItem>
+                    <DropdownMenuItem v-if="folder.kind === 'address' && manageable(folder)" @select="editSmartFolder(folder.view, folder.address)"><PencilIcon />{{ t('common.editFolder') }}</DropdownMenuItem>
                     <DropdownMenuItem v-if="folder.kind === 'folder'" @select="editManualFolder(folder.manual ?? null)"><PencilIcon />{{ t('common.editFolder') }}</DropdownMenuItem>
                   </DropdownMenuGroup>
                   <template v-if="manageable(folder)">
@@ -275,7 +268,7 @@ async function deleteFolder(): Promise<void> {
   </SidebarGroup>
 
   <AddressInboxDialog v-model:open="addressOpen" @created="(inbox) => router.push({ name: 'mail', query: { folder: inbox.id } })" />
-  <SmartFolderDialog v-model:open="smartOpen" :view="editingView" @saved="(view) => router.push({ name: 'mail', query: { folder: view.id } })" />
+  <SmartFolderDialog v-model:open="smartOpen" :view="editingView" :address="editingAddress" @saved="(view) => router.push({ name: 'mail', query: { folder: view.id } })" />
   <WebFolderDialog v-model:open="manualFolderOpen" :folder="editingManualFolder" @saved="(folder) => router.push({ name: 'mail', query: { folder: folder.id } })" />
   <BusyDialog
     v-model:open="deleteAllOpen"

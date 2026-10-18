@@ -125,6 +125,7 @@ async fn retained_subscriptions_are_not_selectable_until_the_mailbox_returns() {
     let folder = caller
         .create_web_folder(WebFolderRequest {
             name: "Exposed".into(),
+            icon: None,
             exposed_accounts: vec![first.account.account.identifier],
         })
         .await

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { computed, nextTick, onBeforeUnmount, reactive, ref, useTemplateRef, watch, type Component } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
 import {
-  AtSignIcon, CheckIcon, CopyIcon, FolderIcon, FolderSearchIcon, InboxIcon, PaperclipIcon, RefreshCwIcon, SearchIcon, SearchXIcon,
+  CheckIcon, CopyIcon, PaperclipIcon, RefreshCwIcon, SearchIcon, SearchXIcon,
   MailIcon, MailOpenIcon, Trash2Icon, XIcon,
 } from '@lucide/vue'
 import type { MessageSummary } from '@/api/contracts'
@@ -17,7 +17,8 @@ import { Spinner } from '@/components/ui/spinner'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import QueryHighlight from '@/features/query/QueryHighlight.vue'
 import { looksLikeCanonicalQuery } from '@/features/query/vocabulary'
-import type { MailFolder, MailFolderKind } from '@/features/shell/workspace'
+import type { MailFolder } from '@/features/shell/workspace'
+import { folderIcon } from './folderIcons'
 import { extendSelection, orderedSelection, settleSwipe, toggleSelection, type MessageSelection } from './messageSelection'
 import MoveToMenu from './MoveToMenu.vue'
 import { useCopy } from '@/composables/useCopy'
@@ -46,9 +47,6 @@ const WHEEL_GESTURE_IDLE = 140
  * Matches the row's settle transition, after which a closed swipe stops rendering its action.
  */
 const SWIPE_SETTLE_DURATION = 200
-const FOLDER_ICONS: Record<MailFolderKind, Component> = {
-  inbox: InboxIcon, trash: Trash2Icon, address: AtSignIcon, smart: FolderSearchIcon, folder: FolderIcon,
-}
 
 const props = defineProps<{
   messages: MessageSummary[]
@@ -151,7 +149,7 @@ const canonicalSearch = computed(() => looksLikeCanonicalQuery(props.search))
  */
 const inTrash = computed(() => !props.search && props.folder?.kind === 'trash')
 const title = computed(() => props.search ? t('mail.list.searchResults') : props.folder?.name ?? t('mail.list.inbox'))
-const icon = computed(() => props.search ? SearchIcon : FOLDER_ICONS[props.folder?.kind ?? 'inbox'])
+const icon = computed(() => props.search ? SearchIcon : folderIcon(props.folder?.view?.icon ?? props.folder?.manual?.icon, props.folder?.kind ?? 'inbox'))
 const countLabel = computed(() => {
   const count = props.messages.length
   const plus = props.hasOlder ? '+' : ''

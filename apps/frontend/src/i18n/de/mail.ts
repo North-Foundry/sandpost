@@ -1,4 +1,12 @@
 export default {
+  'mail.icon.label': 'Symbol',
+  'mail.icon.choose': 'Symbol auswählen',
+  'mail.icon.search': 'Symbole suchen…',
+  'mail.icon.default': 'Standardsymbol',
+  'mail.icon.empty': 'Keine Symbole gefunden',
+  'mail.icon.selected': 'Ausgewähltes Symbol: {name}',
+  'mail.address.edit': 'Adresspostfach bearbeiten',
+  'mail.address.editDescription': 'Ändere den Namen und das Symbol dieses Postfachs. Die Empfangsadresse bleibt unverändert.',
   'mail.common.cancel': 'Abbrechen', 'mail.common.name': 'Name', 'mail.common.save': 'Speichern', 'mail.common.saving': 'Wird gespeichert…', 'mail.common.tryAgain': 'Erneut versuchen', 'mail.common.retry': 'Erneut versuchen', 'mail.common.download': 'Herunterladen', 'mail.common.downloadEml': '.eml herunterladen', 'mail.common.copied': 'Kopiert', 'mail.common.copyAll': 'Alles kopieren',
   'mail.address.title': 'Neuer Adressposteingang', 'mail.address.description': 'An diese Adresse gesendete E-Mails werden hier gesammelt. Verwende eine Adresse pro Dienst, Umgebung oder Testlauf.', 'mail.address.namePlaceholder': 'Zahlungen', 'mail.address.addressPlaceholder': "zahlungen{'@'}example.com", 'mail.address.hint': 'Gib die vollständige E-Mail-Adresse ein. Entspricht dem Empfänger im SMTP-Umschlag.', 'mail.address.creating': 'Wird erstellt…', 'mail.address.create': 'Posteingang erstellen',
   'mail.folder.edit': 'Ordner bearbeiten', 'mail.folder.new': 'Neuer Ordner', 'mail.folder.namePlaceholder': 'Zu prüfen', 'mail.folder.save': 'Ordner speichern', 'mail.folder.create': 'Ordner erstellen',

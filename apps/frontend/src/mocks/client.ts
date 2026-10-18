@@ -190,7 +190,7 @@ export function createMockClient(): SandpostClient {
         if (!uuidPattern.test(view.id)) throw new Error('invalid view')
         const name = view.name.trim()
         if (!name || Array.from(name).length > 100) throw new Error('name must contain 1 to 100 printable characters')
-        const saved = { ...view, name }
+        const saved = { ...view, name, icon: view.icon ?? null }
         views.set(saved.id, saved)
         notify()
         return { ...saved }
@@ -544,7 +544,7 @@ export function createMockClient(): SandpostClient {
     if (id && !previous) throw new Error(`Mock folder not found: ${id}`)
     const now = Date.now()
     const saved: WebFolder = {
-      id: previous?.id ?? crypto.randomUUID(), ownerId: user.id, name, exposedAccounts: [],
+      id: previous?.id ?? crypto.randomUUID(), ownerId: user.id, name, icon: input.icon ?? null, exposedAccounts: [],
       createdAt: previous?.createdAt ?? now, updatedAt: now,
     }
     folders.set(saved.id, saved)

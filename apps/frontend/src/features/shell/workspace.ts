@@ -200,7 +200,7 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
     const collator = new Intl.Collator(i18n.global.locale.value, { sensitivity: 'base', numeric: true })
     const addresses = inboxes.value
       .filter((inbox) => !inbox.system)
-      .map((inbox): MailFolder => ({ id: inbox.id, kind: 'address', name: inbox.name, address: inbox.address, view: byId.get(inbox.id) ?? null, manual: null }))
+      .map((inbox): MailFolder => ({ id: inbox.id, kind: 'address', name: byId.get(inbox.id)?.name ?? inbox.name, address: inbox.address, view: byId.get(inbox.id) ?? null, manual: null }))
       .sort((first, second) => collator.compare(first.name, second.name))
     const smart = views.value
       .filter((view) => !addressIds.has(view.id))
@@ -334,6 +334,7 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
     folderRequest += 1
     foldersLoading.value = false
     views.value = [...views.value.filter((candidate) => candidate.id !== saved.id), saved]
+    inboxes.value = inboxes.value.map((inbox) => inbox.id === saved.id ? { ...inbox, name: saved.name } : inbox)
     return saved
   }
 

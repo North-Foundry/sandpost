@@ -89,6 +89,7 @@ fn domain_models_preserve_identifiers_and_role_representation() {
         identifier: view_identifier,
         owner_identifier: Some(user_identifier),
         name: "View".into(),
+        icon: None,
         filter: String::new(),
     };
     let serialized_view = serde_json::to_value(&view).unwrap();
@@ -98,6 +99,7 @@ fn domain_models_preserve_identifiers_and_role_representation() {
             "identifier": view_identifier.to_string(),
             "owner_identifier": user_identifier.to_string(),
             "name": "View",
+            "icon": null,
             "filter": ""
         })
     );
@@ -118,4 +120,32 @@ fn domain_models_preserve_identifiers_and_role_representation() {
         serde_json::from_value::<MailAccess>(json!("all")).unwrap(),
         MailAccess::All
     );
+}
+
+/**
+ * Older View and WebFolder payloads omit icons and continue to deserialize as `None`.
+ *
+ * These defaults keep existing API and native bridge payloads compatible.
+ */
+#[test]
+fn icon_fields_default_when_omitted() {
+    let view: View = serde_json::from_value(json!({
+        "identifier": ViewIdentifier::new(),
+        "owner_identifier": null,
+        "name": "Legacy",
+        "filter": "true"
+    }))
+    .unwrap();
+    assert_eq!(view.icon, None);
+
+    let folder: sandpost_core::WebFolder = serde_json::from_value(json!({
+        "identifier": sandpost_core::ImapFolderIdentifier::new(),
+        "owner_identifier": sandpost_core::UserIdentifier::new(),
+        "name": "Legacy folder",
+        "exposed_accounts": [],
+        "created_at": 1,
+        "updated_at": 2
+    }))
+    .unwrap();
+    assert_eq!(folder.icon, None);
 }

@@ -77,7 +77,9 @@ ordered sequence of migration scripts.
   user to an unknown scope fails with `NotFound`; deleting either side cascades the membership.
 - **Views.** Optional owner: a user-owned view is private to its owner, while a null owner
   denotes a shared view. A view contains a name and a canonical filter. Views organize
-  mail and never grant access.
+  mail and never grant access. The nullable `icon` text column stores a Lucide icon
+  name for Smart Folders and address inboxes. Icons follow View ownership: shared
+  Views share their icon, managed by administrators; personal icons belong to their owner.
 - **Mail.** One pool of messages with normalized recipient/header/attachment facts, raw MIME in
   the mail row, and search synchronization state. Mail records no destination or SMTP access.
 - **Primary state.** `user_message_deletions` permanently removes a message from the
@@ -97,6 +99,9 @@ ordered sequence of migration scripts.
   releases the account's reference without primary/peer deletion. No historical rescan
   recreates released references. Dormant references prevent premature collection.
 - **Folders.** Primary Web definitions automatically project through Mirror accounts.
+  The SQLite `web_folders` table stores the same nullable `icon` text column for
+  manual folders. Icons are presentation metadata and survive IMAP renames without
+  affecting membership, authorization or mailbox identities.
   Independent normal folders and smart definitions have no primary definition link;
   new accounts snapshot normal folders only. Legacy owner smart definitions remain
   Mirror-compatible. `/` paths form normal folder hierarchies; explicit parent renames change

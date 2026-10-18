@@ -23,6 +23,7 @@ async fn committed_mail_changes_resynchronize_open_streams_and_recheck_sessions(
         .authorized(&user)
         .create_web_folder(sandpost_application::WebFolderRequest {
             name: "Filed".into(),
+            icon: None,
             exposed_accounts: vec![],
         })
         .await

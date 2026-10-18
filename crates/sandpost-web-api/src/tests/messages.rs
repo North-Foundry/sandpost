@@ -71,6 +71,7 @@ async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
             identifier: ViewIdentifier::new(),
             owner_identifier: Some(member.id),
             name: "All mail filter".into(),
+            icon: None,
             filter: "true".into(),
         })
         .await
@@ -472,6 +473,7 @@ async fn search_uses_canonical_dsl_globally_and_with_view_filters() {
             identifier: ViewIdentifier::new(),
             owner_identifier: Some(owner.id),
             name: "Hello mail".into(),
+            icon: None,
             filter: "true".into(),
         })
         .await

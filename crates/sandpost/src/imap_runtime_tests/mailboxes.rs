@@ -113,6 +113,7 @@ async fn mirror_manual_structure_and_smart_insertion_rights() {
     let manual = caller
         .create_web_folder(WebFolderRequest {
             name: "Web Manual".into(),
+            icon: None,
             exposed_accounts: vec![account_id],
         })
         .await
@@ -208,6 +209,7 @@ async fn mirror_follows_web_placement_and_independent_keeps_its_snapshot() {
     let folder = caller
         .create_web_folder(WebFolderRequest {
             name: "Primary Folder".into(),
+            icon: None,
             exposed_accounts: vec![],
         })
         .await
@@ -292,6 +294,7 @@ async fn private_move_isolation_overrides_and_safe_folder_deletion() {
     let web_folder = caller
         .create_web_folder(WebFolderRequest {
             name: "Web Placement".into(),
+            icon: None,
             exposed_accounts: vec![account_a],
         })
         .await

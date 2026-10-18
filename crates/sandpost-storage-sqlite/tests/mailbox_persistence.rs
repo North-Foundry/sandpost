@@ -3,11 +3,11 @@
 mod common;
 
 use common::message;
-use sandpost_core::{GlobalRole, ImapMailboxSource, MailAccess};
+use sandpost_core::{GlobalRole, ImapMailboxSource, MailAccess, View, ViewIdentifier};
 use sandpost_query::Expression;
 use sandpost_storage::{
-    ImapMembershipDefinition, ImapStorage, MessageListQuery, MessageStorage, NewImapAccount,
-    NewUser, UserStorage,
+    ImapLocalFolderSettings, ImapMembershipDefinition, ImapStorage, MessageListQuery,
+    MessageStorage, NewImapAccount, NewUser, UserStorage, ViewStorage,
 };
 use sandpost_storage_sqlite::SqliteStorage;
 
@@ -30,6 +30,31 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
         })
         .await
         .unwrap();
+    let view = View {
+        identifier: ViewIdentifier::new(),
+        owner_identifier: Some(owner.identifier),
+        name: "Icon view".into(),
+        icon: Some("mail-2".into()),
+        filter: "true".into(),
+    };
+    storage.save_view(&view).await.unwrap();
+    assert_eq!(
+        storage.get_view(view.identifier).await.unwrap().unwrap(),
+        view
+    );
+    let mut cleared_view = view.clone();
+    cleared_view.icon = None;
+    storage.save_view(&cleared_view).await.unwrap();
+    assert_eq!(
+        storage
+            .get_view(view.identifier)
+            .await
+            .unwrap()
+            .unwrap()
+            .icon,
+        None
+    );
+    storage.save_view(&view).await.unwrap();
     let account = storage
         .create_imap_account(&NewImapAccount {
             owner_identifier: owner.identifier,
@@ -44,7 +69,38 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
         .await
         .unwrap();
     let web_folder = storage
-        .create_web_folder(owner.identifier, "Filed", &[account.identifier], 1)
+        .create_web_folder(
+            owner.identifier,
+            "Filed",
+            Some("folder-kanban"),
+            &[account.identifier],
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        storage
+            .get_web_folder(web_folder.identifier)
+            .await
+            .unwrap()
+            .unwrap()
+            .icon
+            .as_deref(),
+        Some("folder-kanban")
+    );
+    let cleared = storage
+        .update_web_folder(web_folder.identifier, "Filed", None, &[account.identifier])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cleared.icon, None);
+    storage
+        .update_web_folder(
+            web_folder.identifier,
+            "Filed",
+            Some("folder-kanban"),
+            &[account.identifier],
+        )
         .await
         .unwrap();
     let private_override = storage
@@ -137,6 +193,11 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].identifier, web_folder.identifier);
     assert_eq!(folders[0].name, "Filed");
+    assert_eq!(folders[0].icon.as_deref(), Some("folder-kanban"));
+    assert_eq!(
+        storage.get_view(view.identifier).await.unwrap().unwrap(),
+        view
+    );
     assert_eq!(folders[0].exposed_accounts, [account.identifier]);
     let folder_messages = storage
         .list_web_mailbox_messages(
@@ -216,4 +277,96 @@ async fn web_folder_and_imap_placements_survive_file_reopen() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
     let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+}
+
+/**
+ * Renaming a Mirror projection keeps its Web folder icon and mailbox source identity.
+ *
+ * A metadata-only change must not allocate a fresh UIDVALIDITY or mailbox identifier.
+ */
+#[tokio::test]
+async fn imap_folder_rename_preserves_icon_and_mailbox_identity() {
+    let storage = SqliteStorage::memory().await.unwrap();
+    let owner = storage
+        .create_first_owner(&NewUser {
+            name: "Owner".into(),
+            email: "icon-rename@example.test".into(),
+            password_hash: "hash".into(),
+            global_role: GlobalRole::Owner,
+            mail_access: MailAccess::All,
+            personal_filter: None,
+        })
+        .await
+        .unwrap();
+    let account = storage
+        .create_imap_account(&NewImapAccount {
+            owner_identifier: owner.identifier,
+            name: "Mirror".into(),
+            username: format!("icon-rename-{}", uuid::Uuid::new_v4()),
+            password_hash: "hash".into(),
+            mirror_views: true,
+            mode: sandpost_core::ImapAccountMode::Mirror,
+            initial_authorization: Expression::True,
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    let folder = storage
+        .create_web_folder(owner.identifier, "Filed", Some("folder-kanban"), &[], 1)
+        .await
+        .unwrap();
+    let projection = storage
+        .list_imap_local_folders(account.identifier)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|item| item.definition_identifier == Some(folder.identifier))
+        .unwrap();
+    let mailboxes = storage
+        .reconcile_imap_mailboxes(
+            account.identifier,
+            &[ImapMailboxSource::LocalFolder(projection.identifier)],
+            None,
+        )
+        .await
+        .unwrap();
+    let before = mailboxes
+        .iter()
+        .find(|mailbox| mailbox.source == ImapMailboxSource::LocalFolder(projection.identifier))
+        .unwrap();
+
+    storage
+        .update_imap_local_folder(
+            projection.identifier,
+            &ImapLocalFolderSettings {
+                expected_mode_generation: None,
+                name: "Renamed".into(),
+                filter: "true".into(),
+                include_in_inbox: false,
+            },
+        )
+        .await
+        .unwrap();
+    let renamed = storage
+        .get_web_folder(folder.identifier)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.name, "Renamed");
+    assert_eq!(renamed.icon.as_deref(), Some("folder-kanban"));
+
+    let reconciled = storage
+        .reconcile_imap_mailboxes(
+            account.identifier,
+            &[ImapMailboxSource::LocalFolder(projection.identifier)],
+            None,
+        )
+        .await
+        .unwrap();
+    let after = reconciled
+        .iter()
+        .find(|mailbox| mailbox.source == ImapMailboxSource::LocalFolder(projection.identifier))
+        .unwrap();
+    assert_eq!(after.identifier, before.identifier);
+    assert_eq!(after.uid_validity, before.uid_validity);
 }

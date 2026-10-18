@@ -1,4 +1,12 @@
 export default {
+  'mail.icon.label': 'Ikon',
+  'mail.icon.choose': 'Vælg ikon',
+  'mail.icon.search': 'Søg efter ikoner…',
+  'mail.icon.default': 'Standardikon',
+  'mail.icon.empty': 'Ingen ikoner fundet',
+  'mail.icon.selected': 'Valgt ikon: {name}',
+  'mail.address.edit': 'Rediger adresseindbakke',
+  'mail.address.editDescription': 'Skift indbakkens navn og ikon. Modtageradressen forbliver den samme.',
   'mail.common.cancel': 'Annuller', 'mail.common.name': 'Navn', 'mail.common.save': 'Gem', 'mail.common.saving': 'Gemmer…', 'mail.common.tryAgain': 'Prøv igen', 'mail.common.retry': 'Prøv igen', 'mail.common.download': 'Download', 'mail.common.downloadEml': 'Download .eml', 'mail.common.copied': 'Kopieret', 'mail.common.copyAll': 'Kopier alle',
   'mail.address.title': 'Ny adresseindbakke', 'mail.address.description': 'Mail sendt til denne adresse samles her. Brug én pr. tjeneste, miljø eller testkørsel.', 'mail.address.namePlaceholder': 'Betalinger', 'mail.address.addressPlaceholder': "betalinger{'@'}example.com", 'mail.address.hint': 'Indtast hele mailadressen. Matcher modtageren i SMTP-konvolutten.', 'mail.address.creating': 'Opretter…', 'mail.address.create': 'Opret indbakke',
   'mail.folder.edit': 'Rediger mappe', 'mail.folder.new': 'Ny mappe', 'mail.folder.namePlaceholder': 'Til gennemgang', 'mail.folder.save': 'Gem mappe', 'mail.folder.create': 'Opret mappe',

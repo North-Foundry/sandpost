@@ -2,7 +2,8 @@
 
 use crate::{
     ApplicationChange, ApplicationError, AuthorizedApplication, MessageSummary, QueryOptions,
-    authorization, credentials::current_unix_seconds, validate_page_size, validated_name,
+    authorization, credentials::current_unix_seconds, validate_icon, validate_page_size,
+    validated_name,
 };
 use sandpost_core::{
     GlobalRole, ImapAccountIdentifier, ImapFolderIdentifier, MessageIdentifier, WebFolder,
@@ -15,6 +16,8 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebFolderRequest {
     pub name: String,
+    #[serde(default)]
+    pub icon: Option<String>,
     #[serde(default)]
     pub exposed_accounts: Vec<ImapAccountIdentifier>,
 }
@@ -45,7 +48,7 @@ impl AuthorizedApplication {
     }
 
     /// Validate the display name and bound exposure input before persisting a definition.
-    fn validate_web_folder(
+    pub(crate) fn validate_web_folder(
         request: WebFolderRequest,
     ) -> Result<WebFolderRequest, ApplicationError> {
         if request.exposed_accounts.len() > 25 {
@@ -54,6 +57,7 @@ impl AuthorizedApplication {
             ));
         }
         let name = validated_name(&request.name)?;
+        validate_icon(&request.icon)?;
         if name.split('/').any(|segment| segment.is_empty()) {
             return Err(ApplicationError::InvalidInput(
                 "normal folder paths require nonempty hierarchy segments".into(),
@@ -64,6 +68,7 @@ impl AuthorizedApplication {
         accounts.dedup();
         Ok(WebFolderRequest {
             name,
+            icon: request.icon,
             exposed_accounts: accounts,
         })
     }
@@ -102,6 +107,7 @@ impl AuthorizedApplication {
             .create_web_folder(
                 self.user_identifier,
                 &request.name,
+                request.icon.as_deref(),
                 &request.exposed_accounts,
                 current_unix_seconds(),
             )
@@ -122,7 +128,12 @@ impl AuthorizedApplication {
         let folder = self
             .application
             .storage
-            .update_web_folder(identifier, &request.name, &request.exposed_accounts)
+            .update_web_folder(
+                identifier,
+                &request.name,
+                request.icon.as_deref(),
+                &request.exposed_accounts,
+            )
             .await
             .map_err(Self::web_folder_error)?
             .ok_or(ApplicationError::NotFound)?;

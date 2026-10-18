@@ -105,6 +105,7 @@ impl Fixture {
             identifier: ViewIdentifier::new(),
             owner_identifier: Some(owner.identifier),
             name: name.into(),
+            icon: None,
             filter: filter.into(),
         };
         self.storage.save_view(&view).await.unwrap();
@@ -273,6 +274,7 @@ async fn mirror_mode_follows_views() {
         .storage
         .save_view(&View {
             name: "Framework".into(),
+            icon: None,
             filter: "subject contains \"Billing\"".into(),
             ..laravel.clone()
         })
@@ -952,6 +954,7 @@ async fn viewer_can_mark_seen_but_cannot_remove_mail_or_populated_folders() {
         let web = caller
             .create_web_folder(crate::WebFolderRequest {
                 name: "Web Protected".into(),
+                icon: None,
                 exposed_accounts: Vec::new(),
             })
             .await

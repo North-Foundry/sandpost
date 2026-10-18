@@ -94,6 +94,7 @@ export interface SandpostDesktopBridge {
      */
     create(input: {
       name: string
+      icon?: string | null
       exposedAccounts?: string[]
     }): Promise<WireWebFolder>
 
@@ -102,7 +103,7 @@ export interface SandpostDesktopBridge {
      */
     update(
       id: string,
-      input: { name: string; exposedAccounts?: string[] }
+      input: { name: string; icon?: string | null; exposedAccounts?: string[] }
     ): Promise<WireWebFolder>
 
     /**

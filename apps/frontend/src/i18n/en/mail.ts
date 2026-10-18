@@ -1,4 +1,12 @@
 export default {
+  'mail.icon.label': 'Icon',
+  'mail.icon.choose': 'Choose icon',
+  'mail.icon.search': 'Search icons…',
+  'mail.icon.default': 'Default icon',
+  'mail.icon.empty': 'No icons found',
+  'mail.icon.selected': 'Selected icon: {name}',
+  'mail.address.edit': 'Edit address inbox',
+  'mail.address.editDescription': 'Change the name and icon of this inbox. Its receiving address stays the same.',
   'mail.common.cancel': 'Cancel',
   'mail.common.name': 'Name',
   'mail.common.save': 'Save',

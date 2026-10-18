@@ -60,5 +60,8 @@ pub struct View {
     pub identifier: ViewIdentifier,
     pub owner_identifier: Option<UserIdentifier>,
     pub name: String,
+    /// Optional Lucide icon name supplied by the client.
+    #[serde(default)]
+    pub icon: Option<String>,
     pub filter: String,
 }

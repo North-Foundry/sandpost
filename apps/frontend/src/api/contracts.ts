@@ -54,6 +54,7 @@ export interface SavedView {
   ownerId: string | null
   name: string
   filter: string
+  icon?: string | null
 }
 
 /**
@@ -63,6 +64,7 @@ export interface WebFolder {
   id: string
   ownerId: string
   name: string
+  icon?: string | null
   exposedAccounts: string[]
   createdAt: number
   updatedAt: number
@@ -70,6 +72,7 @@ export interface WebFolder {
 
 export interface WebFolderInput {
   name: string
+  icon?: string | null
 }
 
 export type GlobalRole = 'owner' | 'admin' | 'member' | 'viewer'

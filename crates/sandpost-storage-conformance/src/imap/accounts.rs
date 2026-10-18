@@ -154,6 +154,7 @@ pub async fn imap_account_configuration(storage: &dyn Storage) -> Result<(), Con
         identifier: ViewIdentifier::new(),
         owner_identifier: Some(account.owner_identifier),
         name: "Laravel".to_owned(),
+        icon: None,
         filter: "subject contains \"laravel\"".to_owned(),
     };
     unwrap_storage(CHECK, "save_view", storage.save_view(&view).await)?;

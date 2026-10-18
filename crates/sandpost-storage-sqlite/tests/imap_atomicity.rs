@@ -98,7 +98,7 @@ async fn concurrent_mirror_copies_refuse_the_duplicate_shared_occurrence() {
     let first = account(&storage, owner, ImapAccountMode::Mirror).await;
     let second = account(&storage, owner, ImapAccountMode::Mirror).await;
     storage
-        .create_web_folder(owner, "Projects", &[], 1)
+        .create_web_folder(owner, "Projects", None, &[], 1)
         .await
         .unwrap();
     let first_mailboxes = mailboxes(&storage, &first).await;
@@ -166,7 +166,7 @@ async fn duplicate_in_copy_batch_rolls_back_every_new_occurrence() {
     storage.insert_message(&second).await.unwrap();
     let account = account(&storage, owner, ImapAccountMode::Mirror).await;
     storage
-        .create_web_folder(owner, "Projects", &[], 1)
+        .create_web_folder(owner, "Projects", None, &[], 1)
         .await
         .unwrap();
     let [inbox, destination] = mailboxes(&storage, &account).await;
@@ -364,6 +364,7 @@ async fn legacy_smart_exclusions_do_not_override_query_membership() {
                     identifier,
                     owner_identifier: Some(owner),
                     name: "Dynamic".into(),
+                    icon: None,
                     filter: "true".into(),
                 })
                 .await
@@ -443,7 +444,7 @@ async fn stale_catalog_omission_preserves_live_folder_uids_and_pending_flags() {
     storage.insert_message(&mail).await.unwrap();
     let account = account(&storage, owner, ImapAccountMode::Mirror).await;
     storage
-        .create_web_folder(owner, "Projects", &[], 1)
+        .create_web_folder(owner, "Projects", None, &[], 1)
         .await
         .unwrap();
     let [inbox, projects] = mailboxes(&storage, &account).await;

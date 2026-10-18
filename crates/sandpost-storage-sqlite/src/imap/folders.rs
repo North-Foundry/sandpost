@@ -286,6 +286,7 @@ pub(super) async fn create_private_folder(
             connection,
             account_record.owner_identifier,
             name,
+            None,
             &[],
             created_at,
         )
@@ -409,12 +410,18 @@ pub(super) async fn update_folder(
         return get_folder(connection, identifier).await;
     }
     if existing.kind == ImapFolderKind::Manual {
+        let definition = existing
+            .definition_identifier
+            .ok_or(StorageError::NotFound)?;
+        let icon = super::web_folders::get_folder(connection, definition)
+            .await?
+            .ok_or(StorageError::NotFound)?
+            .icon;
         super::web_folders::update_folder(
             connection,
-            existing
-                .definition_identifier
-                .ok_or(StorageError::NotFound)?,
+            definition,
             &settings.name,
+            icon.as_deref(),
             &[],
         )
         .await?;

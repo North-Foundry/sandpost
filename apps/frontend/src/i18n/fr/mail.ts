@@ -1,4 +1,12 @@
 export default {
+  'mail.icon.label': 'Icône',
+  'mail.icon.choose': 'Choisir une icône',
+  'mail.icon.search': 'Rechercher des icônes…',
+  'mail.icon.default': 'Icône par défaut',
+  'mail.icon.empty': 'Aucune icône trouvée',
+  'mail.icon.selected': 'Icône sélectionnée : {name}',
+  'mail.address.edit': 'Modifier la boîte par adresse',
+  'mail.address.editDescription': 'Modifiez le nom et l’icône de cette boîte. Son adresse de réception reste inchangée.',
   'mail.common.cancel': 'Annuler', 'mail.common.name': 'Nom', 'mail.common.save': 'Enregistrer', 'mail.common.saving': 'Enregistrement…', 'mail.common.tryAgain': 'Réessayer', 'mail.common.retry': 'Réessayer', 'mail.common.download': 'Télécharger', 'mail.common.downloadEml': 'Télécharger .eml', 'mail.common.copied': 'Copié', 'mail.common.copyAll': 'Tout copier',
   'mail.address.title': 'Nouvelle boîte de réception', 'mail.address.description': 'Les messages envoyés à cette adresse sont collectés ici. Utilisez-en une par service, environnement ou série de tests.', 'mail.address.namePlaceholder': 'Paiements', 'mail.address.addressPlaceholder': "paiements{'@'}example.com", 'mail.address.hint': 'Saisissez l’adresse e-mail complète. Correspond au destinataire de l’enveloppe SMTP.', 'mail.address.creating': 'Création…', 'mail.address.create': 'Créer une boîte de réception',
   'mail.folder.edit': 'Modifier le dossier', 'mail.folder.new': 'Nouveau dossier', 'mail.folder.namePlaceholder': 'À examiner', 'mail.folder.save': 'Enregistrer le dossier', 'mail.folder.create': 'Créer le dossier',

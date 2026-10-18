@@ -97,6 +97,7 @@ export function normalizeView(representation: WireView): SavedView {
         : String(representation.owner_identifier),
     name: String(representation.name),
     filter: String(representation.filter ?? ''),
+    icon: representation.icon ?? null,
   }
 }
 
@@ -109,6 +110,7 @@ export function viewWire(view: SavedView): WireView {
     owner_identifier: view.ownerId,
     name: view.name,
     filter: view.filter,
+    icon: view.icon ?? null,
   }
 }
 
@@ -120,6 +122,7 @@ export function normalizeWebFolder(representation: WireWebFolder): WebFolder {
     id: String(representation.identifier),
     ownerId: String(representation.owner_identifier),
     name: String(representation.name),
+    icon: representation.icon ?? null,
     exposedAccounts: (representation.exposed_accounts ?? []).map(String),
     createdAt: Number(representation.created_at) * 1000,
     updatedAt: Number(representation.updated_at) * 1000,

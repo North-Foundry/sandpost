@@ -79,6 +79,7 @@ async fn independent_creation_snapshots_current_authorized_primary_history() {
     let folder = caller
         .create_web_folder(WebFolderRequest {
             name: "History".into(),
+            icon: None,
             exposed_accounts: Vec::new(),
         })
         .await

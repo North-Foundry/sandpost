@@ -27,12 +27,14 @@ pub async fn view_crud(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
         identifier: ViewIdentifier::new(),
         owner_identifier: Some(owner.identifier),
         name: "aaa personal view".to_owned(),
+        icon: None,
         filter: "subject == \"personal\"".to_owned(),
     };
     let shared = View {
         identifier: ViewIdentifier::new(),
         owner_identifier: None,
         name: "zzz shared view".to_owned(),
+        icon: None,
         filter: "subject == \"shared\"".to_owned(),
     };
     unwrap_storage(

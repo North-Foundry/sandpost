@@ -107,7 +107,7 @@ pub async fn web_manual_folders_and_placements(
         CHECK,
         "create primary folder",
         storage
-            .create_web_folder(owner, "Manual", &[first.identifier], 1)
+            .create_web_folder(owner, "Manual", None, &[first.identifier], 1)
             .await,
     )?;
     verify(
@@ -117,7 +117,7 @@ pub async fn web_manual_folders_and_placements(
         "every Mirror account projects a primary folder regardless of requested exposure",
     )?;
     let invalid = storage
-        .create_web_folder(owner, "Invalid", &[other.identifier], 1)
+        .create_web_folder(owner, "Invalid", None, &[other.identifier], 1)
         .await;
     verify(
         CHECK,
@@ -125,7 +125,7 @@ pub async fn web_manual_folders_and_placements(
         "cross-owner folder exposure is refused",
     )?;
     let invalid = storage
-        .update_web_folder(folder.identifier, "Invalid", &[other.identifier])
+        .update_web_folder(folder.identifier, "Invalid", None, &[other.identifier])
         .await;
     verify(
         CHECK,
@@ -144,7 +144,9 @@ pub async fn web_manual_folders_and_placements(
         unchanged.name.as_str(),
         "Manual",
     )?;
-    let invalid = storage.create_web_folder(owner, "Manual", &[], 1).await;
+    let invalid = storage
+        .create_web_folder(owner, "Manual", None, &[], 1)
+        .await;
     verify(
         CHECK,
         matches!(invalid, Err(StorageError::DuplicateImapFolderName)),
@@ -315,7 +317,7 @@ pub async fn web_manual_folders_and_placements(
         CHECK,
         "rename without selected exposure",
         storage
-            .update_web_folder(folder.identifier, "Renamed", &[])
+            .update_web_folder(folder.identifier, "Renamed", None, &[])
             .await,
     )?;
     for (account, projection) in [&first, &second].into_iter().zip(&projections) {
@@ -760,14 +762,14 @@ pub async fn web_trash(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
         CHECK,
         "create Web folder",
         storage
-            .create_web_folder(owner, "Archive", &[], 1_700_000_020)
+            .create_web_folder(owner, "Archive", None, &[], 1_700_000_020)
             .await,
     )?;
     let kept_definition = unwrap_storage(
         CHECK,
         "create primary kept folder",
         storage
-            .create_web_folder(owner, "Kept", &[], 1_700_000_021)
+            .create_web_folder(owner, "Kept", None, &[], 1_700_000_021)
             .await,
     )?;
     let kept = unwrap_storage(

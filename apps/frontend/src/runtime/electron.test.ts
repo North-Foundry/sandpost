@@ -185,11 +185,11 @@ describe('Electron bridge adapter', () => {
   it('normalizes saved views both ways and forwards view and query list options', async () => {
     const bridge = makeBridge()
     const client = createElectronClient(bridge)
-    expect(await client.views.list()).toEqual([{ id: 'view-id', ownerId: null, name: 'Shared', filter: 'size > 1' }])
-    const view = { id: 'view-id', ownerId: 'user-id', name: 'Mine', filter: 'subject contains "x"' }
+    expect(await client.views.list()).toEqual([{ id: 'view-id', ownerId: null, name: 'Shared', filter: 'size > 1', icon: null }])
+    const view = { id: 'view-id', ownerId: 'user-id', name: 'Mine', filter: 'subject contains "x"', icon: 'bug' }
     expect(await client.views.save(view)).toEqual(view)
     expect(bridge.views.save).toHaveBeenCalledWith({
-      identifier: 'view-id', owner_identifier: 'user-id', name: 'Mine', filter: 'subject contains "x"',
+      identifier: 'view-id', owner_identifier: 'user-id', name: 'Mine', filter: 'subject contains "x"', icon: 'bug',
     })
     await client.views.delete('view-id')
     expect(bridge.views.delete).toHaveBeenCalledWith('view-id')

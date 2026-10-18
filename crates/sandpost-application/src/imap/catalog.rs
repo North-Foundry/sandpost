@@ -247,6 +247,7 @@ mod tests {
             identifier: ViewIdentifier::new(),
             owner_identifier: None,
             name: name.into(),
+            icon: None,
             filter: filter.into(),
         }
     }

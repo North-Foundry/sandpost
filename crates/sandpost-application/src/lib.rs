@@ -53,6 +53,33 @@ pub use sandpost_storage::Storage as StorageContract;
 /// Search candidate batch size supported by every backend's index hydration contract.
 const SEARCH_CANDIDATE_PAGE_SIZE: usize = 64;
 
+/**
+ * Validate an optional Lucide icon name.
+ *
+ * Unknown well-formed names remain valid so renderers can choose their fallback icon.
+ */
+pub(crate) fn validate_icon(icon: &Option<String>) -> Result<(), ApplicationError> {
+    if let Some(icon) = icon
+        && (icon.is_empty()
+            || icon.len() > 64
+            || !icon.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            || !icon.split('-').all(|segment| {
+                segment
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                    && segment
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            }))
+    {
+        return Err(ApplicationError::InvalidInput(
+            "icon must be a lowercase kebab-case name of at most 64 ASCII characters".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A committed notification; transports must authorize it before exposing identifiers.
 #[derive(Debug, Clone, Serialize)]
 pub struct MessageEvent {

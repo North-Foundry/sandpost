@@ -77,7 +77,7 @@ describe('HTTP adapter', () => {
   })
 
   it('reads and writes saved views and passes view and DSL filters to the message list', async () => {
-    const wireView = { identifier: 'view-id', owner_identifier: 'user-id', name: 'Receipts', filter: 'subject contains "x"' }
+    const wireView = { identifier: 'view-id', owner_identifier: 'user-id', name: 'Receipts', filter: 'subject contains "x"', icon: 'receipt' }
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
@@ -106,7 +106,7 @@ describe('HTTP adapter', () => {
       })
     vi.stubGlobal('fetch', fetchMock)
     const client = createHttpClient()
-    const view = { id: 'view-id', ownerId: 'user-id', name: 'Receipts', filter: 'subject contains "x"' }
+    const view = { id: 'view-id', ownerId: 'user-id', name: 'Receipts', filter: 'subject contains "x"', icon: 'receipt' }
     expect(await client.views.list()).toEqual([view])
     expect(await client.views.save(view)).toEqual(view)
     await client.views.delete('view-id')

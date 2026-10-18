@@ -1,4 +1,12 @@
 export default {
+  'mail.icon.label': 'Icona',
+  'mail.icon.choose': 'Scegli icona',
+  'mail.icon.search': 'Cerca icone…',
+  'mail.icon.default': 'Icona predefinita',
+  'mail.icon.empty': 'Nessuna icona trovata',
+  'mail.icon.selected': 'Icona selezionata: {name}',
+  'mail.address.edit': 'Modifica casella per indirizzo',
+  'mail.address.editDescription': 'Modifica il nome e l’icona della casella. L’indirizzo di ricezione resta invariato.',
   'mail.common.cancel': 'Annulla', 'mail.common.name': 'Nome', 'mail.common.save': 'Salva', 'mail.common.saving': 'Salvataggio…', 'mail.common.tryAgain': 'Riprova', 'mail.common.retry': 'Riprova', 'mail.common.download': 'Scarica', 'mail.common.downloadEml': 'Scarica .eml', 'mail.common.copied': 'Copiato', 'mail.common.copyAll': 'Copia tutto',
   'mail.address.title': 'Nuova casella con indirizzo', 'mail.address.description': 'La posta inviata a questo indirizzo viene raccolta qui. Usane uno per servizio, ambiente o sessione di test.', 'mail.address.namePlaceholder': 'Pagamenti', 'mail.address.addressPlaceholder': "pagamenti{'@'}example.com", 'mail.address.hint': 'Inserisci l’indirizzo email completo. Corrisponde al destinatario dell’envelope SMTP.', 'mail.address.creating': 'Creazione…', 'mail.address.create': 'Crea casella',
   'mail.folder.edit': 'Modifica cartella', 'mail.folder.new': 'Nuova cartella', 'mail.folder.namePlaceholder': 'Da esaminare', 'mail.folder.save': 'Salva cartella', 'mail.folder.create': 'Crea cartella',

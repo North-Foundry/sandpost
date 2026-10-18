@@ -51,7 +51,7 @@ async fn folder_ownership_follows_account_mode() {
         .await
         .unwrap();
     let primary_folder = storage
-        .create_web_folder(owner.identifier, "Primary", &[], 1)
+        .create_web_folder(owner.identifier, "Primary", None, &[], 1)
         .await
         .unwrap();
     let mirror = account(&storage, owner.identifier, ImapAccountMode::Mirror).await;
@@ -140,7 +140,7 @@ async fn new_web_folder_projects_to_mirror_accounts() {
     let mirror = account(&storage, owner.identifier, ImapAccountMode::Mirror).await;
     let independent = account(&storage, owner.identifier, ImapAccountMode::Independent).await;
     storage
-        .create_web_folder(owner.identifier, "Automatic", &[], 1)
+        .create_web_folder(owner.identifier, "Automatic", None, &[], 1)
         .await
         .unwrap();
 

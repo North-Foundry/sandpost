@@ -145,6 +145,7 @@ pub trait ImapStorage: Send + Sync {
         &self,
         owner: UserIdentifier,
         name: &str,
+        icon: Option<&str>,
         accounts: &[ImapAccountIdentifier],
         created_at: i64,
     ) -> Result<WebFolder, StorageError>;
@@ -164,6 +165,7 @@ pub trait ImapStorage: Send + Sync {
         &self,
         identifier: ImapFolderIdentifier,
         name: &str,
+        icon: Option<&str>,
         accounts: &[ImapAccountIdentifier],
     ) -> Result<Option<WebFolder>, StorageError>;
 

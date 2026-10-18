@@ -274,6 +274,7 @@ impl AuthorizedApplication {
     /// Anyone may keep personal views; only global administrators manage shared ones.
     pub async fn save_view(&self, mut view: View) -> Result<View, ApplicationError> {
         view.name = validated_name(&view.name)?;
+        crate::validate_icon(&view.icon)?;
         authorization::expression(&view.filter)?;
         let storage = &self.application.storage;
         let shared_allowed = is_global_admin(self.account().await?.global_role);

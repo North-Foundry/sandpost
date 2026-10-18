@@ -1,4 +1,12 @@
 export default {
+  'mail.icon.label': 'Icono',
+  'mail.icon.choose': 'Elegir icono',
+  'mail.icon.search': 'Buscar iconos…',
+  'mail.icon.default': 'Icono predeterminado',
+  'mail.icon.empty': 'No se encontraron iconos',
+  'mail.icon.selected': 'Icono seleccionado: {name}',
+  'mail.address.edit': 'Editar buzón por dirección',
+  'mail.address.editDescription': 'Cambia el nombre y el icono de este buzón. Su dirección de recepción se mantiene.',
   'mail.common.cancel': 'Cancelar', 'mail.common.name': 'Nombre', 'mail.common.save': 'Guardar', 'mail.common.saving': 'Guardando…', 'mail.common.tryAgain': 'Intentar de nuevo', 'mail.common.retry': 'Reintentar', 'mail.common.download': 'Descargar', 'mail.common.downloadEml': 'Descargar .eml', 'mail.common.copied': 'Copiado', 'mail.common.copyAll': 'Copiar todo',
   'mail.address.title': 'Nueva bandeja con dirección', 'mail.address.description': 'El correo enviado a esta dirección se recopila aquí. Usa una por servicio, entorno o ejecución de pruebas.', 'mail.address.namePlaceholder': 'Pagos', 'mail.address.addressPlaceholder': "pagos{'@'}example.com", 'mail.address.hint': 'Introduce la dirección de correo completa. Coincide con el destinatario del sobre SMTP.', 'mail.address.creating': 'Creando…', 'mail.address.create': 'Crear bandeja',
   'mail.folder.edit': 'Editar carpeta', 'mail.folder.new': 'Nueva carpeta', 'mail.folder.namePlaceholder': 'Por revisar', 'mail.folder.save': 'Guardar carpeta', 'mail.folder.create': 'Crear carpeta',

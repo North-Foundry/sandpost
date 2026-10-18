@@ -136,6 +136,7 @@ async fn mirror_folder_management_is_shared_without_live_independent_inheritance
     let folder = caller
         .create_web_folder(WebFolderRequest {
             name: "Web Review".into(),
+            icon: None,
             exposed_accounts: vec![],
         })
         .await
@@ -363,6 +364,7 @@ async fn smart_insertion_and_cross_user_folder_access_are_refused() {
             .as_user(&user)
             .create_web_folder(WebFolderRequest {
                 name: "Private Web".into(),
+                icon: None,
                 exposed_accounts: vec![],
             })
             .await
@@ -675,6 +677,7 @@ async fn moving_copy_that_became_primary_updates_web_organization() {
     let folder = caller
         .create_web_folder(WebFolderRequest {
             name: "Web Baseline".into(),
+            icon: None,
             exposed_accounts: vec![issued.account.account.identifier],
         })
         .await
@@ -749,6 +752,7 @@ async fn web_copy_round_trips_multiple_mirrors_and_normal_folders() {
     let first_folder = caller
         .create_web_folder(WebFolderRequest {
             name: "First".into(),
+            icon: None,
             exposed_accounts: Vec::new(),
         })
         .await
@@ -756,6 +760,7 @@ async fn web_copy_round_trips_multiple_mirrors_and_normal_folders() {
     let second_folder = caller
         .create_web_folder(WebFolderRequest {
             name: "Second".into(),
+            icon: None,
             exposed_accounts: Vec::new(),
         })
         .await
@@ -881,6 +886,7 @@ async fn web_copy_duplicate_batches_and_concurrent_retries_are_atomic() {
     let folder = caller
         .create_web_folder(WebFolderRequest {
             name: "Copies".into(),
+            icon: None,
             exposed_accounts: Vec::new(),
         })
         .await
@@ -927,6 +933,7 @@ async fn web_copy_duplicate_batches_and_concurrent_retries_are_atomic() {
     let destination = caller
         .create_web_folder(WebFolderRequest {
             name: "Empty".into(),
+            icon: None,
             exposed_accounts: Vec::new(),
         })
         .await

@@ -283,6 +283,7 @@ impl ImapStorage for SqliteStorage {
         &self,
         owner: UserIdentifier,
         name: &str,
+        icon: Option<&str>,
         accounts: &[ImapAccountIdentifier],
         created_at: i64,
     ) -> Result<sandpost_core::WebFolder, StorageError> {
@@ -292,7 +293,8 @@ impl ImapStorage for SqliteStorage {
             .await
             .storage()?;
         let result =
-            web_folders::create_folder(&mut transaction, owner, name, accounts, created_at).await?;
+            web_folders::create_folder(&mut transaction, owner, name, icon, accounts, created_at)
+                .await?;
         transaction.commit().await.storage()?;
         Ok(result)
     }
@@ -324,6 +326,7 @@ impl ImapStorage for SqliteStorage {
         &self,
         identifier: ImapFolderIdentifier,
         name: &str,
+        icon: Option<&str>,
         accounts: &[ImapAccountIdentifier],
     ) -> Result<Option<sandpost_core::WebFolder>, StorageError> {
         let mut transaction = self
@@ -332,7 +335,7 @@ impl ImapStorage for SqliteStorage {
             .await
             .storage()?;
         let result =
-            web_folders::update_folder(&mut transaction, identifier, name, accounts).await?;
+            web_folders::update_folder(&mut transaction, identifier, name, icon, accounts).await?;
         transaction.commit().await.storage()?;
         Ok(result)
     }

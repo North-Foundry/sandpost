@@ -12,7 +12,7 @@ pub(super) async fn get_folder(
     connection: &mut SqliteConnection,
     identifier: ImapFolderIdentifier,
 ) -> Result<Option<WebFolder>, StorageError> {
-    let Some(row) = sqlx::query("SELECT identifier, owner_identifier, name, created_at, updated_at FROM web_folders WHERE identifier = ?1")
+    let Some(row) = sqlx::query("SELECT identifier, owner_identifier, name, icon, created_at, updated_at FROM web_folders WHERE identifier = ?1")
         .bind(identifier.to_string()).fetch_optional(&mut *connection).await.storage()? else { return Ok(None); };
     let identifier: String = row.try_get("identifier").storage()?;
     let owner: String = row.try_get("owner_identifier").storage()?;
@@ -22,6 +22,7 @@ pub(super) async fn get_folder(
         identifier: parse_identifier(&identifier)?,
         owner_identifier: parse_identifier(&owner)?,
         name: row.try_get("name").storage()?,
+        icon: row.try_get("icon").storage()?,
         exposed_accounts: accounts
             .iter()
             .map(|value| parse_identifier(value))
@@ -76,6 +77,7 @@ pub(super) async fn create_folder(
     connection: &mut SqliteConnection,
     owner: UserIdentifier,
     name: &str,
+    icon: Option<&str>,
     accounts: &[ImapAccountIdentifier],
     created_at: i64,
 ) -> Result<WebFolder, StorageError> {
@@ -99,8 +101,8 @@ pub(super) async fn create_folder(
         return Err(StorageError::DuplicateImapFolderName);
     }
     let identifier = ImapFolderIdentifier::new();
-    sqlx::query("INSERT INTO web_folders(identifier, owner_identifier, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)")
-        .bind(identifier.to_string()).bind(owner.to_string()).bind(name).bind(created_at).execute(&mut *connection).await.storage()?;
+    sqlx::query("INSERT INTO web_folders(identifier, owner_identifier, name, icon, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)")
+        .bind(identifier.to_string()).bind(owner.to_string()).bind(name).bind(icon).bind(created_at).execute(&mut *connection).await.storage()?;
     for account in accounts {
         create_projection(connection, identifier, account, created_at).await?;
     }
@@ -139,6 +141,7 @@ pub(super) async fn update_folder(
     connection: &mut SqliteConnection,
     identifier: ImapFolderIdentifier,
     name: &str,
+    icon: Option<&str>,
     requested_accounts: &[ImapAccountIdentifier],
 ) -> Result<Option<WebFolder>, StorageError> {
     let Some(existing) = get_folder(connection, identifier).await? else {
@@ -172,13 +175,16 @@ pub(super) async fn update_folder(
         name,
     )
     .await?;
-    sqlx::query("UPDATE web_folders SET name = ?1, updated_at = ?2 WHERE identifier = ?3")
-        .bind(name)
-        .bind(now_unix())
-        .bind(identifier.to_string())
-        .execute(&mut *connection)
-        .await
-        .storage()?;
+    sqlx::query(
+        "UPDATE web_folders SET name = ?1, icon = ?2, updated_at = ?3 WHERE identifier = ?4",
+    )
+    .bind(name)
+    .bind(icon)
+    .bind(now_unix())
+    .bind(identifier.to_string())
+    .execute(&mut *connection)
+    .await
+    .storage()?;
     let current: Vec<String> = sqlx::query_scalar(
         "SELECT account_identifier FROM web_folder_accounts WHERE folder_identifier = ?1",
     )

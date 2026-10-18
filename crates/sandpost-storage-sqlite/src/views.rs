@@ -7,7 +7,7 @@ use sandpost_core::{UserIdentifier, View, ViewIdentifier, normalize_inbox_addres
 use sandpost_storage::{StorageError, ViewStorage};
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 
-const VIEW_COLUMNS: &str = "identifier,owner_identifier,name,filter";
+const VIEW_COLUMNS: &str = "identifier,owner_identifier,name,icon,filter";
 
 /// Decode a saved view row, validating its identifier and optional owner.
 fn decode_view(row: SqliteRow) -> Result<View, sqlx::Error> {
@@ -19,6 +19,7 @@ fn decode_view(row: SqliteRow) -> Result<View, sqlx::Error> {
             .map(|value| parse_identifier(&value).map_err(|_| invalid_column("owner_identifier")))
             .transpose()?,
         name: row.try_get("name")?,
+        icon: row.try_get("icon")?,
         filter: row.try_get("filter")?,
     })
 }
@@ -61,11 +62,12 @@ async fn get_view(
 /// Insert or update a saved view.
 async fn save_view(storage: &SqliteStorage, view: &View) -> Result<(), StorageError> {
     sqlx::query(
-        "INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4) ON CONFLICT(identifier) DO UPDATE SET owner_identifier=excluded.owner_identifier,name=excluded.name,filter=excluded.filter",
+        "INSERT INTO views(identifier,owner_identifier,name,icon,filter) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(identifier) DO UPDATE SET owner_identifier=excluded.owner_identifier,name=excluded.name,icon=excluded.icon,filter=excluded.filter",
     )
     .bind(view.identifier.to_string())
     .bind(view.owner_identifier.map(|identifier| identifier.to_string()))
     .bind(&view.name)
+    .bind(&view.icon)
     .bind(&view.filter)
     .execute(&storage.write_pool)
     .await
@@ -118,16 +120,19 @@ async fn create_recipient_view(
         identifier: ViewIdentifier::new(),
         owner_identifier: Some(user),
         name: name.to_owned(),
+        icon: None,
         filter,
     };
-    sqlx::query("INSERT INTO views(identifier,owner_identifier,name,filter) VALUES (?1,?2,?3,?4)")
-        .bind(view.identifier.to_string())
-        .bind(user.to_string())
-        .bind(&view.name)
-        .bind(&view.filter)
-        .execute(&mut *transaction)
-        .await
-        .storage()?;
+    sqlx::query(
+        "INSERT INTO views(identifier,owner_identifier,name,icon,filter) VALUES (?1,?2,?3,NULL,?4)",
+    )
+    .bind(view.identifier.to_string())
+    .bind(user.to_string())
+    .bind(&view.name)
+    .bind(&view.filter)
+    .execute(&mut *transaction)
+    .await
+    .storage()?;
     transaction.commit().await.storage()?;
     Ok(view)
 }

@@ -380,15 +380,15 @@ async fn initial_history_and_primary_organization_are_snapshotted_once() {
     let denied = insert_message(&storage, "denied history").await;
     let mirror = create_account(&storage, owner, ImapAccountMode::Mirror, "true").await;
     let filed_definition = storage
-        .create_web_folder(owner, "Filed", &[], 1)
+        .create_web_folder(owner, "Filed", None, &[], 1)
         .await
         .unwrap();
     storage
-        .create_web_folder(owner, "Copies", &[], 1)
+        .create_web_folder(owner, "Copies", None, &[], 1)
         .await
         .unwrap();
     storage
-        .create_web_folder(owner, "Empty", &[], 1)
+        .create_web_folder(owner, "Empty", None, &[], 1)
         .await
         .unwrap();
     storage
@@ -503,7 +503,7 @@ async fn initial_history_and_primary_organization_are_snapshotted_once() {
         );
     }
     storage
-        .update_web_folder(filed_definition.identifier, "Primary renamed", &[])
+        .update_web_folder(filed_definition.identifier, "Primary renamed", None, &[])
         .await
         .unwrap();
     assert!(
@@ -612,7 +612,7 @@ async fn mode_switches_preserve_dormant_arrivals_and_identity_across_reopen() {
             .seen
     );
     let new_primary = storage
-        .create_web_folder(owner, "Added while dormant", &[], 2)
+        .create_web_folder(owner, "Added while dormant", None, &[], 2)
         .await
         .unwrap();
     let dormant_arrival = insert_message(&storage, "arrival while exposing Mirror").await;
@@ -857,7 +857,7 @@ async fn smart_results_follow_each_organization_and_do_not_grant_retention() {
         message
     );
     let primary_filed = storage
-        .create_web_folder(owner, "Primary filed", &[], 1)
+        .create_web_folder(owner, "Primary filed", None, &[], 1)
         .await
         .unwrap();
     storage
@@ -1107,7 +1107,7 @@ async fn primary_folder_deletion_preserves_independent_snapshots_without_mirrors
     let storage = SqliteStorage::memory().await.unwrap();
     let owner = create_owner(&storage).await;
     let primary_folder = storage
-        .create_web_folder(owner, "Primary", &[], 1)
+        .create_web_folder(owner, "Primary", None, &[], 1)
         .await
         .unwrap();
     let sole = insert_message(&storage, "sole primary").await;
@@ -1305,7 +1305,7 @@ async fn primary_folder_delete_without_mirror_projections_routes_to_trash() {
     let storage = SqliteStorage::memory().await.unwrap();
     let owner = create_owner(&storage).await;
     let folder = storage
-        .create_web_folder(owner, "Unprojected", &[], 1)
+        .create_web_folder(owner, "Unprojected", None, &[], 1)
         .await
         .unwrap();
     let message = insert_message(&storage, "unprojected primary folder").await;

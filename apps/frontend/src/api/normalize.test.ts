@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeDetail, normalizeSummary } from './normalize'
+import { normalizeDetail, normalizeSummary, normalizeView, normalizeWebFolder, viewWire } from './normalize'
 
 describe('API normalization', () => {
+  it('round-trips custom View icons and normalizes omitted icons to the default', () => {
+    const wire = { identifier: 'view', owner_identifier: null, name: 'QA', filter: 'true', icon: 'flask-conical' }
+    const view = normalizeView(wire)
+    expect(view.icon).toBe('flask-conical')
+    expect(viewWire(view)).toEqual(wire)
+    expect(viewWire({ ...view, icon: null }).icon).toBeNull()
+    expect(normalizeView({ ...wire, icon: undefined }).icon).toBeNull()
+  })
+
+  it('retains custom manual folder icons and defaults older folder responses', () => {
+    const wire = { identifier: 'folder', owner_identifier: 'owner', name: 'QA', exposed_accounts: [], created_at: 1, updated_at: 2 }
+    expect(normalizeWebFolder({ ...wire, icon: 'bug' }).icon).toBe('bug')
+    expect(normalizeWebFolder(wire).icon).toBeNull()
+  })
+
   it('maps summary names, mailbox objects, and seconds to milliseconds', () => {
     expect(normalizeSummary({
       id: 'abc', seq: 9, subject: 'Hello', from: [{ address: 'a@b.test', domain: 'b.test' }],

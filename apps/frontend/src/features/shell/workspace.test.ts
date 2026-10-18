@@ -86,6 +86,23 @@ describe('workspace', () => {
     }
   })
 
+  it('updates address inbox names and icons immediately while preserving their recipient filter', async () => {
+    const client = createClient(owner)
+    const created = createWorkspace(client, { onSignedOut: vi.fn() })
+    stop = created.stop
+    created.start()
+    await flush()
+    const saved = { ...addressView, name: 'Testing', icon: 'flask-conical' }
+    await created.workspace.saveView(saved)
+    expect(client.views.save).toHaveBeenCalledWith(saved)
+    expect(created.workspace.findFolder('address')).toMatchObject({
+      kind: 'address', name: 'Testing', address: addressInbox.address,
+      view: { icon: 'flask-conical', filter: addressView.filter },
+    })
+    await created.workspace.saveView({ ...saved, icon: null })
+    expect(created.workspace.findFolder('address')?.view?.icon).toBeNull()
+  })
+
   it('returns to login when the session is missing and after signing out', async () => {
     const onSignedOut = vi.fn()
     const signedOut = createWorkspace(createClient(null), { onSignedOut })

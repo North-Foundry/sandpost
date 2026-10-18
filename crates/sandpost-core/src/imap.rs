@@ -103,6 +103,9 @@ pub struct WebFolder {
     pub identifier: ImapFolderIdentifier,
     pub owner_identifier: UserIdentifier,
     pub name: String,
+    /// Optional Lucide icon name supplied by the client.
+    #[serde(default)]
+    pub icon: Option<String>,
     /// IMAP accounts that expose this folder; exposure does not grant mail access.
     pub exposed_accounts: Vec<ImapAccountIdentifier>,
     /// Unix seconds, UTC.

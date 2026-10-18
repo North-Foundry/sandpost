@@ -9,6 +9,8 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import BusyDialog from '@/components/BusyDialog.vue'
+import FolderIconPicker from './FolderIconPicker.vue'
+import { folderIcon } from './folderIcons'
 import { useWorkspace } from '@/features/shell/workspace'
 
 const open = defineModel<boolean>('open', { required: true })
@@ -17,6 +19,7 @@ const props = defineProps<{ folder: WebFolder | null }>()
 const emit = defineEmits<{ (event: 'saved', folder: WebFolder): void }>()
 const workspace = useWorkspace()
 const name = ref('')
+const icon = ref<string | null>(null)
 const saving = ref(false)
 const error = ref('')
 
@@ -28,7 +31,7 @@ async function save(): Promise<void> {
   saving.value = true
   error.value = ''
   try {
-    const input: WebFolderInput = { name: name.value.trim() }
+    const input: WebFolderInput = { name: name.value.trim(), icon: icon.value }
     const saved = await workspace.saveManualFolder(props.folder?.id ?? null, input)
     open.value = false
     emit('saved', saved)
@@ -40,6 +43,7 @@ async function save(): Promise<void> {
 watch(open, (isOpen) => {
   if (!isOpen) return
   name.value = props.folder?.name ?? ''
+  icon.value = props.folder?.icon ?? null
   error.value = ''
 })
 </script>
@@ -56,6 +60,10 @@ watch(open, (isOpen) => {
         <Field :data-disabled="saving">
           <FieldLabel for="web-folder-name">{{ t('mail.common.name') }}</FieldLabel>
           <Input id="web-folder-name" v-model="name" :placeholder="t('mail.folder.namePlaceholder')" required maxlength="100" :disabled="saving" />
+        </Field>
+        <Field :data-disabled="saving">
+          <FieldLabel for="web-folder-icon">{{ t('mail.icon.label') }}</FieldLabel>
+          <FolderIconPicker id="web-folder-icon" v-model="icon" :default-icon="folderIcon(null, 'folder')" :disabled="saving" />
         </Field>
         <Alert v-if="error" variant="destructive" role="alert"><AlertDescription>{{ error }}</AlertDescription></Alert>
       </FieldGroup>

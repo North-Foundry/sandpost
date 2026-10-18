@@ -266,7 +266,7 @@ modifies primary/peer state. Credential deletion removes private state and can c
 content retained by no other view. Full contract: [imap.md](imap.md).
 
 Web normal folders use `GET/POST /api/v1/folders`, `PUT/DELETE /api/v1/folders/<id>` and
-`GET /api/v1/folders/<id>/messages`; the body is `{ name }`, while the legacy exposure
+`GET /api/v1/folders/<id>/messages`; the body is `{ name, icon? }`, while the legacy exposure
 field remains accepted. Every Mirror sees them; Independent receives its own initial
 snapshot only. Web MOVE uses `POST /api/v1/messages/placement` with `{ identifiers,
 folderIdentifier }` (null means Inbox). Web COPY preserves sources through
@@ -347,6 +347,16 @@ Electron production serves Vue through `sandpost://app` with local SPA fallback;
 The shared browser/Electron frontend uses Vue I18n in Composition API mode for English (`en`), French (`fr`), Italian (`it`), Spanish (`es`), German (`de`), and Danish (`da`). Catalogs are TypeScript default exports in `apps/frontend/src/i18n/<lang>/<domain>.ts`, with matching keys and named interpolation parameters across languages. The initial language prefers `sandpost.locale` in local storage, then the first supported browser language (including regional variants), then English. A language selector is available during login/setup and in the account menu. Switching updates the interface, document `lang`, dates, numbers, and folder sorting without reloading, and persists where storage is available. English is the translation fallback. Mail content, user-defined names, protocol identifiers, and query syntax remain unchanged; backend-provided error details and diagnostics retain their original text. Catalog parity, interpolation, message compilation, locale selection, and persistence are covered by frontend tests.
 
 The persistent Vue shell has Mail (Inbox, Trash, address inboxes, Smart Folders, manual Folders) and admin pages; its + menu creates a Smart Folder, address inbox, or manual folder. Manual folder deletion identifies exposed accounts and confirms messages return to fallback. Messages can move to folders/Inbox/Trash; Trash offers Empty Trash. Users/Scopes/SMTP appear only to Owners/Admins; IMAP appears to all users. Footer shows event state only while connecting/offline and offers language/appearance/sign-out. Narrow screens use a drawer; Cmd/Ctrl+B toggles it on desktop.
+
+Manual folder and Smart Folder dialogs offer a searchable Lucide icon picker with a
+default/reset choice. Address inboxes have an edit action for their name and icon;
+the receiving address and canonical recipient filter remain unchanged. The stored
+icon appears in both navigation and the message-list heading, and follows the
+definition across browser and Electron sessions. Shared View icons share the View's
+administrative ownership. The nullable `icon` field is accepted on Views and Web
+folder bodies; null uses the kind's default. Icon names are lowercase ASCII
+kebab-case, at most 64 characters. Unknown names remain stored and render the
+kind's default, allowing catalog changes without breaking older definitions.
 
 Folder/search are encoded in `/mail?folder=<view id>&q=<search>` and preserved on `/mail/<message id>`. The dense two-line list supports All/Unread, refresh, arrows and j/k; selection supports Shift ranges, Cmd/Ctrl-click, and Cmd/Ctrl+A over loaded rows. Delete/Backspace, swipe, header, and inspector actions move mail to Trash immediately; inside Trash they delete permanently after confirmation. Bulk DELETE uses bounded concurrency; partial failures remain selected for retry. Selection clears on folder/search change. Keyset paging loads near the end with an explicit “Load older messages” control. Inspector renders isolated HTML/plain text; Headers copies all or downloads `.eml`; Attachments downloads decoded MIME parts. Dialogs are accessible; narrow layouts switch between list and inspector.
 

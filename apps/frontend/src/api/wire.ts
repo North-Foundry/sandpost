@@ -55,6 +55,7 @@ export interface WireView {
   owner_identifier: string | null
   name: string
   filter: string
+  icon?: string | null
 }
 
 /**
@@ -64,6 +65,7 @@ export interface WireWebFolder {
   identifier: string
   owner_identifier: string
   name: string
+  icon?: string | null
   exposed_accounts: string[]
   created_at: number
   updated_at: number
