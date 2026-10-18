@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       directory="$(dirname "$manifest")"; \
       mkdir -p "$directory/src"; \
       : > "$directory/src/lib.rs"; \
-      : > "$directory/src/main.rs"; \
+      printf 'fn main() {}\n' > "$directory/src/main.rs"; \
     done && \
     cargo build --release --locked -p sandpost -p sandpost-test-runner \
       --target "$(cat /rust-target)"
