@@ -1332,6 +1332,7 @@ __metadata:
     "@lezer/highlight": "npm:^1.2.5"
     "@lucide/vue": "npm:^1.57.0"
     "@sandpost/typescript-config": "workspace:*"
+    "@sandpost/vite-plugin-hot-file": "workspace:*"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@types/node": "npm:^24.19.2"
     "@vitejs/plugin-vue": "npm:^6.0.10"
@@ -1367,6 +1368,19 @@ __metadata:
   dependencies:
     "@tsconfig/node24": "npm:^24.0.5"
     "@vue/tsconfig": "npm:^0.9.1"
+  languageName: unknown
+  linkType: soft
+
+"@sandpost/vite-plugin-hot-file@workspace:*, @sandpost/vite-plugin-hot-file@workspace:packages/vite-plugin-hot-file":
+  version: 0.0.0-use.local
+  resolution: "@sandpost/vite-plugin-hot-file@workspace:packages/vite-plugin-hot-file"
+  dependencies:
+    "@sandpost/typescript-config": "workspace:*"
+    "@types/node": "npm:^24.19.2"
+    typescript: "npm:^6.0.3"
+    vite: "npm:8.3.4"
+  peerDependencies:
+    vite: ^8.3.4
   languageName: unknown
   linkType: soft
 
@@ -6977,7 +6991,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"typescript@npm:~6.0.3":
+"typescript@npm:^6.0.3, typescript@npm:~6.0.3":
   version: 6.0.3
   resolution: "typescript@npm:6.0.3"
   bin:
@@ -6997,7 +7011,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"typescript@patch:typescript@npm%3A~6.0.3#optional!builtin<compat/typescript>":
+"typescript@patch:typescript@npm%3A^6.0.3#optional!builtin<compat/typescript>, typescript@patch:typescript@npm%3A~6.0.3#optional!builtin<compat/typescript>":
   version: 6.0.3
   resolution: "typescript@patch:typescript@npm%3A6.0.3#optional!builtin<compat/typescript>::version=6.0.3&hash=5786d5"
   bin:
@@ -7178,7 +7192,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"vite@npm:^8.3.4":
+"vite@npm:8.3.4, vite@npm:^8.3.4":
   version: 8.3.4
   resolution: "vite@npm:8.3.4"
   dependencies:

@@ -15,6 +15,6 @@
   },
   "scripts": {
     "sandpost-cli:build": "turbo run build --filter=@sandpost/sandpost",
-    "sandpost-cli:dev": "turbo run dev --filter=@sandpost/frontend --filter=@sandpost/sandpost"
+    "sandpost-cli:dev": "turbo run dev --filter=@sandpost/sandpost..."
   }
 }
