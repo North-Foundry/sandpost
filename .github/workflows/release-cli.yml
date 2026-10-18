@@ -88,6 +88,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
           components: rustfmt, clippy
+      # Reuse compiled crates (tower, sqlx, tantivy, ...) across runs of the same target.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          cache-on-failure: true
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
@@ -108,7 +114,7 @@ jobs:
       - name: Test Rust workspace
         if: runner.os == 'Linux'
         run: cargo test --workspace --locked
-      - name: Test CLI on macOS and Windows
+      - name: Test CLI on macOS
         if: runner.os != 'Linux'
         run: cargo test --locked -p sandpost --target "$RUST_TARGET"
       - name: Test frontend

@@ -15,6 +15,8 @@ The CLI artifacts contain the executable and `LICENSE`, named with version, plat
 
 Platform support is validated by successful release workflow builds and smoke tests; configuring a target alone does not establish compatibility. See [project build and release limits](project.md#build-and-run) for platform compatibility and signing status.
 
+Each CLI matrix job restores `Swatinem/rust-cache` with a key derived from its Rust target and `Cargo.lock`, so unchanged third-party crates are reused between runs and each target keeps a separate cache. The container build caches third-party crates in a layer that depends only on the workspace manifests: `COPY --parents` copies `Cargo.toml`, `Cargo.lock`, crate manifests and build scripts, a placeholder build compiles the dependencies, and the real sources are copied afterwards. Changing application code rebuilds the workspace crates and reuses `tower`, `sqlx`, `tantivy` and the rest; editing any `Cargo.toml` or `Cargo.lock` invalidates that layer.
+
 ## Container publication
 
 The root `Dockerfile` and `.dockerignore` are the container build entry points.

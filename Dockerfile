@@ -16,22 +16,37 @@ FROM rust:1.99-alpine3.24 AS rust-build
 
 ARG TARGETARCH
 RUN apk add --no-cache build-base cmake perl ca-certificates
+RUN case "$TARGETARCH" in \
+      amd64) echo x86_64-unknown-linux-musl > /rust-target ;; \
+      arm64) echo aarch64-unknown-linux-musl > /rust-target ;; \
+      *) echo "unsupported build architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    rustup target add "$(cat /rust-target)"
 WORKDIR /work
 ENV CARGO_TARGET_DIR=/target
 ENV RUSTFLAGS="-C target-feature=+crt-static"
-COPY Cargo.toml Cargo.lock ./
 COPY LICENSE /LICENSE
+# Copy only workspace manifests so third-party crates (tower, sqlx, tantivy, ...)
+# are compiled once and reused until Cargo.toml or Cargo.lock changes.
+COPY --parents Cargo.toml Cargo.lock crates/*/Cargo.toml crates/*/build.rs ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,id=rust-target-${TARGETARCH},target=/target \
+    for manifest in crates/*/Cargo.toml; do \
+      directory="$(dirname "$manifest")"; \
+      mkdir -p "$directory/src"; \
+      : > "$directory/src/lib.rs"; \
+      : > "$directory/src/main.rs"; \
+    done && \
+    cargo build --release --locked -p sandpost -p sandpost-test-runner \
+      --target "$(cat /rust-target)"
+RUN rm -rf crates
 COPY crates/ crates/
 COPY --from=frontend /work/apps/frontend/dist apps/frontend/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,id=rust-target-${TARGETARCH},target=/target \
-    case "$TARGETARCH" in \
-      amd64) rust_target=x86_64-unknown-linux-musl ;; \
-      arm64) rust_target=aarch64-unknown-linux-musl ;; \
-      *) echo "unsupported build architecture: $TARGETARCH" >&2; exit 1 ;; \
-    esac && \
-    rustup target add "$rust_target" && \
+    rust_target="$(cat /rust-target)" && \
     cargo build --release --locked -p sandpost --target "$rust_target" && \
     mkdir -p /out && \
     cp "/target/$rust_target/release/sandpost" /out/sandpost && \
@@ -39,7 +54,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
        readelf -d /out/sandpost | grep -q '(NEEDED)'; then \
       echo 'runtime binary must be statically linked' >&2; exit 1; \
     fi && \
-    printf '%s' "$rust_target" > /out/rust-target && \
     mkdir -p /runtime-data /runtime-tmp && \
     chown 65532:65532 /runtime-data /runtime-tmp
 
@@ -50,7 +64,7 @@ ARG TARGETARCH
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,id=rust-target-${TARGETARCH},target=/target \
-    rust_target="$(cat /out/rust-target)" && \
+    rust_target="$(cat /rust-target)" && \
     cargo run --release --locked -p sandpost-test-runner --target "$rust_target" -- \
       smoke-test --binary /out/sandpost --frontend apps/frontend/dist
 

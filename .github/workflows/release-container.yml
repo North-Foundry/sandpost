@@ -77,6 +77,7 @@ jobs:
         with:
           context: .
           platforms: linux/${{ matrix.architecture }}
+          cache-from: type=gha,scope=container-${{ matrix.architecture }}
           load: true
           tags: sandpost:verify
       - name: Verify rootless container startup and restart
