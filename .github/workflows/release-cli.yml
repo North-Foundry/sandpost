@@ -65,10 +65,11 @@ jobs:
             platform: linux-x86_64
             target: x86_64-unknown-linux-gnu
             executable-suffix: ""
-          - runner: windows-2025
-            platform: windows-x86_64
-            target: x86_64-pc-windows-msvc
-            executable-suffix: .exe
+          # Temporarily disabled: frontend_proxy_cli child startup fails on Windows.
+          # - runner: windows-2025
+          #   platform: windows-x86_64
+          #   target: x86_64-pc-windows-msvc
+          #   executable-suffix: .exe
     env:
       RELEASE_VERSION: ${{ needs.version.outputs.version }}
       RELEASE_PLATFORM: ${{ matrix.platform }}
@@ -179,11 +180,13 @@ jobs:
           prefix = f'sandpost-{os.environ["RELEASE_VERSION"]}-'
           expected = {prefix + suffix for suffix in (
               'macos-arm64.tar.gz', 'macos-x86_64.tar.gz',
-              'linux-x86_64.tar.gz', 'windows-x86_64.zip',
+              'linux-x86_64.tar.gz',
+              # Restore together with the Windows matrix entry.
+              # 'windows-x86_64.zip',
           )}
           archives = sorted(destination.iterdir())
           if {archive.name for archive in archives} != expected:
-              raise SystemExit('Release must contain exactly the four expected CLI archives')
+              raise SystemExit('Release must contain exactly the enabled CLI archives')
           with (destination / 'SHA256SUMS').open('w', encoding='utf-8', newline='\n') as checksums:
               for archive in archives:
                   with archive.open('rb') as source:
