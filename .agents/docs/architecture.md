@@ -134,7 +134,8 @@ See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 The `sandpost` runtime keeps service assembly in `lifecycle/mod.rs`, HTTP request/stream
 cancellation in `lifecycle/http/mod.rs`, search scheduling in `lifecycle/indexing/mod.rs`,
 and coordinated task draining and cleanup in `lifecycle/supervision/mod.rs`.
-Configuration, startup reporting, offline maintenance commands (`maintenance/`),
+Configuration, startup reporting, frontend proxying (`frontend_proxy`), offline
+maintenance commands (`maintenance/`),
 shared client connection hosts (`network/`), SMTP delivery/listener
 (`smtp_delivery`, `smtp_listener/`), and the IMAP adapter/listener (`imap_backend/`,
 `imap_listener/`) each retain their own modules; `main.rs` only installs tracing and
@@ -145,7 +146,32 @@ test modules with children use `tests/mod.rs`. Real IMAP scenarios are grouped u
 subscriptions, smart-mailbox rights, and retention, with shared wire helpers.
 
 HTTP serves the frontend embedded at compile time when present, otherwise only the API.
-The runtime has no external frontend-directory setting.
+Optional `[frontend] proxy_url = "http://frontend:8080"` TOML configuration or
+`--frontend-proxy-url http://frontend:8080` enables a frontend proxy in debug and
+release builds; the CLI option overrides TOML. The URL is an HTTP or HTTPS origin
+using a DNS name or IP address, with default ports 80 and 443 respectively, root
+path only, and no credentials, query, or fragment. HTTPS validates the certificate
+and hostname against the system trust store.
+When configured, API routes remain on Rust and other HTTP and WebSocket traffic is
+proxied upstream; an unavailable upstream returns 502. Without a proxy setting,
+embedded assets are served when available and otherwise HTTP serves only the API.
+Startup reports the configured target as `Frontend proxy`. The root
+`sandpost-cli:dev` command uses Turbo to run the ordinary `dev` task concurrently
+for Sandpost and its dependency graph, without depending on persistent tasks.
+The shared `@sandpost/vite-plugin-hot-file` workspace (`packages/vite-plugin-hot-file`)
+exports a TypeScript Vite plugin that finds the workspace root and atomically publishes its
+actual origin as plain text to `.vite-hot-file` there. The frontend configuration
+uses it for browser, mock and current desktop starts; other Vite configurations
+can import the same package. The latest publication wins; normal shutdown removes
+the file only if it still contains that server's origin. The crate-local `dev` command runs Cargo with
+`--frontend-proxy-file ../../.vite-hot-file`; Rust reads the file
+directly and waits up to 30 seconds for publication. The flag, field and reader
+are compiled only with debug assertions; release rejects the flag.
+`--frontend-proxy-url` is accepted in all profiles and overrides the file in
+either argument order without reading or awaiting it. In debug, file contents
+use the same origin validation and TOML override as the explicit URL. Proxy-file
+discovery is never implicit. Ctrl+C stops both Turbo tasks; a failed task cancels
+its sibling. Development HMR uses the backend URL without parsing process logs. The runtime has no external frontend-directory setting.
 
 Environment and configuration-file parsing share typed configuration
 validation across CLI and embedded runtime; `SANDPOST_CONFIG` selects the file and an explicitly named file must exist. `SANDPOST_DATA_DIRECTORY` overrides

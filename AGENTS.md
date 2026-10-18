@@ -16,8 +16,8 @@ source of conventions/contracts; read applicable documents before editing:
   filters, candidates, exact verification and durable synchronization.
 - `.agents/docs/imap.md` — accounts/credentials, virtual mailbox and Web projections,
   placement/Trash, membership/UIDs/flags/user deletion, IDLE, configuration and limits.
-- `.agents/docs/code-style.md` — complete Rust/SQL naming and documentation rules
-  for functions, helpers and tests.
+- `.agents/docs/code-style.md` — TypeScript source policy for JavaScript-platform
+  code, complete Rust/SQL naming and function/helper/test documentation rules.
 - `.agents/docs/imap-operation-matrix.md` — IMAP lifecycle audit, operation matrix and mode ownership decisions.
 - `.agents/docs/imap-implementation-report.md` — completed specification review, implementation changes, test evidence and compatibility limits.
 - `.agents/docs/commits.md` — commit format and workflow.
