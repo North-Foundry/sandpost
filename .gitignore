@@ -10,3 +10,6 @@ dist/
 /.yarn/cache/
 /.yarn/install-state.gz
 /crates/*/README.md
+.turbo/
+/.vite-hot-file
+/.vite-hot-file.*.tmp
