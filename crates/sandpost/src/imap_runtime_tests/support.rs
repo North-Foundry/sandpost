@@ -9,6 +9,10 @@ use tokio::{
     time::timeout,
 };
 
+/// Bound for test-client waits. A loaded CI runner can delay a reply that a tighter
+/// timeout would report as a hang, so this only has to detect a genuinely stalled client.
+const CLIENT_WAIT: Duration = Duration::from_secs(15);
+
 /// Own isolated runtime data and remove it when the test ends.
 pub(super) struct TestDirectory(PathBuf);
 
@@ -115,7 +119,7 @@ impl Client {
         let mut response = Vec::new();
         loop {
             let mut line = Vec::new();
-            timeout(Duration::from_secs(5), self.0.read_until(b'\n', &mut line))
+            timeout(CLIENT_WAIT, self.0.read_until(b'\n', &mut line))
                 .await
                 .expect("IMAP response timed out")
                 .unwrap();
@@ -177,7 +181,7 @@ impl Client {
 
 /// Wait until the search index has caught up so SMTP mail is fully captured.
 pub(super) async fn wait_for_mail(running: &RunningSandpost, count: u64) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + CLIENT_WAIT;
     loop {
         let status = running
             .application
@@ -221,10 +225,7 @@ pub(super) async fn http_request(
         running.web_listen_address,
     ).as_bytes()).await.unwrap();
     let mut response = Vec::new();
-    timeout(
-        Duration::from_secs(5),
-        connection.read_to_end(&mut response),
-    )
+    timeout(CLIENT_WAIT, connection.read_to_end(&mut response))
     .await
     .unwrap()
     .unwrap();
