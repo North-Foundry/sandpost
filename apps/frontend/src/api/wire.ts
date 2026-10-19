@@ -353,7 +353,7 @@ export interface WireAccount {
   identifier: string
   name: string
   email: string
-  role: 'owner' | 'admin' | 'member' | 'viewer'
+  role: 'owner' | 'member' | 'viewer'
   mail_access: 'all' | 'scoped'
   personal_filter: string | null
 }

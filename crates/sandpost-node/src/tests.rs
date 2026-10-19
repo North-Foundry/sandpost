@@ -758,8 +758,7 @@ async fn native_imap_operations_reject_invalid_identifiers_and_inputs() {
     );
 }
 
-/// Keep IMAP accounts private to their owner, even from the instance owner, while letting a
-/// viewer manage personal accounts of their own.
+/// Keep IMAP accounts private to their owner and reject Viewer configuration mutations.
 #[tokio::test]
 async fn native_imap_accounts_are_private_to_their_owner() {
     let (runtime, application, _storage, _completion_sender, _directory) =
@@ -773,6 +772,18 @@ async fn native_imap_accounts_are_private_to_their_owner() {
             email: "viewer-native@example.test".into(),
             password: "viewer-user-password".into(),
             global_role: sandpost_core::GlobalRole::Viewer,
+            mail_access: sandpost_core::MailAccess::Scoped,
+            personal_filter: None,
+        })
+        .await
+        .unwrap();
+    application
+        .authorized(&owner)
+        .create_user(NewAccount {
+            name: "Writable Member".into(),
+            email: "member-native@example.test".into(),
+            password: "member-user-password".into(),
+            global_role: sandpost_core::GlobalRole::Member,
             mail_access: sandpost_core::MailAccess::Scoped,
             personal_filter: None,
         })
@@ -796,11 +807,15 @@ async fn native_imap_accounts_are_private_to_their_owner() {
         .await
         .unwrap();
     assert_eq!(runtime.imap_accounts_list().await.unwrap(), json!([]));
-    for error in [
+    assert_eq!(
         runtime
             .imap_account_get(owner_identifier.clone())
             .await
-            .unwrap_err(),
+            .unwrap_err()
+            .reason,
+        "IMAP account not found"
+    );
+    for error in [
         runtime
             .imap_account_regenerate(owner_identifier.clone())
             .await
@@ -814,23 +829,52 @@ async fn native_imap_accounts_are_private_to_their_owner() {
             .await
             .unwrap_err(),
     ] {
-        assert_eq!(error.reason, "IMAP account not found");
+        assert_eq!(error.reason, "forbidden");
     }
-    let viewer_account = runtime
-        .imap_account_create(json!({ "name": "Viewer Mail" }))
+    for error in [
+        runtime
+            .imap_account_create(json!({ "name": "Viewer Mail" }))
+            .await
+            .unwrap_err(),
+        runtime
+            .folder_create(json!({ "name": "Viewer Folder" }))
+            .await
+            .unwrap_err(),
+        runtime
+            .view_save(json!({
+                "identifier": uuid::Uuid::new_v4().to_string(),
+                "owner_identifier": null,
+                "name": "Viewer View",
+                "filter": "true"
+            }))
+            .await
+            .unwrap_err(),
+        runtime
+            .messages_set_seen(json!({ "identifiers": [], "seen": true }))
+            .await
+            .unwrap_err(),
+        runtime
+            .messages_set_flags(json!({
+                "identifiers": [], "operation": "add", "flags": { "flagged": true }
+            }))
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(error.reason, "forbidden");
+    }
+
+    runtime
+        .login(json!({
+            "email": "member-native@example.test",
+            "password": "member-user-password"
+        }))
         .await
         .unwrap();
-    assert_eq!(viewer_account["account"]["name"], json!("Viewer Mail"));
-    assert_eq!(
-        runtime
-            .imap_accounts_list()
-            .await
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    let member_account = runtime
+        .imap_account_create(json!({ "name": "Member Mail" }))
+        .await
+        .unwrap();
+    assert_eq!(member_account["account"]["name"], json!("Member Mail"));
 
     login_owner(&runtime).await;
     let listed = runtime.imap_accounts_list().await.unwrap();

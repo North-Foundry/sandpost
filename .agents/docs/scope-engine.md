@@ -1,6 +1,6 @@
 # Scope authorization and query engine
 
-Scopes are instance-wide hierarchical query definitions over one pool of captured mail. Membership only determines which mail reaches a user; it grants no administrative authority. A saved **View** organizes mail and never grants access. Global roles (Owner, Admin, Member, Viewer) govern administration.
+Scopes are instance-wide hierarchical query definitions over one pool of captured mail. Membership only determines which mail reaches a user; it grants no administrative authority. A saved **View** organizes mail and never grants access. Global roles (Owner, Member, Viewer) govern administration.
 
 ## Authorization composition
 
@@ -14,9 +14,9 @@ user result:           authorization AND optional personal filter
 scoped, no assignments: false
 ```
 
-`Scoped` with no assigned scopes grants no mail; it never falls back to `All`. Memberships can cover multiple branches, but descendants cannot widen ancestors. Personal filters only restrict. Owners bypass mail access, scopes, and personal filters; administrative actions still require the appropriate global role.
+`Scoped` with no assigned scopes grants no mail; it never falls back to `All`. Memberships can cover multiple branches, but descendants cannot widen ancestors. Personal filters only restrict. This composition applies to every role, including Owners; administrative actions separately require the appropriate global role.
 
-Personal Views are visible to their owner; shared Views have no owner and remain subject to each reader's authorization. Selecting a View adds its filter but creates no membership or assignment.
+Personal Views are visible to their owner; shared Views have no owner and remain subject to each reader's authorization. Selecting a View adds its filter but creates no membership or assignment. Owners and Members may mutate personal Views; Viewers can only read existing definitions. Only Owners manage shared Views.
 
 The application authorization module is the single composition boundary. Search and lists pass its structured plan to the search layer. Direct SQL reads, including identifier-check metadata, apply the same plan to authoritative current SQL facts and payload in one snapshot. This covers detail, raw message, attachment, and event delivery; indexed documents and UIDs are never final authority checks.
 
@@ -24,13 +24,13 @@ User deletion is a separate visibility condition. Lists, search, direct/raw/atta
 
 ## IMAP and placement
 
-An IMAP mailbox's membership is its owner's current authorization (mail access plus personal filter; no restriction for owners) AND the mailbox's own filter: linked View, local-folder filter, or INBOX aggregate. Storage reconciles against authoritative SQL facts, never the search index. Definitions are canonicalized and fingerprinted; changes to scopes, assignments, personal filter, role, mail access, or Views trigger synchronization that removes no-longer-authorized members. After such changes commit, `ApplicationChange::Visibility` notifies idling clients so they receive resulting EXPUNGE responses. See [imap.md](imap.md).
+An IMAP mailbox's membership is its owner's current authorization (mail access, assigned scopes with inherited filters, and personal filter) AND the mailbox's own filter: linked View, local-folder filter, or INBOX aggregate. Storage reconciles against authoritative SQL facts, never the search index. Definitions are canonicalized and fingerprinted; changes to scopes, assignments, personal filter, role, mail access, or Views trigger synchronization that removes no-longer-authorized members. After such changes commit, `ApplicationChange::Visibility` notifies idling clients so they receive resulting EXPUNGE responses. See [imap.md](imap.md).
 
 Placement is independent of authorization. Mirror shares primary Web placement and copies; Independent uses only its own retained history and placement. Recalculation preserves private organization but never grants access. Web Inbox omits filed primary occurrences, while smart results/global search ignore normal placement. Normal-folder deletion moves otherwise-unfiled occurrences to Trash without clearing tombstones. See [imap.md](imap.md).
 
 ## Administration and preview
 
-Authenticated APIs and application management support scopes, assignments, Views, and users. Scope and assignment management requires Owner or Admin. Scope definitions must form an acyclic tree within configured maximum depth, and every filter compiles before saving. An edit affects subsequent requests immediately through current persisted definitions; there is no historical mail reclassification job.
+Authenticated APIs and application management support scopes, assignments, Views, and users. Scope and assignment management requires Owner. Scope definitions must form an acyclic tree within configured maximum depth, and every filter compiles before saving. An edit affects subsequent requests immediately through current persisted definitions; there is no historical mail reclassification job.
 
 The runtime defaults `sandpost.max_scope_depth` to `2`: roots have depth zero,
 children one, and grandchildren two. `SANDPOST_MAX_SCOPE_DEPTH` overrides the TOML
@@ -38,9 +38,9 @@ value. Startup validates existing scopes against the resolved limit; installatio
 with deeper trees must configure a larger value. This validation does not modify
 or remove persisted scopes.
 
-`validate_query` (`POST /api/v1/query/validate`) reports the first compilation error and its UTF-8 byte position without saving or executing. `preview_scope` (`POST /api/v1/scopes/preview`) requires a global administrator and samples newest mail matching the unsaved filter plus all parent-ancestor filters, composed with the caller's own authorization. It cannot show mail the administrator cannot read. Deleting a scope with children returns an in-use conflict.
+`validate_query` (`POST /api/v1/query/validate`) reports the first compilation error and its UTF-8 byte position without saving or executing. `preview_scope` (`POST /api/v1/scopes/preview`) requires Owner and samples newest mail matching the unsaved filter plus all parent-ancestor filters, composed with the caller's own authorization. It cannot show mail the administrator cannot read. Deleting a scope with children returns an in-use conflict.
 
-Membership rows are role-less and only contribute to a `Scoped` user's visibility union. Assignments are retained for `All` users but have no effect until mail access becomes `Scoped`; assigning an unknown scope returns not found. There is no message-to-scope materialization pipeline.
+Membership rows are role-less and only contribute to a `Scoped` user's visibility union, regardless of role. Assignments are retained for `All` users but have no effect until mail access becomes `Scoped`; assigning an unknown scope returns not found. There is no message-to-scope materialization pipeline.
 
 ## Search candidates and exactness
 

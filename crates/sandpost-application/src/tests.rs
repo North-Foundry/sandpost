@@ -429,33 +429,94 @@ async fn scope_assignments_follow_users() {
     assert!(storage.list_scope_members(scope).await.unwrap().is_empty());
 }
 
-/// An owner reads everything regardless of personal filters; an admin follows its mail access.
+/**
+ * Every role follows inherited scopes and personal filters, including after promotion to Owner.
+ */
 #[tokio::test]
-async fn owner_authority_differs_from_admin_visibility() {
+async fn roles_and_owner_promotion_preserve_mail_access_boundaries() {
     let storage = empty_storage().await;
-    let owner = create_user(
+    let root = create_scope(
         &storage,
-        "Owner",
-        GlobalRole::Owner,
-        MailAccess::Scoped,
-        Some("subject == \"nothing\""),
-    )
-    .await;
-    let admin = create_user(
-        &storage,
-        "Admin",
-        GlobalRole::Admin,
-        MailAccess::Scoped,
+        "Team",
+        "envelope.to.domain == \"team.test\"",
         None,
     )
     .await;
-    insert_message(&storage, "secret", "a@example.test").await;
+    let child = create_scope(
+        &storage,
+        "Invoices",
+        "subject contains \"invoice\"",
+        Some(root),
+    )
+    .await;
+    let visible = insert_message(&storage, "public invoice", "a@team.test").await;
+    let private = insert_message(&storage, "private invoice", "a@team.test").await;
+    let outside = insert_message(&storage, "public invoice outside", "a@other.test").await;
+    insert_message(&storage, "public receipt", "a@team.test").await;
     let application = application(storage.clone()).await;
-    assert_eq!(visible_subjects(&application, &owner).await, ["secret"]);
-    assert!(
-        visible_subjects(&application, &admin).await.is_empty(),
-        "a scoped admin without scopes sees no mail"
-    );
+    for (name, role) in [
+        ("Owner", GlobalRole::Owner),
+        ("Member", GlobalRole::Member),
+        ("Viewer", GlobalRole::Viewer),
+    ] {
+        let user = create_user(
+            &storage,
+            name,
+            role,
+            MailAccess::Scoped,
+            Some("subject contains \"public\""),
+        )
+        .await;
+        let authorized = application.authorized(&session(&user));
+        assert!(visible_subjects(&application, &user).await.is_empty());
+        storage
+            .assign_user_to_scope(user.identifier, child)
+            .await
+            .unwrap();
+        assert_eq!(
+            visible_subjects(&application, &user).await,
+            ["public invoice"]
+        );
+        authorized.get_message(visible).await.unwrap();
+        for hidden in [private, outside] {
+            assert!(matches!(
+                authorized.get_message(hidden).await,
+                Err(crate::ApplicationError::NotFound)
+            ));
+            assert!(matches!(
+                authorized.get_raw_message(hidden).await,
+                Err(crate::ApplicationError::NotFound)
+            ));
+        }
+        storage
+            .update_user(
+                user.identifier,
+                &UpdateUser {
+                    name: user.name.clone(),
+                    email: user.email.clone(),
+                    password_hash: user.password_hash.clone(),
+                    global_role: GlobalRole::Owner,
+                    mail_access: user.mail_access,
+                    personal_filter: user.personal_filter.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            visible_subjects(&application, &user).await,
+            ["public invoice"]
+        );
+        authorized.list_users().await.unwrap();
+        assert!(matches!(
+            authorized.get_message(outside).await,
+            Err(crate::ApplicationError::NotFound)
+        ));
+        storage
+            .remove_user_from_scope(user.identifier, child)
+            .await
+            .unwrap();
+        assert!(visible_subjects(&application, &user).await.is_empty());
+    }
 }
 
 /// A personal filter restricts all-mail access.
@@ -520,7 +581,14 @@ async fn last_owner_invariant_is_enforced() {
 async fn scope_and_search_administration_require_global_roles() {
     let storage = empty_storage().await;
     let owner = create_user(&storage, "Owner", GlobalRole::Owner, MailAccess::All, None).await;
-    let admin = create_user(&storage, "Admin", GlobalRole::Admin, MailAccess::All, None).await;
+    let administrator = create_user(
+        &storage,
+        "Other Owner",
+        GlobalRole::Owner,
+        MailAccess::All,
+        None,
+    )
+    .await;
     let member = create_user(
         &storage,
         "Member",
@@ -540,10 +608,10 @@ async fn scope_and_search_administration_require_global_roles() {
     let application = application(storage.clone()).await;
     assert!(
         application
-            .authorized(&session(&admin))
+            .authorized(&session(&administrator))
             .search_status()
             .await
-            .is_err()
+            .is_ok()
     );
     assert!(
         application
@@ -572,7 +640,7 @@ async fn scope_and_search_administration_require_global_roles() {
             Err(crate::ApplicationError::Forbidden)
         ));
     }
-    let admin_application = application.authorized(&session(&admin));
+    let admin_application = application.authorized(&session(&administrator));
     let saved = admin_application.save_scope(scope.clone()).await.unwrap();
     assert_eq!(saved.policy_version, 1);
     admin_application
@@ -812,15 +880,22 @@ async fn delete_all_messages_removes_only_readable_mail() {
     );
 }
 
-/// Anyone keeps personal views; only global administrators manage shared views.
+/// Members keep personal Views; only Owners manage shared Views.
 #[tokio::test]
 async fn shared_views_require_global_administration() {
     let storage = empty_storage().await;
-    let admin = create_user(&storage, "Admin", GlobalRole::Admin, MailAccess::All, None).await;
-    let viewer = create_user(
+    let administrator = create_user(
         &storage,
-        "Viewer",
-        GlobalRole::Viewer,
+        "Other Owner",
+        GlobalRole::Owner,
+        MailAccess::All,
+        None,
+    )
+    .await;
+    let member = create_user(
+        &storage,
+        "Member",
+        GlobalRole::Member,
         MailAccess::All,
         None,
     )
@@ -833,26 +908,26 @@ async fn shared_views_require_global_administration() {
         icon: None,
         filter: "subject contains \"receipt\"".into(),
     };
-    let viewer_application = application.authorized(&session(&viewer));
-    viewer_application
-        .save_view(view(Some(viewer.identifier)))
+    let member_application = application.authorized(&session(&member));
+    member_application
+        .save_view(view(Some(member.identifier)))
         .await
         .unwrap();
     assert!(matches!(
-        viewer_application.save_view(view(None)).await,
+        member_application.save_view(view(None)).await,
         Err(crate::ApplicationError::Forbidden)
     ));
     let shared = application
-        .authorized(&session(&admin))
+        .authorized(&session(&administrator))
         .save_view(view(None))
         .await
         .unwrap();
-    assert_eq!(viewer_application.list_views().await.unwrap().len(), 2);
+    assert_eq!(member_application.list_views().await.unwrap().len(), 2);
     assert!(matches!(
-        viewer_application.delete_view(shared.identifier).await,
+        member_application.delete_view(shared.identifier).await,
         Err(crate::ApplicationError::Forbidden)
     ));
-    viewer_application
+    member_application
         .create_inbox("QA".into(), "qa@sandpost.local".into())
         .await
         .unwrap();
@@ -1102,13 +1177,20 @@ async fn inboxes_accept_safe_arbitrary_domain_addresses() {
     }
 }
 
-/// Account administration stores the global role and mail access and keeps owners exclusive.
+/// Owners can promote and demote users; existing principals reload current authority.
 #[tokio::test]
 async fn accounts_carry_role_and_mail_access() {
     let storage = empty_storage().await;
-    let admin = create_user(&storage, "Admin", GlobalRole::Admin, MailAccess::All, None).await;
+    let administrator = create_user(
+        &storage,
+        "Other Owner",
+        GlobalRole::Owner,
+        MailAccess::All,
+        None,
+    )
+    .await;
     let application = application(storage.clone()).await;
-    let authorized = application.authorized(&session(&admin));
+    let authorized = application.authorized(&session(&administrator));
     let created = authorized
         .create_user(crate::NewAccount {
             name: "Reader".into(),
@@ -1139,19 +1221,40 @@ async fn accounts_carry_role_and_mail_access() {
         (updated.global_role, updated.mail_access),
         (GlobalRole::Member, MailAccess::All)
     );
+    let promoted = authorized
+        .update_user(
+            created.identifier,
+            crate::UpdateAccount {
+                name: None,
+                password: None,
+                global_role: Some(GlobalRole::Owner),
+                mail_access: None,
+                personal_filter: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(promoted.global_role, GlobalRole::Owner);
+    let promoted_application = application.authorized(&session(
+        &storage.get_user(created.identifier).await.unwrap().unwrap(),
+    ));
+    promoted_application.list_users().await.unwrap();
+    let demoted = authorized
+        .update_user(
+            created.identifier,
+            crate::UpdateAccount {
+                name: None,
+                password: None,
+                global_role: Some(GlobalRole::Viewer),
+                mail_access: None,
+                personal_filter: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(demoted.global_role, GlobalRole::Viewer);
     assert!(matches!(
-        authorized
-            .update_user(
-                created.identifier,
-                crate::UpdateAccount {
-                    name: None,
-                    password: None,
-                    global_role: Some(GlobalRole::Owner),
-                    mail_access: None,
-                    personal_filter: None,
-                },
-            )
-            .await,
+        promoted_application.list_users().await,
         Err(crate::ApplicationError::Forbidden)
     ));
     let defaulted: crate::NewAccount = serde_json::from_value(serde_json::json!({
@@ -1269,7 +1372,7 @@ async fn scope_preview_inherits_ancestors_and_caller_visibility() {
     let restricted = create_user(
         &storage,
         "Restricted",
-        GlobalRole::Admin,
+        GlobalRole::Owner,
         MailAccess::All,
         Some("subject contains \"visible\""),
     )
@@ -1571,9 +1674,16 @@ async fn disabled_and_deleted_smtp_accesses_are_refused() {
 #[tokio::test]
 async fn regenerating_a_password_invalidates_the_previous_one() {
     let storage = empty_storage().await;
-    let admin = create_user(&storage, "Admin", GlobalRole::Admin, MailAccess::All, None).await;
+    let administrator = create_user(
+        &storage,
+        "Other Owner",
+        GlobalRole::Owner,
+        MailAccess::All,
+        None,
+    )
+    .await;
     let application = application(storage.clone()).await;
-    let issued = issue_access(&application, &admin, "Staging").await;
+    let issued = issue_access(&application, &administrator, "Staging").await;
     let username = issued.access.username.clone();
     let authenticator = crate::SmtpAuthenticator::new(storage.clone());
     let previous = authenticator
@@ -1589,7 +1699,7 @@ async fn regenerating_a_password_invalidates_the_previous_one() {
         .unwrap();
 
     let regenerated = application
-        .authorized(&session(&admin))
+        .authorized(&session(&administrator))
         .regenerate_smtp_access_password(issued.access.identifier)
         .await
         .unwrap();
@@ -1623,7 +1733,7 @@ async fn regenerating_a_password_invalidates_the_previous_one() {
     assert!(authenticator.may_deliver(&current).await.unwrap());
     assert!(matches!(
         application
-            .authorized(&session(&admin))
+            .authorized(&session(&administrator))
             .regenerate_smtp_access_password(sandpost_core::SmtpAccessIdentifier::new())
             .await,
         Err(crate::ApplicationError::NotFound)
@@ -1911,10 +2021,17 @@ async fn smtp_access_input_is_validated() {
 #[tokio::test]
 async fn smtp_server_reports_configured_and_bound_addresses() {
     let storage = empty_storage().await;
-    let admin = create_user(&storage, "Admin", GlobalRole::Admin, MailAccess::All, None).await;
+    let administrator = create_user(
+        &storage,
+        "Other Owner",
+        GlobalRole::Owner,
+        MailAccess::All,
+        None,
+    )
+    .await;
     let application = application(storage).await;
     let offline = application
-        .authorized(&session(&admin))
+        .authorized(&session(&administrator))
         .smtp_server()
         .await
         .unwrap();
@@ -1928,7 +2045,7 @@ async fn smtp_server_reports_configured_and_bound_addresses() {
         bound_address,
     }));
     let details = application
-        .authorized(&session(&admin))
+        .authorized(&session(&administrator))
         .smtp_server()
         .await
         .unwrap();
@@ -2130,4 +2247,152 @@ async fn search_refills_past_physically_removed_candidates() {
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].identifier, survivor);
+}
+
+/**
+ * Demoting a Member makes existing personal organization and messages read-only immediately.
+ * Reading detail, raw content, and search never changes the primary Seen flag.
+ */
+#[tokio::test]
+async fn viewer_reads_preserve_state_and_all_personal_mutations_are_refused() {
+    let storage = empty_storage().await;
+    let reader = create_user(
+        &storage,
+        "Reader",
+        GlobalRole::Member,
+        MailAccess::Scoped,
+        None,
+    )
+    .await;
+    let scope = create_scope(
+        &storage,
+        "Allowed",
+        "envelope.to.domain == \"allowed.test\"",
+        None,
+    )
+    .await;
+    storage
+        .assign_user_to_scope(reader.identifier, scope)
+        .await
+        .unwrap();
+    let visible = insert_message(&storage, "visible", "a@allowed.test").await;
+    let hidden = insert_message(&storage, "hidden", "b@hidden.test").await;
+    let application = application(storage.clone()).await;
+    let authorized = application.authorized(&session(&reader));
+    let folder_request = || crate::WebFolderRequest {
+        name: "Personal".into(),
+        icon: None,
+        exposed_accounts: vec![],
+    };
+    let folder = authorized
+        .create_web_folder(folder_request())
+        .await
+        .unwrap();
+    let view = authorized
+        .save_view(View {
+            identifier: ViewIdentifier::new(),
+            owner_identifier: Some(reader.identifier),
+            name: "Personal".into(),
+            icon: None,
+            filter: String::new(),
+        })
+        .await
+        .unwrap();
+    storage
+        .update_user(
+            reader.identifier,
+            &UpdateUser {
+                name: reader.name.clone(),
+                email: reader.email.clone(),
+                password_hash: reader.password_hash.clone(),
+                global_role: GlobalRole::Viewer,
+                mail_access: reader.mail_access,
+                personal_filter: None,
+            },
+        )
+        .await
+        .unwrap();
+    authorized.get_message(visible).await.unwrap();
+    authorized.get_raw_message(visible).await.unwrap();
+    assert!(matches!(
+        authorized.get_message(hidden).await,
+        Err(crate::ApplicationError::NotFound)
+    ));
+    assert!(matches!(
+        authorized.get_raw_message(hidden).await,
+        Err(crate::ApplicationError::NotFound)
+    ));
+    assert_eq!(
+        authorized
+            .search_messages("visible".into(), None, 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        authorized.create_web_folder(folder_request()).await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized
+            .update_web_folder(folder.identifier, folder_request())
+            .await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized.delete_web_folder(folder.identifier).await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized.save_view(view.clone()).await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized.delete_view(view.identifier).await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized
+            .create_inbox("Inbox".into(), "a@allowed.test".into())
+            .await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized
+            .move_web_messages(vec![visible], Some(folder.identifier))
+            .await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized
+            .copy_web_messages(vec![visible], Some(folder.identifier))
+            .await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized.set_web_messages_seen(vec![visible], true).await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert!(matches!(
+        authorized
+            .set_web_messages_flags(
+                vec![visible],
+                sandpost_storage::ImapFlagChange {
+                    operation: sandpost_storage::ImapFlagOperation::Add,
+                    flags: sandpost_core::ImapMessageFlags {
+                        flagged: true,
+                        ..Default::default()
+                    },
+                }
+            )
+            .await,
+        Err(crate::ApplicationError::Forbidden)
+    ));
+    assert_eq!(authorized.list_web_folders().await.unwrap(), vec![folder]);
+    assert_eq!(authorized.list_views().await.unwrap(), vec![view]);
+    let messages = authorized.list_messages(None, 10).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(!messages[0].seen);
+    assert_eq!(messages[0].identifier, visible);
 }

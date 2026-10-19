@@ -34,11 +34,10 @@ pub(crate) fn expression(source: &str) -> Result<Expression, ApplicationError> {
         .map_err(|error| ApplicationError::InvalidInput(error.to_string()))
 }
 
-/// Compose mail access, scope unions, personal restrictions, Views, and ad hoc queries.
-///
-/// Owners read all mail without personal restrictions. Every other account reads all mail or,
-/// with scoped access, the union of its assigned scopes (each combined with its ancestors); a
-/// personal filter further restricts either.
+/**
+ * Compose role-independent mail access, inherited scopes, personal restrictions and query filters.
+ * Administrative authority never bypasses mail visibility.
+ */
 pub(crate) async fn compose(
     storage: &Arc<dyn Storage>,
     user: UserIdentifier,
@@ -46,14 +45,9 @@ pub(crate) async fn compose(
     message: Option<MessageIdentifier>,
 ) -> Result<MessageQuery, ApplicationError> {
     let account = self::user(storage, user).await?;
-    let full_authority = account.global_role == GlobalRole::Owner;
-    let authorization = if full_authority {
-        None
-    } else {
-        mail_authorization(storage, &account).await?
-    };
+    let authorization = mail_authorization(storage, &account).await?;
     let mut filters = Vec::new();
-    if !full_authority && let Some(personal) = &account.personal_filter {
+    if let Some(personal) = &account.personal_filter {
         filters.push(expression(personal)?);
     }
     if let Some(identifier) = options.view_identifier {
@@ -61,7 +55,9 @@ pub(crate) async fn compose(
             .get_view(identifier)
             .await?
             .ok_or(ApplicationError::NotFound)?;
-        if view.owner_identifier.is_some_and(|owner| owner != user) && !full_authority {
+        if view.owner_identifier.is_some_and(|owner| owner != user)
+            && account.global_role != GlobalRole::Owner
+        {
             return Err(ApplicationError::NotFound);
         }
         filters.push(expression(&view.filter)?);

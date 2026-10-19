@@ -1,5 +1,7 @@
 # IMAP organization and lifecycle implementation report
 
+The three-role simplification preserves the existing visibility composition. Only Owners administer the instance. Viewers cannot mutate messages/flags, folders, subscriptions or IMAP settings; SELECT/FETCH remain read-only. Owners and Members retain their existing mailbox operations. The evidence below describes the earlier organization implementation.
+
 This report records the implementation and final verification against the supplied
 “IMAP Mirror, Independent, Smart Folders & Message Lifecycle” specification.
 The behavioral contract is [imap.md](imap.md); the original audit and operation

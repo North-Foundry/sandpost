@@ -13,7 +13,7 @@ const route = useRoute()
 const workspace = useWorkspace()
 
 /*
- * Every signed-in user manages their own IMAP accounts; the other sections are for owners and admins,
+ * Every signed-in user manages their own IMAP accounts; the other sections are for owners,
  * and the API refuses everyone else as well.
  */
 const sections = computed(() => [

@@ -195,6 +195,7 @@ impl Account for ImapAccountAdapter {
                 })
                 .collect(),
             seen_only: snapshot.seen_only,
+            read_only: snapshot.read_only,
             cursor: snapshot.cursor,
         })
     }
@@ -246,6 +247,7 @@ impl Account for ImapAccountAdapter {
                 .collect(),
             uid_next: changes.uid_next,
             cursor: changes.cursor,
+            read_only: changes.read_only,
         })
     }
 

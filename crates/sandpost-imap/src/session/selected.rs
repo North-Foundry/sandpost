@@ -25,6 +25,7 @@ pub(crate) struct Entry {
 pub(crate) struct SelectedMailbox<Handle> {
     pub(crate) handle: Handle,
     pub(crate) read_only: bool,
+    pub(crate) requested_read_only: bool,
     pub(crate) seen_only: bool,
     pub(crate) uid_validity: u32,
     pub(crate) uid_next: Uid,
@@ -47,7 +48,8 @@ impl<Handle> SelectedMailbox<Handle> {
     pub(crate) fn new(snapshot: MailboxSnapshot<Handle>, read_only: bool) -> Self {
         let mut mailbox = Self {
             handle: snapshot.handle,
-            read_only,
+            read_only: read_only || snapshot.read_only,
+            requested_read_only: read_only,
             seen_only: snapshot.seen_only,
             uid_validity: snapshot.uid_validity,
             uid_next: snapshot.uid_next,
@@ -169,6 +171,7 @@ impl<Handle> SelectedMailbox<Handle> {
         allow_expunge: bool,
         output: &mut Output,
     ) {
+        self.read_only = self.requested_read_only || changes.read_only;
         if let Some(present) = &changes.present_uids {
             for entry in self
                 .entries
@@ -381,6 +384,7 @@ mod tests {
                     },
                 ],
                 seen_only: false,
+                read_only: false,
                 cursor: 1,
             },
             false,
@@ -459,6 +463,7 @@ mod tests {
                 uid_next: 41,
                 cursor: 3,
                 present_uids: None,
+                read_only: false,
             },
             true,
             &mut output,
@@ -496,6 +501,7 @@ mod tests {
                 uid_next: 1,
                 messages: vec![],
                 seen_only: false,
+                read_only: false,
                 cursor: 0,
             },
             true,
@@ -512,5 +518,36 @@ mod tests {
             empty.resolve(&SequenceSet::parse("*").unwrap(), false),
             Resolution::Indexes(indexes) if indexes.is_empty()
         ));
+    }
+
+    /**
+     * Refresh applies live role changes without ever making an EXAMINE selection writable.
+     */
+    #[test]
+    fn synchronization_preserves_examine_and_reloads_role_read_only() {
+        let mut selected = mailbox();
+        let mut output = Output::new();
+        let request = selected.synchronization_request();
+        selected.apply(
+            request,
+            MailboxChanges {
+                read_only: true,
+                ..Default::default()
+            },
+            true,
+            &mut output,
+        );
+        assert!(selected.read_only);
+        let request = selected.synchronization_request();
+        selected.apply(request, MailboxChanges::default(), true, &mut output);
+        assert!(!selected.read_only);
+        selected.requested_read_only = true;
+        let request = selected.synchronization_request();
+        selected.apply(request, MailboxChanges::default(), true, &mut output);
+        assert!(selected.read_only);
+        assert!(!selected.synchronization_request().claim_recent);
+        let mut response = Output::new();
+        selected.write_selection(&mut response);
+        assert!(text(&response).contains("PERMANENTFLAGS ()"));
     }
 }

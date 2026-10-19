@@ -49,12 +49,12 @@ The logical model is backend-independent and is realized by the SQLite backend t
 ordered sequence of migration scripts.
 
 - **Users.** One canonical record holds identity (`identifier`, `name`,
-  `email`, `password_hash`), a `global_role` (`owner`, `admin`,
-  `member`, `viewer`), a `mail_access` (`all`, `scoped`) that decides mail visibility, an optional
+  `email`, `password_hash`), a `global_role` (`owner`, `member`, `viewer`), a `mail_access`
+  (`all`, `scoped`) that decides mail visibility, an optional
   `personal_filter`, and
   `created_at`/`updated_at`. There is no separate owner or credentials table and
   no boolean permission block. The bootstrap owner is a normal user whose `global_role`
-  is `owner`; initialized storage must retain at least one Owner, enforced by the backend as
+  is `owner` and whose initial mail access is `all`; initialized storage must retain at least one Owner, enforced by the backend as
   `StorageError::LastOwner`, and the unique email constraint surfaces as
   `DuplicateUserEmail`. Startup is initialized iff storage contains at least one Owner;
   non-Owner users do not prevent setup. `create_first_owner` atomically refuses only if an
@@ -79,7 +79,7 @@ ordered sequence of migration scripts.
   denotes a shared view. A view contains a name and a canonical filter. Views organize
   mail and never grant access. The nullable `icon` text column stores a Lucide icon
   name for Smart Folders and address inboxes. Icons follow View ownership: shared
-  Views share their icon, managed by administrators; personal icons belong to their owner.
+  Views share their icon, managed by Owners; personal icons belong to their owner.
 - **Mail.** One pool of messages with normalized recipient/header/attachment facts, raw MIME in
   the mail row, and search synchronization state. Mail records no destination or SMTP access.
 - **Primary state.** `user_message_deletions` permanently removes a message from the
@@ -130,7 +130,7 @@ Full behavior, protocol decisions, subscriptions, and notifications: [imap.md](i
 
 ## SQLite backend, startup, and migrations
 
-`sandpost-storage-sqlite` keeps one ordered sequence of 47 SQL scripts (0001–0047, without gaps),
+`sandpost-storage-sqlite` keeps one ordered sequence of 48 SQL scripts (0001–0048, without gaps),
 with table/index definitions and trigger groups in separate files. The `migrations` table records
 applied script names and a positive integer `batch`. Every execution with pending scripts records
 all of them in the same batch, one greater than the largest applied batch; fresh databases use batch
@@ -156,7 +156,13 @@ their account projection links have separate table scripts. Trigger groups and t
 view follow their dependencies; the primary deletion membership trigger is created once in 0046.
 Migration 0047 creates remembered sessions keyed by the caller-computed SHA-256 token digest, binds
 each to its user and verified password hash, and cascades session deletion with user deletion.
-Sessions have no expiry and remain until explicitly revoked or their user is deleted.
+Sessions have no expiry and remain until explicitly revoked or their user is deleted. Migration
+0048 promotes legacy `admin` users to `owner` in place; two triggers reject new `admin` values.
+The users table retains `admin` in its CHECK constraint to avoid rebuilding its many foreign-key
+relationships; its down migration removes the guards but keeps promoted roles as owners because
+the migration cannot distinguish them from owners created afterward. Rollback restores the
+preceding schema objects while retaining role normalization, without demoting users based on an
+assumption that could overwrite a later role change.
 
 The application has not shipped. Its pre-release baseline was consolidated: historical ALTERs,
 data backfills, trigger replacements, and fingerprint invalidation scripts were removed. Scripts
@@ -291,7 +297,8 @@ read; the caller must still evaluate its composed authorization plan before expo
 `list_user_messages` applies the supplied query filter, which must include the composed
 authorization plan, and excludes tombstones in SQL before pagination;
 `hydrate_current_user_messages` also applies the canonical filter and indexed revision in SQL,
-preserving request order. Owners bypass scope restrictions but never their own deletion state.
+preserving request order. Every role, including Owners, is subject to the same mail-access,
+scope, inherited-filter, and personal-filter composition, as well as its own deletion state.
 
 ## Search outbox and derived index
 
@@ -320,7 +327,7 @@ Search status reports SQL's latest mutation sequence, acknowledged/indexed seque
 pending operation count. The CLI `search status` command reads this SQL state directly and
 does not acquire the search writer lock. CLI `search rebuild` opens the coordinator and
 must acquire the same process-exclusive lock used by the runtime, so it cannot run while a live
-runtime owns that lock. HTTP status and rebuild require an administrator (owner or admin) and
+runtime owns that lock. HTTP status and rebuild require an Owner and
 use the running coordinator; rebuild is serialized through that coordinator's writer gate
 without attempting to acquire a second installation lock.
 

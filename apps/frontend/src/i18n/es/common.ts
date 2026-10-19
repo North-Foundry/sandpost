@@ -13,7 +13,7 @@ export default {
   "common.scopes": "Ámbitos",
   "common.administration": "Administración",
   "common.noAdminAccess": "Sin acceso a la administración",
-  "common.adminAccessHint": "Solo los propietarios y administradores gestionan ámbitos, accesos SMTP y usuarios.",
+  "common.adminAccessHint": "Solo los propietarios gestionan ámbitos, accesos SMTP y usuarios.",
   "common.openInbox": "Abrir la bandeja de entrada",
   "common.brandInbox": "Bandeja de entrada de Sandpost",
   "common.connecting": "Conectando…",
@@ -67,7 +67,6 @@ export default {
   "common.deleteFolder": "Eliminar carpeta",
   "common.loading": "Cargando",
   "common.roles.owner": "Propietario",
-  "common.roles.admin": "Administrador",
   "common.roles.member": "Miembro",
   "common.roles.viewer": "Lector"
 }

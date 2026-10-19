@@ -64,7 +64,7 @@ export interface Workspace {
   user: Ref<SessionUser | null>
 
   /**
-   * Owners and admins see the Administration navigation and manage shared smart folders.
+   * Owners see the Administration navigation and manage shared smart folders.
    */
   canAdminister: Ref<boolean>
 
@@ -399,7 +399,7 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
       if (stopped) return
       if (!session) { await options.onSignedOut(); return }
       user.value = session
-      canAdminister.value = session.role === 'owner' || session.role === 'admin'
+      canAdminister.value = session.role === 'owner'
     } catch { /*
      * Administration stays hidden; mail does not depend on it.
      */ } finally {

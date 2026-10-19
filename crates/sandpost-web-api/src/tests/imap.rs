@@ -63,13 +63,13 @@ async fn routers(role: GlobalRole) -> (Router, Router) {
     )
 }
 
-/// Any user manages their own accounts; passwords appear only in no-store issuing responses and
+/// Members manage their own accounts; passwords appear only in no-store issuing responses and
 /// hashes never appear.
 #[tokio::test]
 async fn users_manage_their_own_imap_accounts_without_secret_leaks() {
-    let (_, viewer) = routers(GlobalRole::Viewer).await;
+    let (_, member) = routers(GlobalRole::Member).await;
     let (status, headers, created) = exchange(
-        &viewer,
+        &member,
         "POST",
         "/api/v1/imap/accounts",
         Some(serde_json::json!({ "name": "Laravel Debug" })),
@@ -103,7 +103,7 @@ async fn users_manage_their_own_imap_accounts_without_secret_leaks() {
         format!("/api/v1/imap/accounts/{identifier}"),
         "/api/v1/imap/server".to_owned(),
     ] {
-        let (status, _, body) = exchange(&viewer, "GET", &uri, None).await;
+        let (status, _, body) = exchange(&member, "GET", &uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         let text = body.to_string();
         assert!(!text.contains(&password), "{uri} exposes the password");
@@ -114,7 +114,7 @@ async fn users_manage_their_own_imap_accounts_without_secret_leaks() {
         assert!(!text.contains("$argon2"), "{uri} exposes the hash");
     }
     let (status, headers, rotated) = exchange(
-        &viewer,
+        &member,
         "POST",
         &format!("/api/v1/imap/accounts/{identifier}/password"),
         None,
@@ -124,7 +124,7 @@ async fn users_manage_their_own_imap_accounts_without_secret_leaks() {
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_ne!(rotated["password"].as_str().unwrap(), password);
     let (status, _, updated) = exchange(
-        &viewer,
+        &member,
         "PUT",
         &format!("/api/v1/imap/accounts/{identifier}"),
         Some(serde_json::json!({ "enabled": false, "name": "Renamed" })),
@@ -134,14 +134,14 @@ async fn users_manage_their_own_imap_accounts_without_secret_leaks() {
     assert_eq!(updated["enabled"], false);
     assert_eq!(updated["name"], "Renamed");
     let (status, _, _) = exchange(
-        &viewer,
+        &member,
         "DELETE",
         &format!("/api/v1/imap/accounts/{identifier}"),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, _, listed) = exchange(&viewer, "GET", "/api/v1/imap/accounts", None).await;
+    let (_, _, listed) = exchange(&member, "GET", "/api/v1/imap/accounts", None).await;
     assert_eq!(listed, serde_json::json!([]));
 }
 

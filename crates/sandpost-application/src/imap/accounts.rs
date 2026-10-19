@@ -304,6 +304,7 @@ impl AuthorizedApplication {
         &self,
         request: NewImapAccountRequest,
     ) -> Result<IssuedImapCredentials, ApplicationError> {
+        self.require_mail_mutation().await?;
         self.account().await?;
         let storage = &self.application.storage;
         let name = validated_name(&request.name)?;
@@ -387,6 +388,7 @@ impl AuthorizedApplication {
         identifier: ImapAccountIdentifier,
         update: ImapAccountUpdate,
     ) -> Result<ImapAccountDetails, ApplicationError> {
+        self.require_mail_mutation().await?;
         let account = self.owned_imap_account(identifier).await?;
         let storage = &self.application.storage;
         let mode = update
@@ -436,6 +438,7 @@ impl AuthorizedApplication {
         &self,
         identifier: ImapAccountIdentifier,
     ) -> Result<IssuedImapCredentials, ApplicationError> {
+        self.require_mail_mutation().await?;
         self.owned_imap_account(identifier).await?;
         let password = generate_password()?;
         let password_hash = hash_generated_password(&password).await?;
@@ -459,6 +462,7 @@ impl AuthorizedApplication {
         &self,
         identifier: ImapAccountIdentifier,
     ) -> Result<(), ApplicationError> {
+        self.require_mail_mutation().await?;
         self.owned_imap_account(identifier).await?;
         if !self
             .application
@@ -478,6 +482,7 @@ impl AuthorizedApplication {
         &self,
         identifier: ImapAccountIdentifier,
     ) -> Result<u64, ApplicationError> {
+        self.require_mail_mutation().await?;
         self.owned_imap_account(identifier).await?;
         let restored = self
             .application
@@ -513,6 +518,7 @@ impl AuthorizedApplication {
         account: ImapAccountIdentifier,
         request: ImapFolderRequest,
     ) -> Result<ImapLocalFolder, ApplicationError> {
+        self.require_mail_mutation().await?;
         let account_details = self.owned_imap_account(account).await?;
         let request = Self::validated_folder(request)?;
         let storage = &self.application.storage;
@@ -547,6 +553,7 @@ impl AuthorizedApplication {
         folder: ImapFolderIdentifier,
         request: ImapFolderRequest,
     ) -> Result<ImapLocalFolder, ApplicationError> {
+        self.require_mail_mutation().await?;
         let existing = self.owned_imap_folder(account, folder).await?;
         let account_details = self.owned_imap_account(account).await?;
         if existing.kind == ImapFolderKind::Private
@@ -587,10 +594,7 @@ impl AuthorizedApplication {
         folder: ImapFolderIdentifier,
     ) -> Result<(), ApplicationError> {
         let existing = self.owned_imap_folder(account, folder).await?;
-        let owner = self.account().await?;
-        if existing.kind != ImapFolderKind::Smart {
-            authorization::require_action(owner.global_role != sandpost_core::GlobalRole::Viewer)?;
-        }
+        self.require_mail_mutation().await?;
         let account_details = self.owned_imap_account(account).await?;
         if existing.kind == ImapFolderKind::Private
             && account_details.mode == ImapAccountMode::Mirror

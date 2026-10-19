@@ -91,7 +91,7 @@ impl AuthorizedApplication {
         let account = self.account().await?;
         let storage = &self.application.storage;
         let scopes = storage.list_scopes().await?;
-        if is_global_admin(account.global_role) {
+        if is_owner(account.global_role) {
             return Ok(scopes);
         }
         let assigned: HashSet<_> = storage
@@ -107,7 +107,7 @@ impl AuthorizedApplication {
 
     /// Validate and save a security query; no mail row or index document is changed.
     pub async fn save_scope(&self, mut scope: Scope) -> Result<Scope, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         scope.name = validated_name(&scope.name)?;
         let storage = &self.application.storage;
         if let Some(previous) = storage.get_scope(scope.identifier).await? {
@@ -127,7 +127,7 @@ impl AuthorizedApplication {
 
     /// Remove a security definition and its assignments without touching messages.
     pub async fn delete_scope(&self, identifier: ScopeIdentifier) -> Result<(), ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         let deleted = self
             .application
             .storage
@@ -157,7 +157,7 @@ impl AuthorizedApplication {
         preview: ScopePreview,
     ) -> Result<Vec<MessageSummary>, ApplicationError> {
         validate_page_size(preview.limit)?;
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         let storage = &self.application.storage;
         let mut filters = vec![authorization::expression(&preview.filter)?];
         let mut visited = HashSet::new();
@@ -212,7 +212,7 @@ impl AuthorizedApplication {
         &self,
         scope: ScopeIdentifier,
     ) -> Result<Vec<UserIdentifier>, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         let storage = &self.application.storage;
         storage
             .get_scope(scope)
@@ -227,7 +227,7 @@ impl AuthorizedApplication {
         assigned_user: UserIdentifier,
         scope: ScopeIdentifier,
     ) -> Result<(), ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         let storage = &self.application.storage;
         storage
             .get_user(assigned_user)
@@ -250,7 +250,7 @@ impl AuthorizedApplication {
         assigned_user: UserIdentifier,
         scope: ScopeIdentifier,
     ) -> Result<(), ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         self.application
             .storage
             .remove_user_from_scope(assigned_user, scope)
@@ -271,13 +271,14 @@ impl AuthorizedApplication {
 
     /// Save a validated organizational query after enforcing personal/shared ownership.
     ///
-    /// Anyone may keep personal views; only global administrators manage shared ones.
+    /// Owners and Members may keep personal views; only Owners manage shared ones.
     pub async fn save_view(&self, mut view: View) -> Result<View, ApplicationError> {
+        self.require_mail_mutation().await?;
         view.name = validated_name(&view.name)?;
         crate::validate_icon(&view.icon)?;
         authorization::expression(&view.filter)?;
         let storage = &self.application.storage;
-        let shared_allowed = is_global_admin(self.account().await?.global_role);
+        let shared_allowed = is_owner(self.account().await?.global_role);
         let personal = view.owner_identifier == Some(self.user_identifier);
         authorization::require_action(
             personal || (view.owner_identifier.is_none() && shared_allowed),
@@ -295,13 +296,14 @@ impl AuthorizedApplication {
 
     /// Delete an owned or administratively managed shared query without touching mail.
     pub async fn delete_view(&self, identifier: ViewIdentifier) -> Result<(), ApplicationError> {
+        self.require_mail_mutation().await?;
         let storage = &self.application.storage;
         let view = storage
             .get_view(identifier)
             .await?
             .ok_or(ApplicationError::NotFound)?;
         let personal = view.owner_identifier == Some(self.user_identifier);
-        let shared_allowed = is_global_admin(self.account().await?.global_role);
+        let shared_allowed = is_owner(self.account().await?.global_role);
         authorization::require_action(
             personal || (view.owner_identifier.is_none() && shared_allowed),
         )?;
@@ -312,7 +314,7 @@ impl AuthorizedApplication {
 
     /// Return user identities without leaking password hashes.
     pub async fn list_users(&self) -> Result<Vec<AccountDetails>, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         Ok(self
             .application
             .storage
@@ -323,14 +325,12 @@ impl AuthorizedApplication {
             .collect())
     }
 
-    /// Create a user; a non-owner administrator cannot mint owners.
+    /// Create a user with an Owner-selected global role and mail access.
     pub async fn create_user(
         &self,
         account: NewAccount,
     ) -> Result<AccountDetails, ApplicationError> {
-        let caller = self.account().await?;
-        authorization::require_action(is_global_admin(caller.global_role))?;
-        require_global_role_grant(caller.global_role, account.global_role)?;
+        self.require_owner().await?;
         let user = self
             .application
             .storage
@@ -353,15 +353,13 @@ impl AuthorizedApplication {
         identifier: UserIdentifier,
         changes: UpdateAccount,
     ) -> Result<AccountDetails, ApplicationError> {
-        let caller = self.account().await?;
-        authorization::require_action(is_global_admin(caller.global_role))?;
+        self.require_owner().await?;
         let mut user = self
             .application
             .storage
             .get_user(identifier)
             .await?
             .ok_or(ApplicationError::NotFound)?;
-        require_global_role_grant(caller.global_role, user.global_role)?;
         if let Some(name) = changes.name {
             user.name = validated_name(&name)?;
         }
@@ -369,7 +367,6 @@ impl AuthorizedApplication {
             user.password_hash = instance::hash_password(&password)?;
         }
         if let Some(role) = changes.global_role {
-            require_global_role_grant(caller.global_role, role)?;
             user.global_role = role;
         }
         if let Some(mail_access) = changes.mail_access {
@@ -405,15 +402,12 @@ impl AuthorizedApplication {
 
     /// Delete a user, preserving at least one global owner.
     pub async fn delete_user(&self, identifier: UserIdentifier) -> Result<(), ApplicationError> {
-        let caller = self.account().await?;
-        authorization::require_action(is_global_admin(caller.global_role))?;
-        let user = self
-            .application
+        self.require_owner().await?;
+        self.application
             .storage
             .get_user(identifier)
             .await?
             .ok_or(ApplicationError::NotFound)?;
-        require_global_role_grant(caller.global_role, user.global_role)?;
         self.application.storage.delete_user(identifier).await?;
         self.application
             .instance
@@ -440,15 +434,26 @@ impl AuthorizedApplication {
         authorization::user(&self.application.storage, self.user_identifier).await
     }
 
-    /// Refuse callers without instance-wide administrative authority.
-    pub(crate) async fn require_global_admin(&self) -> Result<(), ApplicationError> {
-        authorization::require_action(is_global_admin(self.account().await?.global_role))
+    /**
+     * Refuse user-visible mutations by read-only Viewers using the current persisted role.
+     */
+    pub(crate) async fn require_mail_mutation(&self) -> Result<(), ApplicationError> {
+        authorization::require_action(self.account().await?.global_role != GlobalRole::Viewer)
+    }
+
+    /**
+     * Refuse callers without Owner authority using the current persisted role.
+     */
+    pub(crate) async fn require_owner(&self) -> Result<(), ApplicationError> {
+        authorization::require_action(is_owner(self.account().await?.global_role))
     }
 }
 
-/// Report whether a global role carries instance-wide administrative authority.
-pub(crate) fn is_global_admin(role: GlobalRole) -> bool {
-    matches!(role, GlobalRole::Owner | GlobalRole::Admin)
+/**
+ * Report whether a global role carries instance-wide administrative authority.
+ */
+pub(crate) fn is_owner(role: GlobalRole) -> bool {
+    role == GlobalRole::Owner
 }
 
 /// Strip credential material from a user response.
@@ -461,17 +466,6 @@ fn account_details(user: User) -> AccountDetails {
         mail_access: user.mail_access,
         personal_filter: user.personal_filter,
     }
-}
-
-/// Prevent account administration from granting a role above the caller's own authority.
-fn require_global_role_grant(
-    caller: GlobalRole,
-    granted: GlobalRole,
-) -> Result<(), ApplicationError> {
-    if caller == GlobalRole::Owner {
-        return Ok(());
-    }
-    authorization::require_action(granted != GlobalRole::Owner)
 }
 
 /// Translate a backend uniqueness failure into a transport-level conflict.

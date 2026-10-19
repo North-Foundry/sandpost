@@ -54,6 +54,7 @@ vi.mock('@/features/shell/workspace', () => ({
  * Expose the event-subscription contract used by the account page.
  */
   useWorkspace: () => ({
+    user: { value: { role: 'owner' } },
 
     /**
  * Capture the page listener and clear it when the returned disposer runs.

@@ -132,6 +132,10 @@ pub struct MailboxSnapshot<Handle> {
     pub messages: Vec<MessageState>,
     /// Whether this mailbox permits only reads and changes to `\\Seen`.
     pub seen_only: bool,
+    /**
+     * Whether the account role makes this selection read-only, even for SELECT.
+     */
+    pub read_only: bool,
     /// A cursor identifying the flag state included in this snapshot.
     pub cursor: u64,
 }
@@ -161,6 +165,10 @@ pub struct MailboxChanges {
     pub flag_updates: Vec<(Uid, Flags)>,
     pub uid_next: Uid,
     pub cursor: u64,
+    /**
+     * Whether the account role currently makes this selected mailbox read-only.
+     */
+    pub read_only: bool,
 }
 
 /// STATUS data of a mailbox (RFC 3501 section 6.3.10).

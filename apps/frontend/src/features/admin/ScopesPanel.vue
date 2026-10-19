@@ -95,10 +95,7 @@ const siblingIndex = computed(() => {
   return { index: list.findIndex((scope) => scope.id === original.value!.id), count: list.length }
 })
 
-/**
- * Owners always read every message, so scopes never apply to them.
- */
-const assignable = computed(() => props.users.filter((user) => user.role !== 'owner'))
+const assignable = computed(() => props.users)
 const assigned = computed(() => new Set(draft.value ? props.assignments[draft.value.id] ?? [] : []))
 const canSave = computed(() => Boolean(draft.value?.name.trim()) && filterValid.value === true && dirty.value && !saving.value)
 

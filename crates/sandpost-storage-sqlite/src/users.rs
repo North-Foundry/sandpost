@@ -13,7 +13,6 @@ const USER_COLUMNS: &str = "identifier,name,email,password_hash,global_role,pers
 pub(crate) fn global_role_text(role: GlobalRole) -> &'static str {
     match role {
         GlobalRole::Owner => "owner",
-        GlobalRole::Admin => "admin",
         GlobalRole::Member => "member",
         GlobalRole::Viewer => "viewer",
     }
@@ -40,7 +39,6 @@ fn parse_mail_access(value: &str) -> Option<MailAccess> {
 fn parse_global_role(value: &str) -> Option<GlobalRole> {
     match value {
         "owner" => Some(GlobalRole::Owner),
-        "admin" => Some(GlobalRole::Admin),
         "member" => Some(GlobalRole::Member),
         "viewer" => Some(GlobalRole::Viewer),
         _ => None,

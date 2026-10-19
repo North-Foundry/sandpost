@@ -59,6 +59,7 @@ impl AuthorizedApplication {
         name: String,
         address: String,
     ) -> Result<InboxDetails, ApplicationError> {
+        self.require_mail_mutation().await?;
         let name = validated_name(&name)?;
         let address = validated_inbox_address(&address)?;
         self.account().await?;

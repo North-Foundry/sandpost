@@ -7,7 +7,7 @@ use crate::credentials::current_unix_seconds;
 use crate::{ApplicationChange, ApplicationError, MessageEvent};
 use sandpost_core::{
     GlobalRole, ImapAccount, ImapAccountIdentifier, ImapAccountMode, ImapFolderKind,
-    ImapMailboxIdentifier, ImapMailboxSource, ImapMessageFlags, UserIdentifier,
+    ImapMailboxIdentifier, ImapMailboxSource, ImapMessageFlags, User, UserIdentifier,
 };
 use sandpost_storage::{
     ImapCopyResult, ImapFlagChange, ImapLocalFolderSettings, ImapMailboxState, ImapMemberContent,
@@ -76,6 +76,8 @@ pub struct ImapMailboxSnapshot {
     /// Every member in ascending UID order with its flags and whether it is recent.
     pub members: Vec<(u32, ImapMessageFlags, bool)>,
     pub cursor: u64,
+    /// Whether the current user role requires this selection to be read-only.
+    pub read_only: bool,
     /// Smart mailboxes permit clients to change only `\Seen`.
     pub seen_only: bool,
 }
@@ -100,6 +102,8 @@ pub struct ImapMembershipChanges {
     pub flag_updates: Vec<(u32, ImapMessageFlags)>,
     pub uid_next: u32,
     pub cursor: u64,
+    /// Whether the current user role requires this selection to be read-only.
+    pub read_only: bool,
 }
 
 /// The mailbox operations of one authenticated IMAP connection.
@@ -164,6 +168,7 @@ impl ImapAccountSession {
 
     /// Create an empty manual folder belonging only to the authenticated IMAP account.
     pub async fn create_mailbox(&self, name: &str) -> Result<(), ImapAccessError> {
+        self.require_mail_mutation().await?;
         let name = Self::private_mailbox_name(name)?;
         let (account, catalog) = self.catalog().await?;
         if catalog
@@ -198,16 +203,7 @@ impl ImapAccountSession {
 
     /// Remove a private folder, restoring baseline placement without deleting its messages.
     pub async fn delete_mailbox(&self, name: &str) -> Result<(), ImapAccessError> {
-        let owner = self
-            .storage
-            .get_user(self.owner_identifier)
-            .await?
-            .ok_or(ImapAccessError::Revoked)?;
-        if owner.global_role == GlobalRole::Viewer {
-            return Err(ImapAccessError::NotPermitted(
-                "this account cannot delete mail folders".into(),
-            ));
-        }
+        self.require_mail_mutation().await?;
         let (account, catalog) = self.catalog().await?;
         let index = Self::find(&catalog, name)?;
         let folder = catalog[index]
@@ -241,6 +237,7 @@ impl ImapAccountSession {
         source: &str,
         destination: &str,
     ) -> Result<(), ImapAccessError> {
+        self.require_mail_mutation().await?;
         let name = Self::private_mailbox_name(destination)?;
         let (account, catalog) = self.catalog().await?;
         let index = Self::find(&catalog, source)?;
@@ -323,6 +320,29 @@ impl ImapAccountSession {
             return Err(ImapAccessError::Revoked);
         }
         Ok(credential.account)
+    }
+
+    /**
+     * Load the current owner role after confirming this IMAP credential remains valid.
+     */
+    async fn current_owner(&self) -> Result<User, ImapAccessError> {
+        self.current_account().await?;
+        self.storage
+            .get_user(self.owner_identifier)
+            .await?
+            .ok_or(ImapAccessError::Revoked)
+    }
+
+    /**
+     * Refuse mail and folder mutations for a Viewer, including after a live role change.
+     */
+    async fn require_mail_mutation(&self) -> Result<(), ImapAccessError> {
+        if self.current_owner().await?.global_role == GlobalRole::Viewer {
+            return Err(ImapAccessError::NotPermitted(
+                "this account is read-only".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Publish shared mirror changes to every affected mail view, or private changes to this
@@ -519,6 +539,7 @@ impl ImapAccountSession {
         name: &str,
         subscribed: bool,
     ) -> Result<(), ImapAccessError> {
+        self.require_mail_mutation().await?;
         self.current_account().await?;
         self.storage
             .set_imap_subscription(self.account_identifier, name, subscribed)
@@ -534,6 +555,7 @@ impl ImapAccountSession {
         name: &str,
         read_only: bool,
     ) -> Result<ImapMailboxSnapshot, ImapAccessError> {
+        let read_only = read_only || self.current_owner().await?.global_role == GlobalRole::Viewer;
         let (account, catalog) = self.catalog().await?;
         let index = Self::find(&catalog, name)?;
         let state = self.reconcile(&account, &catalog, index).await?;
@@ -566,6 +588,7 @@ impl ImapAccountSession {
             uid_next: state.uid_next,
             members,
             cursor,
+            read_only,
             seen_only: catalog[index].0.view.is_some()
                 || catalog[index]
                     .0
@@ -604,6 +627,8 @@ impl ImapAccountSession {
         cursor: u64,
         claim_recent: bool,
     ) -> Result<ImapMembershipChanges, ImapAccessError> {
+        let read_only = self.current_owner().await?.global_role == GlobalRole::Viewer;
+        let claim_recent = claim_recent && !read_only;
         let (account, catalog) = self.catalog().await?;
         let index = Self::find_handle(&catalog, handle)?;
         let state = self.reconcile(&account, &catalog, index).await?;
@@ -649,6 +674,7 @@ impl ImapAccountSession {
             flag_updates: flag_changes.changes,
             uid_next,
             cursor: flag_changes.cursor,
+            read_only,
         })
     }
 
@@ -690,6 +716,7 @@ impl ImapAccountSession {
         change: &ImapFlagChange,
     ) -> Result<Vec<(u32, ImapMessageFlags)>, ImapAccessError> {
         let (account, state, smart) = self.reconcile_handle_kind(handle).await?;
+        self.require_mail_mutation().await?;
         if smart
             && (change.flags.answered
                 || change.flags.flagged
@@ -740,20 +767,11 @@ impl ImapAccountSession {
         handle: &ImapMailboxHandle,
         uids: Option<&[u32]>,
     ) -> Result<Vec<u32>, ImapAccessError> {
+        self.require_mail_mutation().await?;
         let (account, state, smart) = self.reconcile_handle_kind(handle).await?;
         if smart {
             return Err(ImapAccessError::NotPermitted(
                 "smart folders cannot be expunged".into(),
-            ));
-        }
-        let owner = self
-            .storage
-            .get_user(self.owner_identifier)
-            .await?
-            .ok_or(ImapAccessError::Revoked)?;
-        if owner.global_role == GlobalRole::Viewer {
-            return Err(ImapAccessError::NotPermitted(
-                "this account cannot delete mail".into(),
             ));
         }
         let removed = self
@@ -782,6 +800,7 @@ impl ImapAccountSession {
         destination: &str,
         remove_from_source: bool,
     ) -> Result<ImapCopyResult, ImapAccessError> {
+        self.require_mail_mutation().await?;
         let (account, catalog) = self.catalog().await?;
         let source_index = Self::find_handle(&catalog, handle)?;
         let source = &catalog[source_index].0;
@@ -807,18 +826,6 @@ impl ImapAccountSession {
             return Err(ImapAccessError::NotPermitted(
                 "smart folders accept only messages selected by their filters".into(),
             ));
-        }
-        if remove_from_source && target.source == ImapMailboxSource::Trash {
-            let owner = self
-                .storage
-                .get_user(self.owner_identifier)
-                .await?
-                .ok_or(ImapAccessError::Revoked)?;
-            if owner.global_role == GlobalRole::Viewer {
-                return Err(ImapAccessError::NotPermitted(
-                    "this account cannot move mail to Trash".into(),
-                ));
-            }
         }
         let target_state = self.reconcile(&account, &catalog, index).await?;
         let definition = {

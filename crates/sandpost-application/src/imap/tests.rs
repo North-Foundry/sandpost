@@ -6,7 +6,7 @@ use sandpost_core::{
     MessageFacts, MessageIdentifier, Scope, ScopeIdentifier, User, UserIdentifier, View,
     ViewIdentifier,
 };
-use sandpost_storage::{ImapFlagChange, ImapFlagOperation, NewUser, Storage};
+use sandpost_storage::{ImapFlagChange, ImapFlagOperation, NewUser, Storage, UpdateUser};
 use sandpost_storage_sqlite::SqliteStorage;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -581,12 +581,12 @@ async fn accounts_are_owned() {
     let member = fixture
         .user("Member", GlobalRole::Member, MailAccess::All)
         .await;
-    let admin = fixture
-        .user("Admin", GlobalRole::Admin, MailAccess::All)
+    let another_member = fixture
+        .user("Another member", GlobalRole::Member, MailAccess::All)
         .await;
     let issued = fixture.account(&member, ImapAccountMode::Mirror).await;
     let identifier = issued.account.account.identifier;
-    for intruder in [&owner, &admin] {
+    for intruder in [&owner, &another_member] {
         let caller = fixture.as_user(intruder);
         assert!(matches!(
             caller.get_imap_account(identifier).await,
@@ -887,102 +887,77 @@ async fn mirror_move_and_trash_expunge_preserve_other_views_and_normal_copies() 
     assert_eq!(subjects(&fixture, &session, "INBOX").await, ["second"]);
 }
 
-/// A Viewer can mark Seen but cannot expunge, move to Trash, or delete populated IMAP/Web folders.
+/**
+ * A Viewer can read without changing flags, subscriptions, mail, or folder configuration.
+ */
 #[tokio::test]
-async fn viewer_can_mark_seen_but_cannot_remove_mail_or_populated_folders() {
+async fn viewer_is_read_only_for_imap_mail_and_configuration() {
     for mode in [ImapAccountMode::Mirror, ImapAccountMode::Independent] {
         let fixture = Fixture::new().await;
         let viewer = fixture
-            .user("Viewer", GlobalRole::Viewer, MailAccess::All)
+            .user("Viewer", GlobalRole::Member, MailAccess::All)
             .await;
-        let message = fixture.mail("kept", "app.test").await;
+        fixture.mail("kept", "app.test").await;
         let account = fixture.account(&viewer, mode).await;
-        let session = fixture.login(&account).await;
-        let inbox = session.open("INBOX", false).await.unwrap();
-        session
-            .store(
-                &inbox.handle,
-                &[1],
-                &ImapFlagChange {
-                    operation: ImapFlagOperation::Add,
-                    flags: ImapMessageFlags {
-                        deleted: true,
-                        seen: true,
-                        ..ImapMessageFlags::default()
-                    },
+        fixture
+            .storage
+            .update_user(
+                viewer.identifier,
+                &UpdateUser {
+                    name: viewer.name.clone(),
+                    email: viewer.email.clone(),
+                    password_hash: viewer.password_hash.clone(),
+                    global_role: GlobalRole::Viewer,
+                    mail_access: viewer.mail_access,
+                    personal_filter: viewer.personal_filter.clone(),
                 },
             )
             .await
+            .unwrap()
             .unwrap();
+        let session = fixture.login(&account).await;
+        let inbox = session.open("INBOX", false).await.unwrap();
+        assert!(inbox.read_only);
+        assert!(matches!(
+            session
+                .store(
+                    &inbox.handle,
+                    &[1],
+                    &ImapFlagChange {
+                        operation: ImapFlagOperation::Add,
+                        flags: ImapMessageFlags {
+                            seen: true,
+                            ..ImapMessageFlags::default()
+                        },
+                    }
+                )
+                .await,
+            Err(ImapAccessError::NotPermitted(_))
+        ));
         assert!(matches!(
             session.expunge(&inbox.handle, None).await,
             Err(ImapAccessError::NotPermitted(_))
         ));
         assert_eq!(subjects(&fixture, &session, "INBOX").await, ["kept"]);
-        assert!(session.open("INBOX", true).await.unwrap().members[0].1.seen);
+        assert!(!session.open("INBOX", true).await.unwrap().members[0].1.seen);
         assert!(matches!(
             session.copy(&inbox.handle, &[1], "Trash", true).await,
             Err(ImapAccessError::NotPermitted(_))
         ));
-        session.create_mailbox("Review").await.unwrap();
-        session
-            .copy(&inbox.handle, &[1], "Review", false)
-            .await
-            .unwrap();
         assert!(matches!(
-            session.delete_mailbox("Review").await,
+            session.set_subscription("INBOX", true).await,
             Err(ImapAccessError::NotPermitted(_))
         ));
-        assert_eq!(subjects(&fixture, &session, "Review").await, ["kept"]);
+        assert!(matches!(
+            session.create_mailbox("Review").await,
+            Err(ImapAccessError::NotPermitted(_))
+        ));
+        assert!(matches!(
+            session.rename_mailbox("INBOX", "Review").await,
+            Err(ImapAccessError::NotPermitted(_))
+        ));
         assert!(subjects(&fixture, &session, "Trash").await.is_empty());
-        let caller = fixture.as_user(&viewer);
-        let review = caller
-            .get_imap_account(account.account.account.identifier)
-            .await
-            .unwrap()
-            .folders
-            .into_iter()
-            .find(|folder| folder.name == "Review")
-            .unwrap();
-        assert!(matches!(
-            caller
-                .delete_imap_folder(account.account.account.identifier, review.identifier)
-                .await,
-            Err(ApplicationError::Forbidden)
-        ));
-        assert_eq!(subjects(&fixture, &session, "Review").await, ["kept"]);
-        let web = caller
-            .create_web_folder(crate::WebFolderRequest {
-                name: "Web Protected".into(),
-                icon: None,
-                exposed_accounts: Vec::new(),
-            })
-            .await
-            .unwrap();
-        caller
-            .move_web_messages(vec![message], Some(web.identifier))
-            .await
-            .unwrap();
-        assert!(matches!(
-            caller.delete_web_folder(web.identifier).await,
-            Err(ApplicationError::Forbidden)
-        ));
-        assert!(
-            fixture
-                .storage
-                .get_web_folder(web.identifier)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert_eq!(
-            caller
-                .query_web_mailbox(crate::QueryOptions::default(), Some(web.identifier))
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
+        assert!(subjects(&fixture, &session, "INBOX").await == ["kept"]);
     }
 }
 
@@ -1101,4 +1076,47 @@ async fn failed_logins_are_throttled() {
             .unwrap(),
         ImapLogin::Authenticated(_)
     ));
+}
+
+/**
+ * Promotion to Owner preserves current scoped visibility in Mirror and Independent IMAP sessions.
+ */
+#[tokio::test]
+async fn owner_promotion_does_not_expand_imap_mail_access() {
+    for mode in [ImapAccountMode::Mirror, ImapAccountMode::Independent] {
+        let fixture = Fixture::new().await;
+        let user = fixture
+            .user("Scoped", GlobalRole::Member, MailAccess::Scoped)
+            .await;
+        let scope = fixture
+            .scope(&user, "envelope.to.domain == \"team.test\"")
+            .await;
+        fixture.mail("Allowed", "team.test").await;
+        fixture.mail("Hidden", "other.test").await;
+        let issued = fixture.account(&user, mode).await;
+        let session = fixture.login(&issued).await;
+        assert_eq!(subjects(&fixture, &session, "INBOX").await, ["Allowed"]);
+        fixture
+            .storage
+            .update_user(
+                user.identifier,
+                &UpdateUser {
+                    name: user.name.clone(),
+                    email: user.email.clone(),
+                    password_hash: user.password_hash.clone(),
+                    global_role: GlobalRole::Owner,
+                    mail_access: user.mail_access,
+                    personal_filter: user.personal_filter.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(subjects(&fixture, &session, "INBOX").await, ["Allowed"]);
+        fixture
+            .storage
+            .remove_user_from_scope(user.identifier, scope)
+            .await
+            .unwrap();
+        assert!(subjects(&fixture, &session, "INBOX").await.is_empty());
+    }
 }

@@ -40,6 +40,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 const client = useSandpostClient()
 const { t, locale } = useI18n()
 const workspace = useWorkspace()
+const canMutate = computed(() => Boolean(workspace.user?.value && workspace.user.value.role !== 'viewer'))
 let unsubscribeEvents: (() => void) | null = null
 const route = useRoute()
 const router = useRouter()
@@ -173,7 +174,7 @@ async function refreshQuietly(): Promise<void> {
  * Rename the account; mail clients keep working because the username does not change.
  */
 async function saveName(): Promise<void> {
-  if (!account.value || savingName.value || !nameDirty.value || !name.value.trim()) return
+  if (!canMutate.value || !account.value || savingName.value || !nameDirty.value || !name.value.trim()) return
   savingName.value = true
   nameError.value = ''
   try {
@@ -190,7 +191,7 @@ async function saveName(): Promise<void> {
  * Enable or disable the account; disabling signs its mail clients out at once.
  */
 async function toggle(): Promise<void> {
-  if (!account.value || toggling.value) return
+  if (!canMutate.value || !account.value || toggling.value) return
   toggling.value = true
   statusError.value = ''
   try {
@@ -206,7 +207,7 @@ async function toggle(): Promise<void> {
  * Save the account mode while preserving its local folder state.
  */
 async function saveMailboxes(): Promise<void> {
-  if (!account.value || savingMailboxes.value || !mailboxesDirty.value) return
+  if (!canMutate.value || !account.value || savingMailboxes.value || !mailboxesDirty.value) return
   savingMailboxes.value = true
   mailboxesError.value = ''
   try {
@@ -232,7 +233,7 @@ function resetMailboxes(): void {
  * Open the local folder editor, empty or for an existing folder.
  */
 function editFolder(folder: ImapLocalFolder | null): void {
-  if (account.value?.mode !== 'independent' || folder && folder.kind !== 'smart') return
+  if (!canMutate.value || account.value?.mode !== 'independent' || folder && folder.kind !== 'smart') return
   editingFolder.value = folder
   folderOpen.value = true
 }
@@ -242,7 +243,7 @@ function editFolder(folder: ImapLocalFolder | null): void {
  */
 async function deleteFolder(): Promise<void> {
   const target = folderDeleteTarget.value
-  if (!account.value || !target || account.value.mode !== 'independent' || target.kind !== 'smart' || deletingFolder.value) return
+  if (!canMutate.value || !account.value || !target || account.value.mode !== 'independent' || target.kind !== 'smart' || deletingFolder.value) return
   deletingFolder.value = true
   folderDeleteError.value = ''
   try {
@@ -272,6 +273,7 @@ watch(accountId, (id, previous) => { if (id && id !== previous) void load() })
  * Ignore attempts to deselect the saved mode.
  */
 function setMode(value: unknown): void {
+  if (!canMutate.value) return
   if (value === 'mirror' || value === 'independent') mode.value = value
 }
 onMounted(() => {
@@ -317,7 +319,7 @@ onBeforeUnmount(() => unsubscribeEvents?.())
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
-              <Button variant="outline" size="icon-sm" :aria-label="t('imap.account.moreActions')"><MoreHorizontalIcon /></Button>
+              <Button v-if="canMutate" variant="outline" size="icon-sm" :aria-label="t('imap.account.moreActions')"><MoreHorizontalIcon /></Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" class="w-56">
               <DropdownMenuGroup>
@@ -356,7 +358,7 @@ onBeforeUnmount(() => unsubscribeEvents?.())
               <FieldGroup class="gap-4">
                 <Field :data-disabled="savingName" :data-invalid="Boolean(nameError)">
                   <FieldLabel for="imap-account-edit-name">{{ t('imap.common.name') }}</FieldLabel>
-                  <Input id="imap-account-edit-name" v-model="name" required maxlength="100" autocomplete="off" :disabled="savingName" :aria-invalid="Boolean(nameError)" />
+                  <Input id="imap-account-edit-name" v-model="name" required maxlength="100" autocomplete="off" :disabled="!canMutate || savingName" :aria-invalid="Boolean(nameError)" />
                   <FieldError v-if="nameError" role="alert">{{ nameError }}</FieldError>
                 </Field>
                 <FieldError v-if="statusError" role="alert">{{ statusError }}</FieldError>
@@ -364,11 +366,11 @@ onBeforeUnmount(() => unsubscribeEvents?.())
             </form>
           </CardContent>
           <CardFooter class="flex flex-wrap justify-end gap-2 border-t">
-            <Button variant="outline" type="button" :disabled="toggling" @click="toggle">
+              <Button v-if="canMutate" variant="outline" type="button" :disabled="toggling" @click="toggle">
               <Spinner v-if="toggling" data-icon="inline-start" aria-hidden="true" />
               <component :is="account.enabled ? PowerOffIcon : PowerIcon" v-else data-icon="inline-start" />{{ account.enabled ? t('imap.account.disableAccount') : t('imap.account.enableAccount') }}
             </Button>
-            <Button type="submit" form="imap-account-name-form" :disabled="savingName || !nameDirty || !name.trim()">
+            <Button v-if="canMutate" type="submit" form="imap-account-name-form" :disabled="savingName || !nameDirty || !name.trim()">
               <Spinner v-if="savingName" data-icon="inline-start" aria-hidden="true" />{{ savingName ? t('imap.common.saving') : t('imap.account.saveName') }}
             </Button>
           </CardFooter>
@@ -379,7 +381,7 @@ onBeforeUnmount(() => unsubscribeEvents?.())
             <CardTitle>{{ t('imap.account.connectionTitle') }}</CardTitle>
             <CardDescription>{{ server.enabled ? imapSecurityDescription(server.security) : t('imap.account.connectionDisabled') }}</CardDescription>
             <CardAction>
-              <Button variant="outline" size="sm" @click="actions.confirmRegenerate(account)"><RefreshCwIcon data-icon="inline-start" />{{ t('imap.dialogs.regenerate') }}</Button>
+              <Button v-if="canMutate" variant="outline" size="sm" @click="actions.confirmRegenerate(account)"><RefreshCwIcon data-icon="inline-start" />{{ t('imap.dialogs.regenerate') }}</Button>
             </CardAction>
           </CardHeader>
           <CardContent class="flex flex-col gap-4">
@@ -431,7 +433,7 @@ onBeforeUnmount(() => unsubscribeEvents?.())
               <FieldGroup class="gap-4">
                 <Field :data-disabled="savingMailboxes">
                   <FieldLabel>{{ t('imap.account.mode') }}</FieldLabel>
-                  <ToggleGroup :model-value="mode" @update:model-value="setMode" type="single" variant="outline" :disabled="savingMailboxes" :aria-label="t('imap.account.mode')">
+                  <ToggleGroup v-if="canMutate" :model-value="mode" @update:model-value="setMode" type="single" variant="outline" :disabled="savingMailboxes" :aria-label="t('imap.account.mode')">
                     <ToggleGroupItem value="mirror">{{ t('imap.account.mirror') }}</ToggleGroupItem>
                     <ToggleGroupItem value="independent">{{ t('imap.account.independent') }}</ToggleGroupItem>
                   </ToggleGroup>
@@ -444,8 +446,8 @@ onBeforeUnmount(() => unsubscribeEvents?.())
             </form>
           </CardContent>
           <CardFooter class="flex justify-end gap-2 border-t">
-            <Button v-if="mailboxesDirty" variant="ghost" type="button" :disabled="savingMailboxes" @click="resetMailboxes">{{ t('imap.common.discardChanges') }}</Button>
-            <Button type="submit" form="imap-mailboxes-form" :disabled="savingMailboxes || !mailboxesDirty">
+            <Button v-if="canMutate && mailboxesDirty" variant="ghost" type="button" :disabled="savingMailboxes" @click="resetMailboxes">{{ t('imap.common.discardChanges') }}</Button>
+            <Button v-if="canMutate" type="submit" form="imap-mailboxes-form" :disabled="savingMailboxes || !mailboxesDirty">
               <Spinner v-if="savingMailboxes" data-icon="inline-start" aria-hidden="true" />{{ savingMailboxes ? t('imap.common.saving') : t('imap.account.saveMode') }}
             </Button>
           </CardFooter>
@@ -476,7 +478,7 @@ onBeforeUnmount(() => unsubscribeEvents?.())
             <CardTitle class="flex items-center gap-2"><MailboxIcon class="size-4 text-muted-foreground" aria-hidden="true" />{{ t('imap.account.independentFolders') }}</CardTitle>
             <CardDescription>{{ t('imap.account.independentFoldersDescription') }}</CardDescription>
             <CardAction>
-              <Button variant="outline" size="sm" @click="editFolder(null)"><PlusIcon data-icon="inline-start" />{{ t('imap.account.addSmartFolder') }}</Button>
+              <Button v-if="canMutate" variant="outline" size="sm" @click="editFolder(null)"><PlusIcon data-icon="inline-start" />{{ t('imap.account.addSmartFolder') }}</Button>
             </CardAction>
           </CardHeader>
           <CardContent>
@@ -489,7 +491,7 @@ onBeforeUnmount(() => unsubscribeEvents?.())
                   </ItemTitle>
                   <ItemDescription class="truncate font-mono" :title="folder.filter">{{ folder.filter || t('imap.mailboxSource.allReadable') }}</ItemDescription>
                 </ItemContent>
-                <ItemActions>
+                <ItemActions v-if="canMutate">
                   <Button variant="ghost" size="icon-sm" :aria-label="t('imap.account.editFolder', { folder: folder.name })" @click="editFolder(folder)"><PencilIcon /></Button>
                   <Button variant="ghost" size="icon-sm" :aria-label="t('imap.account.deleteFolder', { folder: folder.name })" @click="folderDeleteError = ''; folderDeleteTarget = folder"><Trash2Icon /></Button>
                 </ItemActions>
@@ -522,7 +524,7 @@ onBeforeUnmount(() => unsubscribeEvents?.())
                 : t('imap.account.deletingIndependentDescription') }}
             </CardDescription>
           </CardHeader>
-          <CardFooter class="flex flex-wrap justify-end gap-2 border-t">
+          <CardFooter v-if="canMutate" class="flex flex-wrap justify-end gap-2 border-t">
             <Button variant="outline" @click="actions.confirmRestore(account)"><ArchiveRestoreIcon data-icon="inline-start" />{{ t('imap.dialogs.restore') }}</Button>
             <Button variant="destructive" @click="actions.confirmDelete(account)"><Trash2Icon data-icon="inline-start" />{{ t('imap.dialogs.deleteAccount') }}</Button>
           </CardFooter>
@@ -531,13 +533,13 @@ onBeforeUnmount(() => unsubscribeEvents?.())
     </div>
 
     <ImapFolderDialog
-      v-if="account?.mode === 'independent'"
+      v-if="canMutate && account?.mode === 'independent'"
       v-model:open="folderOpen"
       :account-id="account.id"
       :folder="editingFolder"
       @saved="refreshQuietly"
     />
-    <BusyDialog
+    <BusyDialog v-if="canMutate"
       :open="Boolean(folderDeleteTarget)"
       :title="t('imap.account.deleteFolderTitle', { folder: folderDeleteTarget?.name ?? t('imap.account.folder') })"
       :description="t('imap.account.deleteFolderDescription')"
@@ -552,6 +554,6 @@ onBeforeUnmount(() => unsubscribeEvents?.())
         </Button>
       </DialogFooter>
     </BusyDialog>
-    <ImapAccountDialogs :actions="actions" />
+    <ImapAccountDialogs v-if="canMutate" :actions="actions" />
   </section>
 </template>

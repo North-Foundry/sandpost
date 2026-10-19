@@ -29,6 +29,7 @@ const props = withDefaults(defineProps<{
   deleting?: boolean
   seen?: boolean
   seenBusy?: boolean
+  canMutate?: boolean
   flags?: MessageFlags
   folders?: MailFolder[]
 
@@ -183,16 +184,16 @@ async function copyAllHeaders(): Promise<void> {
       <header v-show="props.message" class="flex h-11 shrink-0 items-center gap-1 border-b px-2 sm:px-3">
         <Button v-if="props.mobile" class="lg:hidden" variant="ghost" size="icon-sm" :aria-label="t('mail.detail.back')" @click="emit('back')"><ArrowLeftIcon /></Button>
         <span class="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground">{{ formattedDate }}</span>
-        <Button variant="ghost" size="icon-sm" :disabled="props.seenBusy" :aria-label="props.seen ? t('mail.detail.markUnread') : t('mail.detail.markRead')" :title="props.seen ? t('mail.detail.markUnread') : t('mail.detail.markRead')" @click="emit('set-seen', !props.seen)">
+        <Button v-if="props.canMutate" variant="ghost" size="icon-sm" :disabled="props.seenBusy" :aria-label="props.seen ? t('mail.detail.markUnread') : t('mail.detail.markRead')" :title="props.seen ? t('mail.detail.markUnread') : t('mail.detail.markRead')" @click="emit('set-seen', !props.seen)">
           <MailOpenIcon v-if="props.seen" /><MailIcon v-else />
         </Button>
         <Button variant="ghost" size="sm" class="text-muted-foreground" :aria-label="t('mail.detail.downloadOriginal')" :title="t('mail.common.downloadEml')" @click="emit('download')">
           <DownloadIcon data-icon="inline-start" /><span class="max-sm:sr-only">.eml</span>
         </Button>
-        <MessageFlagsMenu v-if="props.flags" :flags="[props.flags]" :disabled="props.deleting" @change="(operation, flags) => emit('set-flags', operation, flags)" />
-        <MoveToMenu v-if="renderedMessage" :folders="props.folders" :disabled="props.deleting" :trash="!props.trash" @move="emit('move', $event)" @trash="emit('delete')" />
-        <MoveToMenu v-if="renderedMessage" :folders="props.folders" :disabled="props.deleting" copy @copy="emit('copy', $event)" />
-        <Button
+        <MessageFlagsMenu v-if="props.canMutate && props.flags" :flags="[props.flags]" :disabled="props.deleting" @change="(operation, flags) => emit('set-flags', operation, flags)" />
+        <MoveToMenu v-if="props.canMutate && renderedMessage" :folders="props.folders" :disabled="props.deleting" :trash="!props.trash" @move="emit('move', $event)" @trash="emit('delete')" />
+        <MoveToMenu v-if="props.canMutate && renderedMessage" :folders="props.folders" :disabled="props.deleting" copy @copy="emit('copy', $event)" />
+        <Button v-if="props.canMutate"
           variant="ghost"
           size="icon-sm"
           class="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"

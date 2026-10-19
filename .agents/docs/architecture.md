@@ -97,17 +97,18 @@ uses the running coordinator's writer gate. Full lifecycle: [storage.md](storage
 
 ## Authorization and persistence
 
-Owner bypasses mail access/scopes/personal filters, but user deletions still apply.
-Admin manages non-owner users/scopes/SMTP/shared Views/search; Member may delete
-visible mail, Viewer cannot. Every role may keep personal Views. `All` needs no
+Mail access, assigned scopes with inherited filters, and personal filters govern
+visibility for every role, including Owners; user deletions also apply per user.
+Owners manage users/scopes/SMTP/shared Views/search; Members operate on visible
+mail and personal Views/folders/IMAP accounts. Viewers cannot mutate mail, flags,
+organization or configuration, including implicit Seen on message reads. `All` needs no
 assignments; `Scoped` unions assigned scope/ancestor conjunctions and grants nothing
 without assignments. Personal/View/ad hoc filters restrict results. Lists/search/
 detail/raw/attachments/events share one composition; neither index documents nor
 caller scope IDs authorize reads. Definitions and assignments are reread per
 request; in-flight requests may finish using facts read earlier. Hash-bound sessions
-invalidate old/racing logins after password changes. Administrators cannot grant,
-reset credentials or delete accounts beyond their own authority; owner-only actions
-require Owner. Full composition/admin contracts: [scope-engine.md](scope-engine.md).
+invalidate old/racing logins after password changes. Only Owners may change roles, reset credentials or delete users.
+Multiple Owners are supported; immediate storage transactions protect the final Owner. Full composition/admin contracts: [scope-engine.md](scope-engine.md).
 
 Web deletion enters primary Trash; permanent deletion inserts a primary tombstone.
 Independent references and other primary users retain physical mail. Reference-safe
@@ -126,7 +127,8 @@ There is no separate schema version or `PRAGMA user_version`. Validated name-onl
 to batch 1; older incompatible pre-deployment formats still fail without resetting data.
 The 46-script pre-release baseline creates current table definitions directly, with separate
 trigger groups and no historical ALTERs or data backfills. Migration 0047 appends durable
-remembered-session storage. Earlier development sequences require
+remembered-session storage. Migration 0048 promotes legacy Admin users to Owners
+and prevents new Admin values without rebuilding the users table. Earlier development sequences require
 explicit database recreation; startup does not reset them.
 See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 

@@ -13,7 +13,7 @@ export default {
   "common.scopes": "Områder",
   "common.administration": "Administration",
   "common.noAdminAccess": "Ingen adgang til administration",
-  "common.adminAccessHint": "Kun ejere og administratorer administrerer områder, SMTP-adgang og brugere.",
+  "common.adminAccessHint": "Kun ejere administrerer områder, SMTP-adgang og brugere.",
   "common.openInbox": "Åbn indbakke",
   "common.brandInbox": "Sandpost-indbakke",
   "common.connecting": "Opretter forbindelse…",
@@ -67,7 +67,6 @@ export default {
   "common.deleteFolder": "Slet mappe",
   "common.loading": "Indlæser",
   "common.roles.owner": "Ejer",
-  "common.roles.admin": "Administrator",
   "common.roles.member": "Medlem",
   "common.roles.viewer": "Læser"
 }

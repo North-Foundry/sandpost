@@ -59,7 +59,7 @@ pub async fn user_crud(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
         name: "Updated name".to_owned(),
         email: changed_email.clone(),
         password_hash: "hash-two".to_owned(),
-        global_role: GlobalRole::Admin,
+        global_role: GlobalRole::Viewer,
         mail_access: MailAccess::All,
         personal_filter: None,
     };
@@ -80,7 +80,7 @@ pub async fn user_crud(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
         CHECK,
         "updated global role",
         updated.global_role,
-        GlobalRole::Admin,
+        GlobalRole::Viewer,
     )?;
     verify_equal(
         CHECK,

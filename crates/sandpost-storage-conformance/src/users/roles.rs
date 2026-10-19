@@ -84,15 +84,10 @@ pub async fn bootstrap(storage: &dyn Storage) -> Result<(), ConformanceFailure> 
     Ok(())
 }
 
-/// Verify every global role round-trips through storage.
+/// Verify every supported global role round-trips through storage.
 pub async fn global_roles(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     const CHECK: &str = "global_roles";
-    for role in [
-        GlobalRole::Owner,
-        GlobalRole::Admin,
-        GlobalRole::Member,
-        GlobalRole::Viewer,
-    ] {
+    for role in [GlobalRole::Owner, GlobalRole::Member, GlobalRole::Viewer] {
         let created = create_user(storage, CHECK, role, &unique_email("role")).await?;
         verify_equal(CHECK, "created global role", created.global_role, role)?;
         let stored = unwrap_storage(

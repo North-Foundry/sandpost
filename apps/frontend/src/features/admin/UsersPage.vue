@@ -20,14 +20,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import BusyDialog from '@/components/BusyDialog.vue'
 import { useAdminContext } from '@/features/admin/context'
 
-const ROLES: GlobalRole[] = ['owner', 'admin', 'member', 'viewer']
+const ROLES: GlobalRole[] = ['owner', 'member', 'viewer']
 const MAIL_ACCESS: MailAccess[] = ['all', 'scoped']
 const MINIMUM_PASSWORD_BYTES = 12
 
 const client = useSandpostClient()
 const { t } = useI18n()
 const router = useRouter()
-const { isGlobalAdmin, isOwner, user } = useAdminContext()
+const { isGlobalAdmin, user } = useAdminContext()
 const users = ref<UserAccount[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -49,19 +49,10 @@ const deleteError = ref('')
 
 const editingSelf = computed(() => editing.value !== 'new' && editing.value?.id === user.value?.id)
 const passwordTooShort = computed(() => password.value.length > 0 && new TextEncoder().encode(password.value).length < MINIMUM_PASSWORD_BYTES)
-const grantableRoles = computed(() => ROLES.filter((option) => isOwner.value || option !== 'owner'))
+const grantableRoles = ROLES
 const roleDescription = computed(() => t(`admin.users.role.${role.value}Description`))
-const mailAccessDescription = computed(() => role.value === 'owner'
-  ? t('admin.users.access.ownerDescription')
-  : t(`admin.users.access.${mailAccess.value}Description`))
+const mailAccessDescription = computed(() => t(`admin.users.access.${mailAccess.value}Description`))
 const formValid = computed(() => name.value.trim() && (editing.value !== 'new' || (email.value.trim() && password.value)) && !passwordTooShort.value)
-
-/**
- * Report whether the current administrator may change this account.
- */
-function manageable(account: UserAccount): boolean {
-  return isOwner.value || account.role !== 'owner'
-}
 
 /**
  * Load every account, owners first.
@@ -70,7 +61,7 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const order: Record<GlobalRole, number> = { owner: 0, admin: 1, member: 2, viewer: 3 }
+    const order: Record<GlobalRole, number> = { owner: 0, member: 1, viewer: 2 }
     users.value = (await client.admin.users.list()).sort((first, second) => order[first.role] - order[second.role] || first.name.localeCompare(second.name))
   } catch (failure) {
     error.value = describeError(failure, t('admin.users.loadError'))
@@ -191,11 +182,11 @@ onMounted(load)
               </TableCell>
               <TableCell class="text-muted-foreground max-sm:hidden">{{ account.email }}</TableCell>
               <TableCell><Badge :variant="account.role === 'member' || account.role === 'viewer' ? 'outline' : 'secondary'">{{ t(`admin.users.role.${account.role}`) }}</Badge></TableCell>
-              <TableCell class="text-muted-foreground max-sm:hidden">{{ account.role === 'owner' || account.mailAccess === 'all' ? t('admin.users.allMail') : t('admin.users.scoped') }}</TableCell>
+              <TableCell class="text-muted-foreground max-sm:hidden">{{ t(`admin.users.${account.mailAccess === 'all' ? 'allMail' : 'scoped'}`) }}</TableCell>
               <TableCell>
                 <div class="flex justify-end gap-1">
-                  <Button variant="ghost" size="icon-sm" :aria-label="t('admin.users.editName', { name: account.name })" :disabled="!manageable(account)" @click="openForm(account)"><PencilIcon /></Button>
-                  <Button variant="ghost" size="icon-sm" :aria-label="t('admin.users.deleteName', { name: account.name })" :disabled="!manageable(account) || account.id === user?.id" @click="deleteError = ''; deleteTarget = account"><Trash2Icon /></Button>
+                  <Button variant="ghost" size="icon-sm" :aria-label="t('admin.users.editName', { name: account.name })" @click="openForm(account)"><PencilIcon /></Button>
+                  <Button variant="ghost" size="icon-sm" :aria-label="t('admin.users.deleteName', { name: account.name })" :disabled="account.id === user?.id" @click="deleteError = ''; deleteTarget = account"><Trash2Icon /></Button>
                 </div>
               </TableCell>
             </TableRow>
@@ -234,9 +225,9 @@ onMounted(load)
             </NativeSelect>
             <FieldDescription>{{ roleDescription }}</FieldDescription>
           </Field>
-          <Field :data-disabled="saving || role === 'owner'">
+          <Field :data-disabled="saving">
             <FieldLabel for="user-mail-access">{{ t('admin.users.mailAccess') }}</FieldLabel>
-            <NativeSelect id="user-mail-access" v-model="mailAccess" class="w-full" :disabled="saving || role === 'owner'">
+            <NativeSelect id="user-mail-access" v-model="mailAccess" class="w-full" :disabled="saving">
               <NativeSelectOption v-for="option in MAIL_ACCESS" :key="option" :value="option">{{ t(`admin.users.${option === 'all' ? 'allMail' : 'scoped'}`) }}</NativeSelectOption>
             </NativeSelect>
             <FieldDescription>{{ mailAccessDescription }}</FieldDescription>

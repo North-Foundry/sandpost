@@ -13,7 +13,7 @@ export default {
   "common.scopes": "Scopes",
   "common.administration": "Administration",
   "common.noAdminAccess": "No administration access",
-  "common.adminAccessHint": "Only owners and admins manage scopes, SMTP access, and users.",
+  "common.adminAccessHint": "Only owners manage scopes, SMTP access, and users.",
   "common.openInbox": "Open inbox",
   "common.brandInbox": "Sandpost inbox",
   "common.connecting": "Connecting…",
@@ -67,7 +67,6 @@ export default {
   "common.deleteFolder": "Delete folder",
   "common.loading": "Loading",
   "common.roles.owner": "Owner",
-  "common.roles.admin": "Admin",
   "common.roles.member": "Member",
   "common.roles.viewer": "Viewer"
 }

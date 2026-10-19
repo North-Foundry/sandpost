@@ -93,6 +93,111 @@ async fn revoking_a_scope_expunges_from_idle_clients() {
     running.shutdown().await.unwrap();
 }
 
+/**
+ * A live Member-to-Viewer demotion blocks FETCH's implicit Seen write and reports read-only.
+ */
+#[tokio::test]
+async fn viewer_fetch_succeeds_without_seen_after_live_demotion() {
+    let (configuration, _directory) = configuration();
+    let running = SandpostRuntime::start(configuration).await.unwrap();
+    let owner = owner(&running).await;
+    let administrator = running.application.authorized(&owner);
+    let member = administrator
+        .create_user(sandpost_application::NewAccount {
+            name: "Member".into(),
+            email: "member@example.test".into(),
+            password: "member test password".into(),
+            global_role: GlobalRole::Member,
+            mail_access: MailAccess::All,
+            personal_filter: None,
+        })
+        .await
+        .unwrap();
+    let member_session = running
+        .application
+        .instance()
+        .login(LoginRequest {
+            remember_me: false,
+            email: "member@example.test".into(),
+            password: "member test password".into(),
+        })
+        .await
+        .unwrap()
+        .user;
+    let issued = running
+        .application
+        .authorized(&member_session)
+        .create_imap_account(NewImapAccountRequest {
+            name: "Personal".into(),
+            username: None,
+            mirror_views: true,
+            mode: Some(sandpost_core::ImapAccountMode::Mirror),
+            linked_views: Vec::new(),
+        })
+        .await
+        .unwrap();
+    send_mail(
+        running.mail_listen_address,
+        "dev@viewer.test",
+        "Unread body",
+    )
+    .await;
+    wait_for_mail(&running, 1).await;
+    let mut client = Client::login(imap_address(&running), &issued).await;
+    let selected = client.command("s", "SELECT INBOX").await;
+    assert!(
+        selected.last().unwrap().contains("[READ-WRITE]"),
+        "{selected:?}"
+    );
+    administrator
+        .update_user(
+            member.identifier,
+            sandpost_application::UpdateAccount {
+                name: None,
+                password: None,
+                global_role: Some(GlobalRole::Viewer),
+                mail_access: None,
+                personal_filter: None,
+            },
+        )
+        .await
+        .unwrap();
+    let fetched = client.command("f", "UID FETCH 1 (BODY[])").await;
+    assert!(
+        fetched.last().unwrap().starts_with("f OK FETCH completed"),
+        "{fetched:?}"
+    );
+    let flags = client.command("g", "UID FETCH 1 (FLAGS)").await;
+    assert!(
+        flags.iter().any(|line| line.contains("FLAGS ("))
+            && flags.iter().all(|line| !line.contains("\\Seen")),
+        "{flags:?}"
+    );
+    let selected = client.command("r", "SELECT INBOX").await;
+    assert!(
+        selected
+            .iter()
+            .any(|line| line.contains("PERMANENTFLAGS ()")),
+        "{selected:?}"
+    );
+    assert!(
+        selected.last().unwrap().contains("[READ-ONLY]"),
+        "{selected:?}"
+    );
+    let fetched = client.command("v", "UID FETCH 1 (BODY[])").await;
+    assert!(
+        fetched.last().unwrap().starts_with("v OK FETCH completed"),
+        "{fetched:?}"
+    );
+    let flags = client.command("w", "UID FETCH 1 (FLAGS)").await;
+    assert!(
+        flags.iter().any(|line| line.contains("FLAGS ("))
+            && flags.iter().all(|line| !line.contains("\\Seen")),
+        "{flags:?}"
+    );
+    running.shutdown().await.unwrap();
+}
+
 /// Disabling an account from the management API disconnects its idling clients.
 #[tokio::test]
 async fn disabling_an_account_disconnects_idle_clients() {

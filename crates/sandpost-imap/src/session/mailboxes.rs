@@ -102,12 +102,13 @@ where
         };
         let selected = SelectedMailbox::new(snapshot, read_only);
         selected.write_selection(&mut self.connection.output);
-        self.selected = Some(selected);
-        let (code, command) = if read_only {
-            (ResponseCode::ReadOnly, "EXAMINE")
+        let code = if selected.read_only {
+            ResponseCode::ReadOnly
         } else {
-            (ResponseCode::ReadWrite, "SELECT")
+            ResponseCode::ReadWrite
         };
+        let command = if read_only { "EXAMINE" } else { "SELECT" };
+        self.selected = Some(selected);
         self.connection.output.status(
             Some(tag),
             Status::Ok,

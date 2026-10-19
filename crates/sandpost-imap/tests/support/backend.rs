@@ -291,6 +291,7 @@ impl Account for MemoryAccount {
                 })
                 .collect(),
             seen_only: false,
+            read_only: false,
             cursor: modification,
         })
     }
@@ -355,6 +356,7 @@ impl Account for MemoryAccount {
                 .collect(),
             uid_next: stored.uid_next,
             cursor: modification,
+            read_only: false,
         })
     }
 

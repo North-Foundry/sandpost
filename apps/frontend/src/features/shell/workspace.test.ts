@@ -73,9 +73,9 @@ describe('workspace', () => {
     expect(workspace.findFolder('created')).toMatchObject({ kind: 'address', address: 'signup@sandpost.local' })
   })
 
-  it('shows administration to owners and admins only', async () => {
+  it('shows administration to owners only', async () => {
     for (const [user, expected] of [
-      [owner, true], [{ ...owner, role: 'admin' }, true], [member, false], [{ ...member, role: 'viewer' }, false],
+      [owner, true], [member, false], [{ ...member, role: 'viewer' }, false],
     ] as const) {
       const created = createWorkspace(createClient(user as SessionUser), { onSignedOut: vi.fn() })
       created.start()

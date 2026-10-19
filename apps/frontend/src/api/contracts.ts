@@ -47,7 +47,7 @@ export interface InboxInput {
  * A saved canonical query, presented as a Smart Folder.
  *
  * Views only organize mail the user may already read; they never grant access.
- * A null owner marks a shared view managed by instance administrators.
+ * A null owner marks a shared view managed by instance owners.
  */
 export interface SavedView {
   id: string
@@ -75,7 +75,7 @@ export interface WebFolderInput {
   icon?: string | null
 }
 
-export type GlobalRole = 'owner' | 'admin' | 'member' | 'viewer'
+export type GlobalRole = 'owner' | 'member' | 'viewer'
 
 /**
  * `all` reads every captured message; `scoped` reads only mail matching assigned scopes.
@@ -662,7 +662,7 @@ export interface ScopePreviewInput {
  */
 export interface SandpostAdminClient {
   /**
-   * Global SMTP server and SMTP access credentials; only owners and admins may use these.
+   * Global SMTP server and SMTP access credentials; only owners may use these.
    */
   smtp: {
     /**

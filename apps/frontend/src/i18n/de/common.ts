@@ -13,7 +13,7 @@ export default {
   "common.scopes": "Bereiche",
   "common.administration": "Verwaltung",
   "common.noAdminAccess": "Kein Verwaltungszugriff",
-  "common.adminAccessHint": "Nur Eigentümer und Administratoren verwalten Bereiche, SMTP-Zugänge und Benutzer.",
+  "common.adminAccessHint": "Nur Eigentümer verwalten Bereiche, SMTP-Zugänge und Benutzer.",
   "common.openInbox": "Posteingang öffnen",
   "common.brandInbox": "Sandpost-Posteingang",
   "common.connecting": "Verbindung wird hergestellt…",
@@ -67,7 +67,6 @@ export default {
   "common.deleteFolder": "Ordner löschen",
   "common.loading": "Wird geladen",
   "common.roles.owner": "Eigentümer",
-  "common.roles.admin": "Administrator",
   "common.roles.member": "Mitglied",
   "common.roles.viewer": "Betrachter"
 }

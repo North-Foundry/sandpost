@@ -1,0 +1,2 @@
+DROP TRIGGER users_reject_admin_update;
+DROP TRIGGER users_reject_admin_insert;

@@ -57,7 +57,7 @@ queries are not currently supported by the facts-only query language.
 
 Smart SELECT is writable only for Seen: PERMANENTFLAGS reports `(\\Seen)`;
 STORE of other flags, MOVE from smart results, COPY/MOVE into smart results and
-EXPUNGE are refused. FETCH may set Seen; EXAMINE remains fully read-only. Seen-only
+EXPUNGE are refused. FETCH may set Seen for Owners/Members; EXAMINE remains fully read-only. Seen-only
 STORE replacement changes Seen without clearing other underlying flags. COPY out of
 a smart result preserves its dynamic membership. Some clients may not expose read
 updates for restricted virtual mailboxes.
@@ -112,6 +112,8 @@ delay collection until another primary user releases a message. Privileged physi
 maintenance methods remain separate from user-facing logical deletion.
 
 ## Authorization, subscriptions and synchronization
+
+Viewers may use existing IMAP credentials but cannot create, update, delete, rotate or restore accounts, change folder definitions or subscriptions, or mutate flags/placement. SELECT is read-only for Viewers and ordinary FETCH returns content without setting Seen. Role demotion is rechecked by application mutations, including already selected sessions. Internal membership reconciliation remains available to enforce current visibility.
 
 Each command reloads credentials and current owner authorization. FETCH, SEARCH, SELECT,
 COPY/MOVE, smart queries and IDLE refresh reconcile against authoritative facts. Previously

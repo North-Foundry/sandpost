@@ -26,6 +26,8 @@ organization redesign; the matrix below records the implemented contract.
 | Permission revoked | Current owner authorization | Current owner authorization | Retain revalidation |
 | Garbage collection | Only after every view releases content | Dormant references retain content | No collector |
 
+The mutation rows apply only to Owners and Members. Viewers may read existing mailboxes and search accessible mail, but cannot change flags, folders, subscriptions or credentials. Viewer SELECT is read-only and FETCH does not set Seen, including after role demotion in an existing selected session. Scope and membership resolution is unchanged.
+
 Physical message content stays shared. Primary placement/Trash/deletions/flags/copies
 are distinct from Independent account placement/flags/copies/retention. Arrival seeds
 dormant Independent retention too. Permission composition always bounds retained data.

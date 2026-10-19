@@ -1,5 +1,5 @@
 import type {
-  IssuedSmtpCredentials, ListenerStatus, MessageSummary, QueryValidation, SandpostAdminClient, Scope, SessionUser, SmtpAccess, SmtpMechanism,
+  IssuedSmtpCredentials, ListenerStatus, MailAccess, MessageSummary, QueryValidation, SandpostAdminClient, Scope, SessionUser, SmtpAccess, SmtpMechanism,
   SmtpServer, UserAccount,
 } from '@/api/contracts'
 import { SCOPE_PREVIEW_LIMIT } from '@/api/admin'
@@ -82,6 +82,7 @@ export function matches(message: MessageSummary, filters: string[]): boolean {
 export function createMockAdmin(activeUser: () => SessionUser | null, summaries: MessageSummary[]): SandpostAdminClient {
   const scopes: Scope[] = []
   const assignments = new Map<string, Set<string>>()
+  const externalUserMailAccess = new Map<string, MailAccess>()
 
   /**
    * Mock SMTP accesses; like the server, only a fake hash is kept, never the password.
@@ -89,7 +90,7 @@ export function createMockAdmin(activeUser: () => SessionUser | null, summaries:
   const accesses: (SmtpAccess & { passwordHash: string })[] = []
   const serverAddress: string | null = '127.0.0.1:1025'
   const users: UserAccount[] = [
-    { id: '20000000-0000-4000-8000-000000000001', name: 'Elena Rossi', email: 'elena@northfoundry.dev', role: 'admin', mailAccess: 'all' },
+    { id: '20000000-0000-4000-8000-000000000001', name: 'Elena Rossi', email: 'elena@northfoundry.dev', role: 'member', mailAccess: 'all' },
     { id: '20000000-0000-4000-8000-000000000002', name: 'Luca Bianchi', email: 'luca@northfoundry.dev', role: 'member', mailAccess: 'scoped' },
     { id: '20000000-0000-4000-8000-000000000003', name: 'Marta Greco', email: 'marta@northfoundry.dev', role: 'viewer', mailAccess: 'all' },
   ]
@@ -122,11 +123,11 @@ export function createMockAdmin(activeUser: () => SessionUser | null, summaries:
   }
 
   /**
-   * Require an authenticated owner or administrator for SMTP management operations.
+   * Require an authenticated owner for SMTP management operations.
    */
   const requireGlobalAdmin = () => {
     const user = requireUser()
-    if (user.role !== 'owner' && user.role !== 'admin') fail('forbidden')
+    if (user.role !== 'owner') fail('forbidden')
   }
 
   /**
@@ -135,11 +136,13 @@ export function createMockAdmin(activeUser: () => SessionUser | null, summaries:
   const requireUser = () => activeUser() ?? fail('authentication required')
 
   /**
-   * Include an externally supplied owner in the mock directory when necessary.
+   * Include the bootstrap Owner with initial All access, retaining later access changes.
    */
   const userList = () => {
     const owner = activeUser()
-    return owner && !users.some((user) => user.id === owner.id) ? [{ ...owner, mailAccess: 'all' as const }, ...users] : users
+    return owner && !users.some((user) => user.id === owner.id)
+      ? [{ ...owner, mailAccess: externalUserMailAccess.get(owner.id) ?? 'all' }, ...users]
+      : users
   }
 
   /**
@@ -323,7 +326,13 @@ export function createMockAdmin(activeUser: () => SessionUser | null, summaries:
        */
       async update(id, changes) {
         requireUser()
-        const user = users.find((candidate) => candidate.id === id) ?? fail('the mock owner cannot be edited')
+        const user = users.find((candidate) => candidate.id === id)
+        if (!user) {
+          const owner = activeUser()
+          if (!owner || owner.id !== id) fail('item not found')
+          if (changes.mailAccess !== undefined) externalUserMailAccess.set(id, changes.mailAccess)
+          return { ...owner, mailAccess: externalUserMailAccess.get(id) ?? 'all' }
+        }
         if (changes.name !== undefined) user.name = changes.name.trim()
         if (changes.role !== undefined) user.role = changes.role
         if (changes.mailAccess !== undefined) user.mailAccess = changes.mailAccess

@@ -109,7 +109,7 @@ vi.mock('@/features/mail/MessageSelectionPanel.vue', () => ({
 
 vi.mock('@/features/mail/MessageList.vue', () => ({
   default: defineComponent({
-    props: ['messages', 'folder', 'search', 'loading', 'hasOlder', 'error', 'selection', 'showEmptyTrash', 'emptyTrashDisabled', 'readMessageIds', 'seenBusy'],
+    props: ['messages', 'folder', 'search', 'loading', 'hasOlder', 'error', 'selection', 'showEmptyTrash', 'emptyTrashDisabled', 'readMessageIds', 'seenBusy', 'canMutate'],
     emits: ['select', 'clearSearch', 'refresh', 'older', 'filter', 'update:selection', 'delete', 'move', 'emptyTrash', 'set-seen'],
 
     /**
@@ -124,7 +124,7 @@ vi.mock('@/features/mail/MessageList.vue', () => ({
 
 vi.mock('@/features/mail/MessageDetail.vue', () => ({
   default: defineComponent({
-    props: ['message', 'loading', 'error', 'mobile', 'downloadingAttachment', 'deleting', 'folders', 'trash', 'seen', 'seenBusy', 'flags'],
+    props: ['message', 'loading', 'error', 'mobile', 'downloadingAttachment', 'deleting', 'folders', 'trash', 'seen', 'seenBusy', 'flags', 'canMutate'],
     emits: ['back', 'retry', 'download', 'attachment', 'delete', 'move', 'copy', 'set-seen', 'set-flags'],
 
     /**
@@ -475,6 +475,20 @@ describe('MailPage', () => {
     await flushUi();
     expect(harness.details[0]!.props.seen).toBe(true);
     expect(harness.client.messages.setSeen).toHaveBeenCalledTimes(2);
+    app.unmount();
+  });
+
+  it('keeps viewer reads from changing Seen and hides mutation actions', async () => {
+    (harness.workspace.user as any).value.role = 'viewer';
+    harness.route.name = 'mail-message';
+    harness.route.params.id = 'message-1';
+    const app = mountPage(); await flushUi();
+    expect(harness.client.messages.setSeen).not.toHaveBeenCalled();
+    expect(harness.lists[0]!.props.canMutate).toBe(false);
+    expect(harness.details[0]!.props.canMutate).toBe(false);
+    harness.details[0]!.emit('set-seen', false);
+    await flushUi();
+    expect(harness.client.messages.setSeen).not.toHaveBeenCalled();
     app.unmount();
   });
 

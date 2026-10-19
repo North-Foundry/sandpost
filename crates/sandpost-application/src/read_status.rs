@@ -62,6 +62,7 @@ impl AuthorizedApplication {
         identifiers: Vec<MessageIdentifier>,
         change: ImapFlagChange,
     ) -> Result<u64, ApplicationError> {
+        self.require_mail_mutation().await?;
         if identifiers.len() > 256 {
             return Err(ApplicationError::InvalidInput(
                 "a flag update accepts at most 256 messages".into(),
@@ -103,6 +104,7 @@ impl AuthorizedApplication {
         identifiers: Vec<MessageIdentifier>,
         seen: bool,
     ) -> Result<u64, ApplicationError> {
+        self.require_mail_mutation().await?;
         if identifiers.len() > 256 {
             return Err(ApplicationError::InvalidInput(
                 "a Seen update accepts at most 256 messages".into(),

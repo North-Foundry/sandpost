@@ -982,7 +982,7 @@ async fn web_copy_duplicate_batches_and_concurrent_retries_are_atomic() {
 async fn web_supported_flags_share_mirrors_and_validate_atomic_results() {
     let fixture = Fixture::new().await;
     let user = fixture
-        .user("Flag owner", GlobalRole::Viewer, MailAccess::Scoped)
+        .user("Flag owner", GlobalRole::Member, MailAccess::Scoped)
         .await;
     let scope = fixture.scope(&user, "true").await;
     let first = fixture.mail("First", "app.test").await;

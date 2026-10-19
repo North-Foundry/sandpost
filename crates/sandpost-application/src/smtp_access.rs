@@ -214,13 +214,13 @@ impl SmtpAuthenticator {
 impl AuthorizedApplication {
     /// Describe the global SMTP server and its runtime listener to a global administrator.
     pub async fn smtp_server(&self) -> Result<SmtpServerDetails, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         self.smtp_server_details().await
     }
 
     /// List every SMTP access without credential material.
     pub async fn list_smtp_accesses(&self) -> Result<Vec<SmtpAccess>, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         Ok(self.application.storage.list_smtp_accesses().await?)
     }
 
@@ -229,7 +229,7 @@ impl AuthorizedApplication {
         &self,
         request: NewSmtpAccessRequest,
     ) -> Result<IssuedSmtpCredentials, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         let storage = &self.application.storage;
         let name = crate::validated_name(&request.name)?;
         let explicit_username = request
@@ -280,7 +280,7 @@ impl AuthorizedApplication {
         &self,
         identifier: SmtpAccessIdentifier,
     ) -> Result<IssuedSmtpCredentials, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         let storage = &self.application.storage;
         let password = generate_password()?;
         let password_hash = hash_generated_password(&password).await?;
@@ -305,7 +305,7 @@ impl AuthorizedApplication {
         identifier: SmtpAccessIdentifier,
         update: SmtpAccessUpdate,
     ) -> Result<SmtpAccess, ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         let storage = &self.application.storage;
         let mechanisms = update
             .allowed_mechanisms
@@ -346,7 +346,7 @@ impl AuthorizedApplication {
         &self,
         identifier: SmtpAccessIdentifier,
     ) -> Result<(), ApplicationError> {
-        self.require_global_admin().await?;
+        self.require_owner().await?;
         if !self
             .application
             .storage

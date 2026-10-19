@@ -107,6 +107,7 @@ const inTrash = computed(() => !appliedSearch.value && folder.value?.kind === 't
  * Viewers only read mail, so they are not offered Empty Trash, as they are not offered Delete all emails.
  */
 const canDeleteMail = computed(() => workspace.user.value !== null && workspace.user.value.role !== 'viewer');
+const canMutateMail = canDeleteMail;
 const visibleMessages = computed(() => messages.value.filter((message) => !unreadOnly.value || !readMessageIds.value.has(message.id)));
 const multipleSelected = computed(() => selection.value.size > 1);
 const selectedInOrder = computed(() => orderedSelection(visibleMessages.value.map((message) => message.id), selection.value));
@@ -198,6 +199,7 @@ async function refreshMessages(): Promise<void> {
  * Move messages in API-sized batches and refresh the current mailbox; moving out of Trash restores them.
  */
 async function moveMessages(identifiers: string[], folderIdentifier: string | null): Promise<void> {
+  if (!canMutateMail.value) return;
   try {
     for (let offset = 0; offset < identifiers.length; offset += MESSAGE_BATCH_SIZE) {
       await client.messages.move(identifiers.slice(offset, offset + MESSAGE_BATCH_SIZE), folderIdentifier)
@@ -215,7 +217,7 @@ async function moveMessages(identifiers: string[], folderIdentifier: string | nu
  * Copy messages into an additional primary folder, retaining failed batches in the selection.
  */
 async function copyMessages(identifiers: string[], folderIdentifier: string | null): Promise<void> {
-  if (!identifiers.length || copying.value) return;
+  if (!canMutateMail.value || !identifiers.length || copying.value) return;
   copying.value = true;
   const copied = new Set<string>();
   let failure: unknown = null;
@@ -243,7 +245,7 @@ async function copyMessages(identifiers: string[], folderIdentifier: string | nu
  * Apply server-backed primary flags in bounded batches, then reload the affected summaries.
  */
 async function updateFlags(identifiers: string[], operation: MessageFlagOperation, flags: MessageFlags): Promise<void> {
-  if (!identifiers.length) return;
+  if (!canMutateMail.value || !identifiers.length) return;
   pendingFlagRequests.value += 1;
   let failure: unknown = null;
   try {
@@ -273,7 +275,7 @@ function updateDetailFlags(operation: MessageFlagOperation, flags: MessageFlags)
  * leave the list and the selection; the failed rest stays selected and the failure is reported in the list.
  */
 async function trashMessages(identifiers: string[]): Promise<void> {
-  if (!identifiers.length || trashing.value) return;
+  if (!canMutateMail.value || !identifiers.length || trashing.value) return;
   trashing.value = true;
   const trashed = new Set<string>();
   let failure: unknown = null;
@@ -301,6 +303,7 @@ async function trashMessages(identifiers: string[]): Promise<void> {
  * Routes a Delete request: permanent deletion after confirmation inside Trash, an immediate move to Trash elsewhere.
  */
 function requestDelete(ids: string[]): void {
+  if (!canMutateMail.value) return;
   if (inTrash.value) confirmDelete(ids);
   else void trashMessages(ids);
 }
@@ -309,7 +312,7 @@ function requestDelete(ids: string[]): void {
  * Opens the Empty Trash confirmation, counting the Trash only when every page is loaded.
  */
 function confirmEmptyTrash(): void {
-  if (emptyingTrash.value) return;
+  if (!canMutateMail.value || emptyingTrash.value) return;
   emptyTrashCount.value = hasOlder.value ? null : messages.value.length;
   emptyTrashError.value = '';
   emptyTrashOpen.value = true;
@@ -319,7 +322,7 @@ function confirmEmptyTrash(): void {
  * Permanently deletes everything in Trash, then reloads the emptied list; failures keep the dialog open.
  */
 async function emptyTrash(): Promise<void> {
-  if (emptyingTrash.value) return;
+  if (!canMutateMail.value || emptyingTrash.value) return;
   emptyingTrash.value = true;
   emptyTrashError.value = '';
   try {
@@ -373,7 +376,7 @@ async function loadDetail(id: string | null): Promise<void> {
     const loaded = await client.messages.get(id);
     if (request !== detailRequest || stopped) return;
     detail.value = loaded;
-    if (!selectedMessage.value?.seen) void updateSeen([id], true);
+    if (workspace.user.value?.role !== 'viewer' && !selectedMessage.value?.seen) void updateSeen([id], true);
   } catch (error) {
     if (request === detailRequest) detailError.value = error instanceof Error ? error.message : t('mail.error.openFailed');
   } finally { if (request === detailRequest) detailLoading.value = false; }
@@ -383,7 +386,7 @@ async function loadDetail(id: string | null): Promise<void> {
  * Change shared read status and update the visible list after the server accepts it.
  */
 async function updateSeen(identifiers: string[], seen: boolean): Promise<void> {
-  if (!identifiers.length) return;
+  if (!identifiers.length || !canMutateMail.value) return;
   pendingSeenRequests.value += 1;
   try {
     for (let offset = 0; offset < identifiers.length; offset += MESSAGE_BATCH_SIZE) {
@@ -605,6 +608,7 @@ onBeforeUnmount(() => {
       :has-older="hasOlder"
       :error="listError"
       :show-empty-trash="canDeleteMail"
+      :can-mutate="canMutateMail"
       :empty-trash-disabled="!messages.length || loading || refreshing || trashing || deleting || emptyingTrash"
       @clear-search="clearAppliedSearch"
       @filter="unreadOnly = $event"
@@ -618,7 +622,7 @@ onBeforeUnmount(() => {
       @empty-trash="confirmEmptyTrash"
     />
     <MessageSelectionPanel
-      v-if="multipleSelected"
+      v-if="multipleSelected && canMutateMail"
       class="min-h-0 max-lg:hidden"
       :count="selectedInOrder.length"
       :deleting="deleting || trashing || copying || pendingFlagRequests > 0"
@@ -637,6 +641,7 @@ onBeforeUnmount(() => {
       :message="detail"
       :seen="selectedMessage?.seen ?? detailSeen"
       :flags="selectedMessage?.flags"
+      :can-mutate="canMutateMail"
       :seen-busy="pendingSeenRequests > 0"
       :loading="detailLoading"
       :error="detailError"

@@ -87,6 +87,7 @@ impl AuthorizedApplication {
         &self,
         request: WebFolderRequest,
     ) -> Result<WebFolder, ApplicationError> {
+        self.require_mail_mutation().await?;
         self.account().await?;
         if self
             .application
@@ -123,6 +124,7 @@ impl AuthorizedApplication {
         identifier: ImapFolderIdentifier,
         request: WebFolderRequest,
     ) -> Result<WebFolder, ApplicationError> {
+        self.require_mail_mutation().await?;
         self.owned_web_folder(identifier).await?;
         let request = Self::validate_web_folder(request)?;
         let folder = self
@@ -169,6 +171,7 @@ impl AuthorizedApplication {
         identifiers: Vec<MessageIdentifier>,
         folder: Option<ImapFolderIdentifier>,
     ) -> Result<u64, ApplicationError> {
+        self.require_mail_mutation().await?;
         if identifiers.len() > 256 {
             return Err(ApplicationError::InvalidInput(
                 "a move accepts at most 256 messages".into(),
@@ -206,6 +209,7 @@ impl AuthorizedApplication {
         identifiers: Vec<MessageIdentifier>,
         folder: Option<ImapFolderIdentifier>,
     ) -> Result<u64, ApplicationError> {
+        self.require_mail_mutation().await?;
         if identifiers.len() > 256 {
             return Err(ApplicationError::InvalidInput(
                 "a copy accepts at most 256 messages".into(),

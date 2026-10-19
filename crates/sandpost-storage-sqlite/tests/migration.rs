@@ -97,7 +97,7 @@ async fn a_fresh_database_ignores_arbitrary_user_version() {
 
     let mut connection = open_connection(&path).await;
     let actual = migration_history(&mut connection).await;
-    assert_eq!(expected.len(), 47);
+    assert_eq!(expected.len(), 48);
     assert_eq!(actual, expected);
     let legacy_smtp_server_table: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'smtp_server'",
@@ -116,6 +116,112 @@ async fn a_fresh_database_ignores_arbitrary_user_version() {
     connection.close().await.unwrap();
 }
 
+/**
+ * Promote legacy admins while preserving users, memberships, and their stored mail.
+ */
+#[tokio::test]
+async fn admin_role_upgrade_preserves_related_rows_and_guards_future_values() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut scripts: Vec<_> = std::fs::read_dir(&migration_directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect();
+    scripts.sort();
+    assert_eq!(scripts.len(), 48);
+    let admin_identifier = uuid::Uuid::new_v4().to_string();
+    let scoped_admin_identifier = uuid::Uuid::new_v4().to_string();
+    let member_identifier = uuid::Uuid::new_v4().to_string();
+    let owner_identifier = uuid::Uuid::new_v4().to_string();
+    {
+        let mut connection = open_connection(&path).await;
+        for script_path in scripts.iter().take(47) {
+            let name = script_path.file_name().unwrap().to_string_lossy();
+            let script = std::fs::read_to_string(script_path).unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(script.as_str()))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO migrations(migration, batch) VALUES (?1, 1)")
+                .bind(name.as_ref())
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO users(identifier,name,email,password_hash,global_role,mail_access,personal_filter,created_at,updated_at) VALUES (?1,'Legacy admin','legacy-admin@example.test','hash','admin','all',NULL,1,2),(?2,'Legacy scoped admin','legacy-scoped-admin@example.test','scoped-hash','admin','scoped','legacy-filter',1,3),(?3,'Legacy member','legacy-member@example.test','hash','member','all',NULL,1,2),(?4,'Existing owner','existing-owner@example.test','owner-hash','owner','all',NULL,1,4)")
+            .bind(&admin_identifier).bind(&scoped_admin_identifier).bind(&member_identifier).bind(&owner_identifier).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO scopes(identifier,name,filter,position,policy_version) VALUES ('legacy-scope','Scope','true',0,1)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO scope_memberships(user_identifier,scope_identifier) VALUES (?1,'legacy-scope'),(?2,'legacy-scope'),(?3,'legacy-scope')")
+            .bind(&admin_identifier).bind(&scoped_admin_identifier).bind(&member_identifier).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO mail(identifier,subject,text_body,markup_body,raw_message,received_at,size) VALUES ('legacy-message','Preserved','body','',X'010203',3,3)")
+            .execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+    }
+
+    let storage = SqliteStorage::open(&path).await.unwrap();
+    let admin: sandpost_core::User = storage
+        .get_user(admin_identifier.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(admin.global_role, GlobalRole::Owner);
+    assert_eq!(storage.count_users().await.unwrap(), 4);
+    let scoped_admin = storage
+        .get_user(scoped_admin_identifier.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scoped_admin.global_role, GlobalRole::Owner);
+    assert_eq!(scoped_admin.mail_access, sandpost_core::MailAccess::Scoped);
+    assert_eq!(
+        scoped_admin.personal_filter.as_deref(),
+        Some("legacy-filter")
+    );
+    assert_eq!(
+        storage
+            .get_user(owner_identifier.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .global_role,
+        GlobalRole::Owner
+    );
+    let mut connection = open_connection(&path).await;
+    let memberships: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scope_memberships")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    let rows: (i64, i64, i64, String) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM users),(SELECT COUNT(*) FROM scope_memberships),(SELECT COUNT(*) FROM mail),(SELECT global_role FROM users WHERE identifier=?1)")
+        .bind(&admin_identifier)
+        .fetch_one(&mut connection).await.unwrap();
+    assert_eq!(rows, (4, 3, 1, "owner".into()));
+    assert_eq!(memberships, 3);
+    let rejected_insert = sqlx::query("INSERT INTO users(identifier,name,email,password_hash,global_role,mail_access,created_at,updated_at) VALUES ('new-admin','New admin','new-admin@example.test','hash','admin','all',1,1)")
+        .execute(&mut connection).await;
+    assert!(rejected_insert.is_err());
+    let rejected_update = sqlx::query("UPDATE users SET global_role='admin' WHERE identifier=?1")
+        .bind(&member_identifier)
+        .execute(&mut connection)
+        .await;
+    assert!(rejected_update.is_err());
+    let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM migrations")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(applied, 48);
+    let message: (String, Vec<u8>) =
+        sqlx::query_as("SELECT subject,raw_message FROM mail WHERE identifier='legacy-message'")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(message, ("Preserved".into(), vec![1, 2, 3]));
+    connection.close().await.unwrap();
+    storage.close().await;
+}
+
 /// Upgrade an early baseline while preserving mail, mailbox UIDs, and message flags.
 #[tokio::test]
 async fn a_baseline_prefix_upgrade_preserves_imap_state_and_uses_final_table_shapes() {
@@ -128,7 +234,7 @@ async fn a_baseline_prefix_upgrade_preserves_imap_state_and_uses_final_table_sha
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 47);
+    assert_eq!(scripts.len(), 48);
 
     let owner = uuid::Uuid::new_v4().to_string();
     let account = uuid::Uuid::new_v4().to_string();

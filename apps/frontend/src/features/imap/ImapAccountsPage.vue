@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRouter } from 'vue-router'
 import {
@@ -26,10 +26,13 @@ import ImapServerNotice from '@/features/imap/ImapServerNotice.vue'
 import { describeRestoration, useImapAccountActions } from '@/features/imap/accountActions'
 import { imapSecurityLabel, mailboxCountLabel } from '@/features/imap/security'
 import { useCopy } from '@/composables/useCopy'
+import { useWorkspace } from '@/features/shell/workspace'
 
 const client = useSandpostClient()
 const { t } = useI18n()
 const router = useRouter()
+const workspace = useWorkspace()
+const canMutate = computed(() => Boolean(workspace.user.value && workspace.user.value.role !== 'viewer'))
 const accounts = ref<ImapAccount[]>([])
 const server = ref<ImapServer | null>(null)
 const loading = ref(true)
@@ -87,7 +90,7 @@ function created(credentials: IssuedImapCredentials): void {
  * Enable or disable an account in place; disabling signs its mail clients out.
  */
 async function toggle(account: ImapAccount): Promise<void> {
-  if (toggling.value) return
+  if (!canMutate.value || toggling.value) return
   toggling.value = account.id
   rowError.value = ''
   try {
@@ -120,7 +123,7 @@ onMounted(load)
             {{ t('imap.accounts.description') }}
           </p>
         </div>
-        <Button :disabled="loading || Boolean(error)" @click="createOpen = true"><PlusIcon data-icon="inline-start" />{{ t('imap.create.submit') }}</Button>
+        <Button v-if="canMutate" :disabled="loading || Boolean(error)" @click="createOpen = true"><PlusIcon data-icon="inline-start" />{{ t('imap.create.submit') }}</Button>
       </div>
 
       <Alert v-if="error" variant="destructive" role="alert">
@@ -152,7 +155,7 @@ onMounted(load)
             <EmptyTitle>{{ t('imap.accounts.emptyTitle') }}</EmptyTitle>
             <EmptyDescription>{{ t('imap.accounts.emptyDescription') }}</EmptyDescription>
           </EmptyHeader>
-          <EmptyContent><Button @click="createOpen = true"><PlusIcon data-icon="inline-start" />{{ t('imap.create.submit') }}</Button></EmptyContent>
+          <EmptyContent v-if="canMutate"><Button @click="createOpen = true"><PlusIcon data-icon="inline-start" />{{ t('imap.create.submit') }}</Button></EmptyContent>
         </Empty>
         <div v-else class="overflow-hidden rounded-lg border">
           <Table>
@@ -163,7 +166,7 @@ onMounted(load)
                 <TableHead class="w-24">{{ t('imap.accounts.status') }}</TableHead>
                 <TableHead class="max-md:hidden">{{ t('imap.accounts.mailboxes') }}</TableHead>
                 <TableHead class="max-md:hidden">{{ t('imap.accounts.lastUsed') }}</TableHead>
-                <TableHead class="w-12"><span class="sr-only">{{ t('imap.common.actions') }}</span></TableHead>
+                <TableHead v-if="canMutate" class="w-12"><span class="sr-only">{{ t('imap.common.actions') }}</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -176,7 +179,7 @@ onMounted(load)
                   <span class="block truncate text-xs text-muted-foreground">{{ account.mode === 'mirror' ? t('imap.account.mirrorMode') : t('imap.account.independentMode') }}</span>
                 </TableCell>
                 <TableCell class="max-w-56 max-sm:hidden"><span class="block truncate font-mono text-xs">{{ account.username }}</span></TableCell>
-                <TableCell>
+                <TableCell v-if="canMutate">
                   <Badge :variant="account.enabled ? 'secondary' : 'outline'">{{ account.enabled ? t('imap.accounts.active') : t('imap.accounts.disabled') }}</Badge>
                 </TableCell>
                 <TableCell class="text-muted-foreground max-md:hidden" :title="account.mailboxes.map((mailbox) => mailbox.name).join(', ')">
@@ -221,7 +224,7 @@ onMounted(load)
       </template>
     </div>
 
-    <ImapAccountCreateDialog v-model:open="createOpen" @created="created" />
-    <ImapAccountDialogs :actions="actions" />
+    <ImapAccountCreateDialog v-if="canMutate" v-model:open="createOpen" @created="created" />
+    <ImapAccountDialogs v-if="canMutate" :actions="actions" />
   </section>
 </template>

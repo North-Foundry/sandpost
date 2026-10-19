@@ -8,7 +8,7 @@ export interface AdminContext {
   user: Ref<SessionUser | null>
 
   /**
-   * Owners and admins manage users, scopes, and SMTP access.
+   * Owners manage users, scopes, and SMTP access.
    */
   isGlobalAdmin: ComputedRef<boolean>
   isOwner: ComputedRef<boolean>
@@ -22,7 +22,7 @@ export const adminContextKey: InjectionKey<AdminContext> = Symbol('AdminContext'
 export function createAdminContext(user: Ref<SessionUser | null>): AdminContext {
   return {
     user,
-    isGlobalAdmin: computed(() => user.value?.role === 'owner' || user.value?.role === 'admin'),
+    isGlobalAdmin: computed(() => user.value?.role === 'owner'),
     isOwner: computed(() => user.value?.role === 'owner'),
   }
 }

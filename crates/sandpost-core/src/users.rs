@@ -8,12 +8,9 @@ use serde::{Deserialize, Serialize};
 pub enum GlobalRole {
     /// Full instance authority, including owner-only operations.
     Owner,
-    /// Global Sandpost administrator for users, scopes, SMTP access, and shared resources.
-    Admin,
     /// Reads and organizes mail with personal Smart Folders; no administrative authority.
     Member,
-    /// Read-only: may read mail and keep personal Smart Folders, but cannot delete mail or
-    /// manage shared resources.
+    /// Reads authorized mail without changing messages, folders, credentials, or configuration.
     Viewer,
 }
 

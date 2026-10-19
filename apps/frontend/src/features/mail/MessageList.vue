@@ -81,6 +81,7 @@ const props = defineProps<{
    */
   showEmptyTrash?: boolean
   emptyTrashDisabled?: boolean
+  canMutate?: boolean
 }>()
 const { t, locale } = useI18n()
 const emit = defineEmits<{
@@ -308,7 +309,7 @@ function onKeydown(event: KeyboardEvent): void {
     selectAll()
     return
   }
-  if ((event.key === 'Delete' || event.key === 'Backspace') && !event.altKey && !event.shiftKey) {
+  if (props.canMutate && (event.key === 'Delete' || event.key === 'Backspace') && !event.altKey && !event.shiftKey) {
     const ids = deletionTargets()
     if (!ids.length) return
     event.preventDefault()
@@ -376,6 +377,7 @@ function closeSwipe(): void {
  * Settles a released swipe: back to rest, open on the Delete action, or a full-swipe delete request.
  */
 function releaseSwipe(): void {
+  if (!props.canMutate) return
   const id = swipe.id
   if (!id) return
   swipe.dragging = false
@@ -389,6 +391,7 @@ function releaseSwipe(): void {
  * Requests deletion of the row whose revealed Delete action was pressed.
  */
 function deleteSwipedRow(id: string): void {
+  if (!props.canMutate) return
   closeSwipe()
   emit('delete', [id])
 }
@@ -515,11 +518,11 @@ watch(() => props.folder?.id, resetCopy)
       <div v-if="props.selection.size" class="flex min-h-5 min-w-0 items-center gap-1 text-xs" role="toolbar" :aria-label="t('mail.list.selected')">
         <span class="font-medium text-foreground tabular-nums" role="status">{{ t('mail.list.selectedCount', { count: props.selection.size }) }}</span>
         <Button v-if="props.selection.size < rows.length" variant="ghost" size="xs" class="text-muted-foreground" @click="selectAll">{{ t('mail.list.selectAll') }}</Button>
-        <MoveToMenu :folders="props.folders" @move="emit('move', orderedSelection(rowOrder, props.selection), $event)" />
-        <Button variant="ghost" size="icon-xs" :disabled="props.seenBusy" :aria-label="selectionSeen ? t('mail.list.markUnread') : t('mail.list.markRead')" :title="selectionSeen ? t('mail.list.markUnread') : t('mail.list.markRead')" @click="emit('set-seen', orderedSelection(rowOrder, props.selection), !selectionSeen)">
+        <MoveToMenu v-if="props.canMutate" :folders="props.folders" @move="emit('move', orderedSelection(rowOrder, props.selection), $event)" />
+        <Button v-if="props.canMutate" variant="ghost" size="icon-xs" :disabled="props.seenBusy" :aria-label="selectionSeen ? t('mail.list.markUnread') : t('mail.list.markRead')" :title="selectionSeen ? t('mail.list.markUnread') : t('mail.list.markRead')" @click="emit('set-seen', orderedSelection(rowOrder, props.selection), !selectionSeen)">
           <MailOpenIcon v-if="selectionSeen" /><MailIcon v-else />
         </Button>
-        <Button
+        <Button v-if="props.canMutate"
           variant="ghost"
           size="xs"
           class="text-destructive hover:bg-destructive/10 hover:text-destructive"

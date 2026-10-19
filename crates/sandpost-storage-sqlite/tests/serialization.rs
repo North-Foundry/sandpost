@@ -74,7 +74,7 @@ fn domain_models_preserve_identifiers_and_role_representation() {
         name: "User".into(),
         email: "user@example.test".into(),
         password_hash: "hash".into(),
-        global_role: GlobalRole::Admin,
+        global_role: GlobalRole::Owner,
         mail_access: MailAccess::Scoped,
         personal_filter: None,
         created_at: 1,
@@ -82,7 +82,7 @@ fn domain_models_preserve_identifiers_and_role_representation() {
     };
     let serialized_user = serde_json::to_value(&user).unwrap();
     assert_eq!(serialized_user["identifier"], user_identifier.to_string());
-    assert_eq!(serialized_user["global_role"], "admin");
+    assert_eq!(serialized_user["global_role"], "owner");
     assert_eq!(serialized_user["mail_access"], "scoped");
 
     let view = View {

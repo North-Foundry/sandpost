@@ -147,7 +147,7 @@ function makeBridge(): SandpostDesktopBridge {
       users: {
         list: vi.fn(async () => [{ identifier: 'user-id', name: 'Reader', email: 'reader@example.test', role: 'member' as const, mail_access: 'scoped' as const, personal_filter: null }]),
         create: vi.fn(async (input) => ({ identifier: 'new-id', personal_filter: null, ...input, role: 'member' as const, mail_access: 'all' as const })),
-        update: vi.fn(async () => ({ identifier: 'user-id', name: 'Renamed', email: 'reader@example.test', role: 'admin' as const, mail_access: 'all' as const, personal_filter: null })),
+        update: vi.fn(async () => ({ identifier: 'user-id', name: 'Renamed', email: 'reader@example.test', role: 'member' as const, mail_access: 'all' as const, personal_filter: null })),
         delete: vi.fn(async () => { }),
       },
       validateQuery: vi.fn(async () => ({ valid: false, error: { message: 'expected value', position: 11 } })),

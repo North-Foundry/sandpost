@@ -87,6 +87,7 @@ function folderLocation(folder: MailFolder) {
  * Report whether the user may change a folder's saved view.
  */
 function manageable(folder: MailFolder): boolean {
+  if (workspace.user.value?.role === 'viewer') return false
   if (folder.kind === 'folder') return true
   const view = folder.view
   if (!view) return false
@@ -132,7 +133,7 @@ function confirmDeleteAll(): void {
  * collects whatever is left. An open message that was deleted gives way to its list.
  */
 async function deleteAllMail(): Promise<void> {
-  if (deletingAll.value) return
+  if (!canDeleteMail.value || deletingAll.value) return
   deletingAll.value = true
   deleteAllError.value = ''
   deleteAllProgress.value = null
@@ -152,7 +153,7 @@ async function deleteAllMail(): Promise<void> {
  */
 async function deleteFolder(): Promise<void> {
   const target = deleteTarget.value
-  if (!target || deleting.value) return
+  if (!canDeleteMail.value || !target || deleting.value) return
   deleting.value = true
   deleteError.value = ''
   try {
@@ -169,7 +170,7 @@ async function deleteFolder(): Promise<void> {
 <template>
   <SidebarGroup>
     <SidebarGroupLabel>{{ t('common.mail') }}</SidebarGroupLabel>
-    <DropdownMenu>
+    <DropdownMenu v-if="canDeleteMail">
       <DropdownMenuTrigger as-child>
         <SidebarGroupAction :title="t('common.newFolder')" :aria-label="t('common.newFolder')"><PlusIcon /></SidebarGroupAction>
       </DropdownMenuTrigger>
@@ -232,7 +233,7 @@ async function deleteFolder(): Promise<void> {
                 </DropdownMenuContent>
               </DropdownMenu>
             </template>
-            <template v-else-if="folder.kind !== 'inbox' && folder.kind !== 'trash'" #action>
+            <template v-else-if="canDeleteMail && folder.kind !== 'inbox' && folder.kind !== 'trash'" #action>
               <DropdownMenu>
                 <DropdownMenuTrigger as-child>
                   <SidebarMenuAction show-on-hover class="transition-opacity peer-data-[size=default]/menu-button:top-2" :aria-label="t('common.folderActions', { name: folder.name })"><EllipsisIcon /></SidebarMenuAction>

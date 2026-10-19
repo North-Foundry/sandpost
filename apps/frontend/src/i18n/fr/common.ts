@@ -13,7 +13,7 @@ export default {
   "common.scopes": "Périmètres",
   "common.administration": "Administration",
   "common.noAdminAccess": "Aucun accès à l’administration",
-  "common.adminAccessHint": "Seuls les propriétaires et les administrateurs gèrent les périmètres, les accès SMTP et les utilisateurs.",
+  "common.adminAccessHint": "Seuls les propriétaires gèrent les périmètres, les accès SMTP et les utilisateurs.",
   "common.openInbox": "Ouvrir la boîte de réception",
   "common.brandInbox": "Boîte de réception Sandpost",
   "common.connecting": "Connexion…",
@@ -67,7 +67,6 @@ export default {
   "common.deleteFolder": "Supprimer le dossier",
   "common.loading": "Chargement",
   "common.roles.owner": "Propriétaire",
-  "common.roles.admin": "Administrateur",
   "common.roles.member": "Membre",
   "common.roles.viewer": "Lecteur"
 }
