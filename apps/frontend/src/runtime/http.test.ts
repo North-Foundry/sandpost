@@ -4,6 +4,41 @@ import { createHttpClient } from './http'
 describe('HTTP adapter', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('sends the remember-me choice and restores a session through cookies in a fresh client', async () => {
+    const user = { id: 'owner-id', name: 'Owner', email: 'owner@example.test', role: 'owner' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+
+        /**
+         * Return the successful login response for the HTTP adapter.
+         */
+        json: async () => ({ token: 'memory-token', user }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+
+        /**
+         * Return the session associated with the browser cookie.
+         */
+        json: async () => user,
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const loginClient = createHttpClient()
+    await loginClient.login({ email: user.email, password: 'password', rememberMe: true })
+    const freshClient = createHttpClient()
+    expect(await freshClient.session()).toEqual(user)
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
+      email: user.email,
+      password: 'password',
+      rememberMe: true,
+    })
+    expect(fetchMock.mock.calls[1]![1]).toMatchObject({ credentials: 'same-origin' })
+    expect(new Headers(fetchMock.mock.calls[1]![1]?.headers).has('Authorization')).toBe(false)
+  })
+
   it('keeps the bearer token in memory and uses the session cookie for SSE', async () => {
     const user = { id: 'owner-id', name: 'Owner', email: 'owner@example.test', role: 'owner' }
     const fetchMock = vi.fn()

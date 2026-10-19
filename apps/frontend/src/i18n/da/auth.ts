@@ -15,6 +15,7 @@ export default {
   'auth.login.ariaLabel': 'Log ind på Sandpost',
   'auth.login.title': 'Velkommen tilbage',
   'auth.login.description': 'Log ind for at se indfangede mails.',
+  'auth.login.rememberMe': 'Husk mig',
   'auth.login.failed': 'Login mislykkedes. Kontrollér din e-mail og adgangskode, og prøv igen.',
   'auth.login.submitting': 'Logger ind…',
   'auth.login.submit': 'Log ind',

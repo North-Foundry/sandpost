@@ -15,6 +15,7 @@ export default {
   'auth.login.ariaLabel': 'Se connecter à Sandpost',
   'auth.login.title': 'Ravi de vous revoir',
   'auth.login.description': 'Connectez-vous pour consulter les e-mails capturés.',
+  'auth.login.rememberMe': 'Se souvenir de moi',
   'auth.login.failed': 'Connexion impossible. Vérifiez votre adresse e-mail et votre mot de passe, puis réessayez.',
   'auth.login.submitting': 'Connexion…',
   'auth.login.submit': 'Se connecter',

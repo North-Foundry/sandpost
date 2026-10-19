@@ -329,4 +329,77 @@ impl UserStorage for SqliteStorage {
     async fn create_first_owner(&self, owner: &NewUser) -> Result<User, StorageError> {
         create_first_owner(self, owner).await
     }
+
+    /**
+     * Persist a remembered session keyed by the caller-computed token digest.
+     */
+    async fn create_persistent_session(
+        &self,
+        token_hash: &str,
+        user_identifier: UserIdentifier,
+        verified_password_hash: &str,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO persistent_sessions(token_hash,user_identifier,verified_password_hash) VALUES (?1,?2,?3)",
+        )
+        .bind(token_hash)
+        .bind(user_identifier.to_string())
+        .bind(verified_password_hash)
+        .execute(&self.write_pool)
+        .await
+        .storage()?;
+        Ok(())
+    }
+
+    /**
+     * Load a remembered session's user identifier and credential binding.
+     */
+    async fn get_persistent_session(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<(UserIdentifier, String)>, StorageError> {
+        let row = sqlx::query(
+            "SELECT user_identifier,verified_password_hash FROM persistent_sessions WHERE token_hash=?1",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.read_pool)
+        .await
+        .storage()?;
+        row.map(|row| {
+            let identifier: String = row.try_get("user_identifier").storage()?;
+            let password_hash: String = row.try_get("verified_password_hash").storage()?;
+            let identifier = identifier.parse().map_err(|_| {
+                StorageError::InvalidData("invalid persistent session user identifier".into())
+            })?;
+            Ok((identifier, password_hash))
+        })
+        .transpose()
+    }
+
+    /**
+     * Delete a remembered session by token digest, succeeding when it is already absent.
+     */
+    async fn delete_persistent_session(&self, token_hash: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM persistent_sessions WHERE token_hash=?1")
+            .bind(token_hash)
+            .execute(&self.write_pool)
+            .await
+            .storage()?;
+        Ok(())
+    }
+
+    /**
+     * Delete all remembered sessions for one user.
+     */
+    async fn delete_user_persistent_sessions(
+        &self,
+        user_identifier: UserIdentifier,
+    ) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM persistent_sessions WHERE user_identifier=?1")
+            .bind(user_identifier.to_string())
+            .execute(&self.write_pool)
+            .await
+            .storage()?;
+        Ok(())
+    }
 }

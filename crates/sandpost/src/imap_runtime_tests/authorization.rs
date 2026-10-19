@@ -41,6 +41,7 @@ async fn revoking_a_scope_expunges_from_idle_clients() {
         .application
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "member@example.test".into(),
             password: "member test password".into(),
         })

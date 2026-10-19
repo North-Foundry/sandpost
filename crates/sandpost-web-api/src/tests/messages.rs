@@ -58,6 +58,7 @@ async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
     let token = state
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "unassigned@example.test".into(),
             password: "unassigned-member-password".into(),
         })
@@ -192,6 +193,7 @@ async fn create_authenticated_user(
     state
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: email.into(),
             password: "acceptance-test-password".into(),
         })
@@ -526,6 +528,7 @@ async fn search_uses_canonical_dsl_globally_and_with_view_filters() {
     let token = state
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "view-outsider@example.test".into(),
             password: "view-outsider-password".into(),
         })

@@ -24,6 +24,7 @@ async fn primary_deletion_and_independent_expunge_are_isolated_across_restart() 
         .application
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "other@example.test".into(),
             password: "other test password".into(),
         })
@@ -33,6 +34,7 @@ async fn primary_deletion_and_independent_expunge_are_isolated_across_restart() 
         .application
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "owner@example.test".into(),
             password: "runtime test password".into(),
         })

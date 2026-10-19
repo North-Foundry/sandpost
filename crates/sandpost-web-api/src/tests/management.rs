@@ -32,6 +32,7 @@ async fn viewer_cannot_manage_accounts_or_delete_messages() {
     let token = state
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "limited@example.test".into(),
             password: "limited-user-password".into(),
         })

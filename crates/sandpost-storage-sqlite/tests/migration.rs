@@ -97,7 +97,7 @@ async fn a_fresh_database_ignores_arbitrary_user_version() {
 
     let mut connection = open_connection(&path).await;
     let actual = migration_history(&mut connection).await;
-    assert_eq!(expected.len(), 46);
+    assert_eq!(expected.len(), 47);
     assert_eq!(actual, expected);
     let legacy_smtp_server_table: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'smtp_server'",
@@ -128,7 +128,7 @@ async fn a_baseline_prefix_upgrade_preserves_imap_state_and_uses_final_table_sha
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 46);
+    assert_eq!(scripts.len(), 47);
 
     let owner = uuid::Uuid::new_v4().to_string();
     let account = uuid::Uuid::new_v4().to_string();

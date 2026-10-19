@@ -4,7 +4,7 @@
 pub(crate) type MigrationScript = (&'static str, &'static str);
 
 /// Apply each script once, in order; append new scripts to evolve released databases.
-pub(crate) const MIGRATIONS: [MigrationScript; 46] = [
+pub(crate) const MIGRATIONS: [MigrationScript; 47] = [
     (
         "0001_create_migrations_table.sql",
         include_str!("../../migrations/0001_create_migrations_table.sql"),
@@ -188,5 +188,9 @@ pub(crate) const MIGRATIONS: [MigrationScript; 46] = [
     (
         "0046_create_user_message_deletions_membership_triggers.sql",
         include_str!("../../migrations/0046_create_user_message_deletions_membership_triggers.sql"),
+    ),
+    (
+        "0047_create_persistent_sessions_table.sql",
+        include_str!("../../migrations/0047_create_persistent_sessions_table.sql"),
     ),
 ];

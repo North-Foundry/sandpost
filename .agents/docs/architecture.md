@@ -125,7 +125,8 @@ and rollback atomically reverses the latest batch without first applying pending
 There is no separate schema version or `PRAGMA user_version`. Validated name-only histories upgrade
 to batch 1; older incompatible pre-deployment formats still fail without resetting data.
 The 46-script pre-release baseline creates current table definitions directly, with separate
-trigger groups and no historical ALTERs or data backfills. Earlier development sequences require
+trigger groups and no historical ALTERs or data backfills. Migration 0047 appends durable
+remembered-session storage. Earlier development sequences require
 explicit database recreation; startup does not reset them.
 See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 

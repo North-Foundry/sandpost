@@ -100,6 +100,7 @@ async fn embedded_runtime_is_ready_and_bounds_shutdown_with_active_events() {
         .application
         .instance()
         .login(sandpost_application::LoginRequest {
+            remember_me: false,
             email: "owner@example.test".into(),
             password: "runtime test password".into(),
         })

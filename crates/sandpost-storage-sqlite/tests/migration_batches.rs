@@ -108,7 +108,7 @@ async fn opening_batches_suffix_migrations_and_reopening_is_a_no_op() {
 
     open_and_close(&path).await;
     let first_history = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(first_history.len(), 46);
+    assert_eq!(first_history.len(), 47);
     assert!(first_history[..12].iter().all(|record| record.batch == 1));
     assert!(first_history[12..].iter().all(|record| record.batch == 2));
 
@@ -223,7 +223,7 @@ async fn concurrent_upgrades_record_one_shared_batch() {
     first.unwrap().close().await;
     second.unwrap().close().await;
     let history = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(history.len(), 46);
+    assert_eq!(history.len(), 47);
     assert!(history[..11].iter().all(|record| record.batch == 1));
     assert!(history[11..].iter().all(|record| record.batch == 2));
 }
@@ -299,7 +299,7 @@ async fn legacy_name_only_history_is_assigned_batch_one_on_open() {
 async fn fully_applied_legacy_history_remains_batch_one_after_open() {
     let directory = TestDirectory::new();
     let path = directory.database();
-    apply_prefix(&path, 46, 1, None).await;
+    apply_prefix(&path, 47, 1, None).await;
     let mut database = connection(&path).await;
     sqlx::query("ALTER TABLE migrations DROP COLUMN batch")
         .execute(&mut database)
@@ -314,7 +314,7 @@ async fn fully_applied_legacy_history_remains_batch_one_after_open() {
     database.close().await.unwrap();
 
     let before = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(before.len(), 46);
+    assert_eq!(before.len(), 47);
     assert!(before.iter().all(|record| record.batch == 1));
     open_and_close(&path).await;
     let after = SqliteStorage::migration_history(&path).await.unwrap();
@@ -343,7 +343,7 @@ async fn fully_applied_legacy_history_remains_batch_one_after_open() {
 async fn rollback_succeeds_with_mode_separated_mailboxes_and_folders() {
     let directory = TestDirectory::new();
     let path = directory.database();
-    apply_prefix(&path, 46, 1, None).await;
+    apply_prefix(&path, 47, 1, None).await;
     let mut database = connection(&path).await;
     sqlx::query("INSERT INTO users(identifier, name, email, password_hash, global_role, mail_access, created_at, updated_at) VALUES ('rollback-owner', 'Owner', 'rollback@example.test', 'hash', 'member', 'all', 1, 1)")
         .execute(&mut database)
@@ -420,7 +420,7 @@ async fn rolling_back_fresh_database_allows_full_reinitialization() {
     let path = directory.database();
     open_and_close(&path).await;
     let initial = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(initial.len(), 46);
+    assert_eq!(initial.len(), 47);
     assert!(initial.iter().all(|record| record.batch == 1));
     open_and_close(&path).await;
     assert_eq!(
@@ -441,6 +441,6 @@ async fn rolling_back_fresh_database_allows_full_reinitialization() {
 
     open_and_close(&path).await;
     let reinitialized = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(reinitialized.len(), 46);
+    assert_eq!(reinitialized.len(), 47);
     assert!(reinitialized.iter().all(|record| record.batch == 1));
 }

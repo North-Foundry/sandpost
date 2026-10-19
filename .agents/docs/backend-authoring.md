@@ -190,6 +190,9 @@ obsolete development data conversions, updating both catalogs, tests, and docume
   closed), never full access.
 - Deleting a user cascades their scope memberships and owned personal views; deleting a scope
   cascades its memberships.
+- Remembered sessions are keyed by the caller-computed SHA-256 token digest and store the user
+  identifier plus the verified password hash bound at session creation. They do not expire in
+  storage, are explicitly revocable, and are removed when their user is deleted.
 
 ## 11.1 IMAP state
 

@@ -15,6 +15,7 @@ export default {
   'auth.login.ariaLabel': 'Iniciar sesión en Sandpost',
   'auth.login.title': 'Te damos la bienvenida',
   'auth.login.description': 'Inicia sesión para ver el correo capturado.',
+  'auth.login.rememberMe': 'Recordarme',
   'auth.login.failed': 'No se pudo iniciar sesión. Comprueba tu correo y contraseña e inténtalo de nuevo.',
   'auth.login.submitting': 'Iniciando sesión…',
   'auth.login.submit': 'Iniciar sesión',

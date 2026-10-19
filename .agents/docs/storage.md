@@ -130,7 +130,7 @@ Full behavior, protocol decisions, subscriptions, and notifications: [imap.md](i
 
 ## SQLite backend, startup, and migrations
 
-`sandpost-storage-sqlite` keeps one ordered sequence of 46 SQL scripts (0001–0046, without gaps),
+`sandpost-storage-sqlite` keeps one ordered sequence of 47 SQL scripts (0001–0047, without gaps),
 with table/index definitions and trigger groups in separate files. The `migrations` table records
 applied script names and a positive integer `batch`. Every execution with pending scripts records
 all of them in the same batch, one greater than the largest applied batch; fresh databases use batch
@@ -147,16 +147,21 @@ must report no violation before commit. A failed upgrade rolls back both schema 
 Unknown scripts (including scripts from a newer build), gaps, missing history in a populated database,
 and schema mismatches fail startup; there is no automatic repair or reset.
 
-The sequence includes canonical users, SMTP access credentials and authentication rules, scopes,
-Views, shared mail and normalized facts, the search outbox, and IMAP state. Every table is created
+The sequence includes canonical users, durable remembered sessions, SMTP access credentials and
+authentication rules, scopes, Views, shared mail and normalized facts, the search outbox, and IMAP
+state. Every table is created
 with its current columns, constraints, and indexes, including the primary flag cursor on `users`,
 account modes, folder kinds, and mode-specific mailbox identities. Owner folder definitions and
 their account projection links have separate table scripts. Trigger groups and the effective-flags
 view follow their dependencies; the primary deletion membership trigger is created once in 0046.
+Migration 0047 creates remembered sessions keyed by the caller-computed SHA-256 token digest, binds
+each to its user and verified password hash, and cascades session deletion with user deletion.
+Sessions have no expiry and remain until explicitly revoked or their user is deleted.
 
 The application has not shipped. Its pre-release baseline was consolidated: historical ALTERs,
 data backfills, trigger replacements, and fingerprint invalidation scripts were removed. Scripts
-were renumbered consecutively from 0001 to 0046 with matching rollback names. Databases created with the
+were renumbered consecutively from 0001 to 0046 with matching rollback names; 0047 appends durable
+remembered sessions. Databases created with the
 earlier development sequence are unsupported by this baseline and must be recreated explicitly
 for development; startup never rewrites their history or resets their data automatically. Once
 released, schema evolution must append migrations and preserve the shipped prefix.

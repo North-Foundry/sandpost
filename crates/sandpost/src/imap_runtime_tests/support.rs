@@ -55,6 +55,7 @@ pub(super) async fn owner(running: &RunningSandpost) -> SessionUser {
     }
     instance
         .login(LoginRequest {
+            remember_me: false,
             email: "owner@example.test".into(),
             password: "runtime test password".into(),
         })

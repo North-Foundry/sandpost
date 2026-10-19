@@ -15,6 +15,7 @@ export default {
   'auth.login.ariaLabel': 'Accedi a Sandpost',
   'auth.login.title': 'Bentornato',
   'auth.login.description': 'Accedi per visualizzare le email acquisite.',
+  'auth.login.rememberMe': 'Ricordami',
   'auth.login.failed': 'Accesso non riuscito. Controlla email e password e riprova.',
   'auth.login.submitting': 'Accesso in corso…',
   'auth.login.submit': 'Accedi',

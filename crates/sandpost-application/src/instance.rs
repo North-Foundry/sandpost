@@ -3,6 +3,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use sandpost_core::{GlobalRole, MailAccess, User, UserIdentifier};
 use sandpost_storage::{NewUser, Storage, StorageError};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
@@ -41,9 +42,12 @@ pub struct SetupRequest {
 
 /// Normal authentication input shared by HTTP and the native host.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    #[serde(default)]
+    pub remember_me: bool,
 }
 
 /// Authenticated identity, excluding password hashes and session tokens.
@@ -275,7 +279,9 @@ impl Instance {
         Ok(())
     }
 
-    /// Validate normal credentials and create one bounded, expiring process-local session.
+    /**
+     * Validate credentials and create a remembered session or a 24-hour process session.
+     */
     pub async fn login(&self, request: LoginRequest) -> Result<LoginResponse, InstanceError> {
         self.require_initialized()?;
         if request.password.len() > 1024 {
@@ -295,25 +301,34 @@ impl Instance {
         let verified_password_hash = user.password_hash.clone();
         let session_user = session_user(user);
         let token = random_secret("SESSION")?;
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| InstanceError::RecoveryRequired)?;
-        sessions.retain(|_, session| session.expires > Instant::now());
-        // ponytail: bounded process-local sessions; durable sessions can follow a real requirement.
-        if sessions.len() >= 128 {
-            return Err(InstanceError::InvalidInput(
-                "too many active sessions".into(),
-            ));
+        if request.remember_me {
+            self.storage
+                .create_persistent_session(
+                    &token_fingerprint(&token),
+                    session_user.id,
+                    &verified_password_hash,
+                )
+                .await?;
+        } else {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| InstanceError::RecoveryRequired)?;
+            sessions.retain(|_, session| session.expires > Instant::now());
+            if sessions.len() >= 128 {
+                return Err(InstanceError::InvalidInput(
+                    "too many active sessions".into(),
+                ));
+            }
+            sessions.insert(
+                token.clone(),
+                Session {
+                    user: session_user.clone(),
+                    verified_password_hash,
+                    expires: Instant::now() + Duration::from_secs(86400),
+                },
+            );
         }
-        sessions.insert(
-            token.clone(),
-            Session {
-                user: session_user.clone(),
-                verified_password_hash,
-                expires: Instant::now() + Duration::from_secs(86400),
-            },
-        );
         Ok(LoginResponse {
             token,
             user: session_user,
@@ -332,14 +347,23 @@ impl Instance {
     /// Authenticate a session token consistently for HTTP and native operations.
     pub async fn session(&self, token: &str) -> Result<SessionUser, InstanceError> {
         self.require_initialized()?;
-        let (identifier, verified_password_hash) = {
+        let process_session = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .map_err(|_| InstanceError::RecoveryRequired)?;
             sessions.retain(|_, session| session.expires > Instant::now());
-            let session = sessions.get(token).ok_or(InstanceError::Authentication)?;
-            (session.user.id, session.verified_password_hash.clone())
+            sessions
+                .get(token)
+                .map(|session| (session.user.id, session.verified_password_hash.clone()))
+        };
+        let (identifier, verified_password_hash) = match process_session {
+            Some(session) => session,
+            None => self
+                .storage
+                .get_persistent_session(&token_fingerprint(token))
+                .await?
+                .ok_or(InstanceError::Authentication)?,
         };
         let user = self
             .storage
@@ -352,8 +376,21 @@ impl Instance {
         Ok(session_user(user))
     }
 
-    /// Revoke every process-local session after credentials or account status change.
-    pub(crate) fn revoke_user_sessions(
+    /**
+     * Identify remembered tokens so transports can renew their persistent cookies.
+     */
+    pub async fn is_persistent_session(&self, token: &str) -> Result<bool, InstanceError> {
+        Ok(self
+            .storage
+            .get_persistent_session(&token_fingerprint(token))
+            .await?
+            .is_some())
+    }
+
+    /**
+     * Revoke process-local and durable sessions after credentials or account status change.
+     */
+    pub(crate) async fn revoke_user_sessions(
         &self,
         identifier: UserIdentifier,
     ) -> Result<(), InstanceError> {
@@ -361,17 +398,38 @@ impl Instance {
             .lock()
             .map_err(|_| InstanceError::RecoveryRequired)?
             .retain(|_, session| session.user.id != identifier);
+        self.storage
+            .delete_user_persistent_sessions(identifier)
+            .await?;
         Ok(())
     }
 
-    /// Revoke a session immediately; already-revoked tokens remain harmless.
-    pub fn logout(&self, token: &str) -> Result<(), InstanceError> {
-        self.sessions
+    /**
+     * Revoke a session durably; already-revoked tokens remain harmless.
+     */
+    pub async fn logout(&self, token: &str) -> Result<(), InstanceError> {
+        let process_session = self
+            .sessions
             .lock()
             .map_err(|_| InstanceError::RecoveryRequired)?
             .remove(token);
+        if process_session.is_none() {
+            self.storage
+                .delete_persistent_session(&token_fingerprint(token))
+                .await?;
+        }
         Ok(())
     }
+}
+
+/**
+ * Hash a random bearer token before using it as a durable storage key.
+ */
+fn token_fingerprint(token: &str) -> String {
+    Sha256::digest(token.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Validate password bounds and generate an independently salted Argon2id hash.
@@ -559,6 +617,116 @@ mod tests {
             email: "owner@example.test".into(),
             password: "correct horse battery staple".into(),
         }
+    }
+
+    /**
+     * Remembered tokens survive database reopening, remain hash-only, and logout is durable.
+     */
+    #[tokio::test]
+    async fn remembered_sessions_survive_restart_until_logout() {
+        let directory = Directory::new();
+        let storage = directory.storage().await;
+        let instance = Instance::open(storage.clone(), directory.0.clone())
+            .await
+            .unwrap();
+        let secret = instance.bootstrap_secret_for_startup().unwrap().unwrap();
+        instance.setup(setup_request(&secret)).await.unwrap();
+        let remembered = instance
+            .login(LoginRequest {
+                email: "owner@example.test".into(),
+                password: "correct horse battery staple".into(),
+                remember_me: true,
+            })
+            .await
+            .unwrap();
+        let temporary = instance
+            .login(LoginRequest {
+                email: "owner@example.test".into(),
+                password: "correct horse battery staple".into(),
+                remember_me: false,
+            })
+            .await
+            .unwrap();
+        directory.assert_secrets_absent(std::slice::from_ref(&remembered.token));
+        assert!(instance.session(&temporary.token).await.is_ok());
+        drop(instance);
+        drop(storage);
+        let instance = Instance::open(directory.storage().await, directory.0.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            instance.session(&remembered.token).await.unwrap().id,
+            remembered.user.id
+        );
+        assert!(matches!(
+            instance.session(&temporary.token).await,
+            Err(InstanceError::Authentication)
+        ));
+        instance.logout(&remembered.token).await.unwrap();
+        drop(instance);
+        let restarted = Instance::open(directory.storage().await, directory.0.clone())
+            .await
+            .unwrap();
+        assert!(matches!(
+            restarted.session(&remembered.token).await,
+            Err(InstanceError::Authentication)
+        ));
+    }
+
+    /**
+     * Password changes and explicit account revocation reject remembered tokens after restart.
+     */
+    #[tokio::test]
+    async fn remembered_sessions_remain_bound_to_credentials_and_account_revocation() {
+        let directory = Directory::new();
+        let storage = directory.storage().await;
+        let instance = Instance::open(storage.clone(), directory.0.clone())
+            .await
+            .unwrap();
+        let secret = instance.bootstrap_secret_for_startup().unwrap().unwrap();
+        instance.setup(setup_request(&secret)).await.unwrap();
+        let login = instance
+            .login(LoginRequest {
+                email: "owner@example.test".into(),
+                password: "correct horse battery staple".into(),
+                remember_me: true,
+            })
+            .await
+            .unwrap();
+        let user = storage.get_user(login.user.id).await.unwrap().unwrap();
+        storage
+            .update_user(
+                user.identifier,
+                &sandpost_storage::UpdateUser {
+                    name: user.name,
+                    email: user.email,
+                    password_hash: hash_password("a different secure password").unwrap(),
+                    global_role: user.global_role,
+                    mail_access: user.mail_access,
+                    personal_filter: user.personal_filter,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            instance.session(&login.token).await,
+            Err(InstanceError::Authentication)
+        ));
+        let login = instance
+            .login(LoginRequest {
+                email: "owner@example.test".into(),
+                password: "a different secure password".into(),
+                remember_me: true,
+            })
+            .await
+            .unwrap();
+        instance.revoke_user_sessions(login.user.id).await.unwrap();
+        drop(instance);
+        let restarted = Instance::open(storage, directory.0.clone()).await.unwrap();
+        assert!(matches!(
+            restarted.session(&login.token).await,
+            Err(InstanceError::Authentication)
+        ));
     }
 
     /// Each unconfigured startup rotates its memory-only key and refuses all previous keys.

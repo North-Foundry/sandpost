@@ -395,7 +395,10 @@ impl AuthorizedApplication {
             .await
             .map_err(map_conflict)?
             .ok_or(ApplicationError::NotFound)?;
-        self.application.instance.revoke_user_sessions(identifier)?;
+        self.application
+            .instance
+            .revoke_user_sessions(identifier)
+            .await?;
         self.notify(ApplicationChange::Visibility);
         Ok(account_details(updated))
     }
@@ -412,7 +415,10 @@ impl AuthorizedApplication {
             .ok_or(ApplicationError::NotFound)?;
         require_global_role_grant(caller.global_role, user.global_role)?;
         self.application.storage.delete_user(identifier).await?;
-        self.application.instance.revoke_user_sessions(identifier)?;
+        self.application
+            .instance
+            .revoke_user_sessions(identifier)
+            .await?;
         self.notify(ApplicationChange::Visibility);
         Ok(())
     }

@@ -50,6 +50,7 @@ async fn routers(role: GlobalRole) -> (Router, Router) {
     let token = state
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "second@example.test".into(),
             password: "second-user-password".into(),
         })

@@ -57,6 +57,7 @@ async fn initialized_state(
         .unwrap();
     let token = instance
         .login(LoginRequest {
+            remember_me: false,
             email: TEST_EMAIL.into(),
             password: TEST_PASSWORD.into(),
         })

@@ -37,4 +37,35 @@ pub trait UserStorage: Send + Sync {
     /// Atomically create the first Owner, refusing if an Owner already exists.
     /// Existing users with other roles are preserved; email uniqueness still applies.
     async fn create_first_owner(&self, owner: &NewUser) -> Result<User, StorageError>;
+
+    /**
+     * Remember a session using a token digest and the password hash verified at login.
+     */
+    async fn create_persistent_session(
+        &self,
+        token_hash: &str,
+        user_identifier: UserIdentifier,
+        verified_password_hash: &str,
+    ) -> Result<(), StorageError>;
+
+    /**
+     * Load the user and verified password hash bound to a remembered session token digest.
+     */
+    async fn get_persistent_session(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<(UserIdentifier, String)>, StorageError>;
+
+    /**
+     * Revoke one remembered session by token digest; missing sessions are ignored.
+     */
+    async fn delete_persistent_session(&self, token_hash: &str) -> Result<(), StorageError>;
+
+    /**
+     * Revoke every remembered session belonging to a user.
+     */
+    async fn delete_user_persistent_sessions(
+        &self,
+        user_identifier: UserIdentifier,
+    ) -> Result<(), StorageError>;
 }

@@ -288,17 +288,13 @@ async fn bootstrap_and_session_endpoints_protect_the_http_api() {
         .to_str()
         .unwrap()
         .to_owned();
-    for attribute in [
-        "HttpOnly",
-        "SameSite=Strict",
-        "Path=/api/v1",
-        "Max-Age=86400",
-    ] {
+    for attribute in ["HttpOnly", "SameSite=Strict", "Path=/api/v1"] {
         assert!(
             set_cookie.contains(attribute),
             "missing cookie attribute {attribute}"
         );
     }
+    assert!(!set_cookie.contains("Max-Age="));
     assert!(!set_cookie.contains("; Secure"));
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let login: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -457,4 +453,128 @@ async fn cookie_mutations_check_origin_and_registration_is_absent() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/**
+ * Remembered cookies restore users after restart, renew on restore, and revoke through logout.
+ */
+#[tokio::test]
+async fn remembered_cookie_restores_and_revokes_a_durable_session() {
+    let storage = memory_storage().await;
+    let (state, _) =
+        initialized_state(storage.clone(), tokio::sync::broadcast::channel(16).0).await;
+    let application = router(state);
+    let response = application
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "email": TEST_EMAIL, "password": TEST_PASSWORD, "rememberMe": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let cookie = response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(cookie.contains("Max-Age=34560000"));
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    drop(application);
+
+    let directory = std::env::temp_dir().join(format!(
+        "sandpost-remembered-http-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let instance = sandpost_application::Instance::open(storage.clone(), directory.clone())
+        .await
+        .unwrap();
+    let state =
+        ApplicationState::with_instance(storage, tokio::sync::broadcast::channel(16).0, instance)
+            .await
+            .unwrap();
+    let application = router(state);
+    let response = application
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=34560000")
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["email"],
+        TEST_EMAIL
+    );
+
+    let response = application
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/logout")
+                .header(header::HOST, "localhost")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = application
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/logout")
+                .header(header::HOST, "localhost")
+                .header(header::ORIGIN, "http://localhost")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
+    let response = application
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(directory);
 }

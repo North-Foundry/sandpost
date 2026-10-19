@@ -53,6 +53,7 @@ async fn member_router(
     let token = state
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: email.into(),
             password: "member-user-password".into(),
         })

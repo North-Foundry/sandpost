@@ -50,4 +50,5 @@ pub(crate) const ROLLBACKS: [&str; super::MIGRATIONS.len()] = [
     include_str!(
         "../../migrations/down/0046_create_user_message_deletions_membership_triggers.sql"
     ),
+    include_str!("../../migrations/down/0047_create_persistent_sessions_table.sql"),
 ];

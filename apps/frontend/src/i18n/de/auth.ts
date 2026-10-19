@@ -15,6 +15,7 @@ export default {
   'auth.login.ariaLabel': 'Bei Sandpost anmelden',
   'auth.login.title': 'Willkommen zurück',
   'auth.login.description': 'Melde dich an, um erfasste E-Mails anzusehen.',
+  'auth.login.rememberMe': 'Angemeldet bleiben',
   'auth.login.failed': 'Anmeldung fehlgeschlagen. Prüfe deine E-Mail-Adresse und dein Passwort und versuche es erneut.',
   'auth.login.submitting': 'Anmeldung läuft…',
   'auth.login.submit': 'Anmelden',

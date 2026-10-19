@@ -96,7 +96,7 @@ async fn committed_mail_changes_resynchronize_open_streams_and_recheck_sessions(
         );
     }
 
-    state.instance().logout(&token).unwrap();
+    state.instance().logout(&token).await.unwrap();
     state.notify_change(sandpost_application::ApplicationChange::Visibility);
     assert!(
         tokio::time::timeout(Duration::from_secs(1), body.frame())
@@ -139,6 +139,7 @@ async fn events_filter_invisible_messages_and_recheck_the_session() {
     let token = state
         .instance()
         .login(LoginRequest {
+            remember_me: false,
             email: "events-limited@example.test".into(),
             password: "limited-user-password".into(),
         })
@@ -176,7 +177,7 @@ async fn events_filter_invisible_messages_and_recheck_the_session() {
             .is_err()
     );
 
-    state.instance().logout(&token).unwrap();
+    state.instance().logout(&token).await.unwrap();
     events
         .send(MessageEvent {
             identifier,

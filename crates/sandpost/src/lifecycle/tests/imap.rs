@@ -33,6 +33,7 @@ async fn owner_session(running: &RunningSandpost) -> sandpost_application::Sessi
         .unwrap();
     instance
         .login(sandpost_application::LoginRequest {
+            remember_me: false,
             email: "owner@example.test".into(),
             password: "runtime test password".into(),
         })
@@ -140,6 +141,7 @@ async fn disabled_imap_keeps_services_and_data_available_across_restart() {
         .application
         .instance()
         .login(sandpost_application::LoginRequest {
+            remember_me: false,
             email: "owner@example.test".into(),
             password: "runtime test password".into(),
         })
@@ -172,6 +174,7 @@ async fn disabled_imap_keeps_services_and_data_available_across_restart() {
         .application
         .instance()
         .login(sandpost_application::LoginRequest {
+            remember_me: false,
             email: "owner@example.test".into(),
             password: "runtime test password".into(),
         })

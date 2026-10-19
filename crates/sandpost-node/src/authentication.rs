@@ -65,6 +65,7 @@ impl NativeRuntime {
             self.application
                 .instance()
                 .logout(&previous_token)
+                .await
                 .map_err(instance_error)?;
         }
         serialize(user)
@@ -97,6 +98,7 @@ impl NativeRuntime {
             self.application
                 .instance()
                 .logout(&token)
+                .await
                 .map_err(instance_error)?;
         }
         Ok(())

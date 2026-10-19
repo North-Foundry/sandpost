@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import AuthLayout from '@/layouts/AuthLayout.vue'
@@ -16,6 +17,7 @@ const router = useRouter()
 const { t } = useI18n()
 const email = ref('')
 const password = ref('')
+const rememberMe = ref(false)
 const error = ref('')
 const submitting = ref(false)
 
@@ -26,7 +28,7 @@ async function submitLogin(): Promise<void> {
   error.value = ''
   submitting.value = true
   try {
-    await client.login({ email: email.value.trim(), password: password.value })
+    await client.login({ email: email.value.trim(), password: password.value, rememberMe: rememberMe.value })
     await router.replace({ name: 'mail' })
   } catch {
     error.value = t('auth.login.failed')
@@ -55,6 +57,10 @@ async function submitLogin(): Promise<void> {
               <FieldLabel for="login-password">{{ t('auth.common.password') }}</FieldLabel>
               <Input id="login-password" v-model="password" class="h-9" name="password" type="password" autocomplete="current-password" minlength="12" maxlength="1024" aria-describedby="login-password-policy" :disabled="submitting" required />
               <FieldDescription id="login-password-policy">{{ t('auth.common.passwordPolicy') }}</FieldDescription>
+            </Field>
+            <Field orientation="horizontal" :data-disabled="submitting">
+              <Checkbox id="login-remember-me" v-model="rememberMe" :disabled="submitting" />
+              <FieldLabel for="login-remember-me" class="font-normal">{{ t('auth.login.rememberMe') }}</FieldLabel>
             </Field>
           </FieldGroup>
         </CardContent>

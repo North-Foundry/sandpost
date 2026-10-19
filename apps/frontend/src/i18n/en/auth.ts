@@ -15,6 +15,7 @@ export default {
   'auth.login.ariaLabel': 'Sign in to Sandpost',
   'auth.login.title': 'Welcome back',
   'auth.login.description': 'Sign in to view captured mail.',
+  'auth.login.rememberMe': 'Remember me',
   'auth.login.failed': 'Sign-in failed. Check your email and password, then try again.',
   'auth.login.submitting': 'Signing in…',
   'auth.login.submit': 'Sign in',

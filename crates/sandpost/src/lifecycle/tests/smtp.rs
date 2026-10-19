@@ -98,6 +98,7 @@ async fn owner_session(running: &RunningSandpost) -> sandpost_application::Sessi
         .unwrap();
     instance
         .login(sandpost_application::LoginRequest {
+            remember_me: false,
             email: "owner@example.test".into(),
             password: "runtime test password".into(),
         })

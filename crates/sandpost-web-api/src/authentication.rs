@@ -201,17 +201,17 @@ pub(super) async fn login(
     Extension(secure): Extension<bool>,
     Json(credentials): Json<LoginRequest>,
 ) -> Result<Response, HttpError> {
+    let remember_me = credentials.remember_me;
     let response = state
         .instance()
         .login(credentials)
         .await
         .map_err(map_instance_error)?;
-    let cookie = format!(
-        "sandpost_session={}; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=86400{}",
-        response.token,
-        if secure { "; Secure" } else { "" }
-    );
+    let cookie = login_cookie(&response.token, remember_me, secure);
     let mut result = Json(response).into_response();
+    result
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     result.headers_mut().insert(
         header::SET_COOKIE,
         cookie.parse().map_err(|_| {
@@ -224,29 +224,64 @@ pub(super) async fn login(
     Ok(result)
 }
 
-/// Return the authenticated owner represented by the request session.
-pub(super) async fn current_session(Extension(user): Extension<SessionUser>) -> Json<SessionUser> {
-    Json(user)
+/**
+ * Build a session cookie, renewing remembered logins for the browser's supported horizon.
+ */
+fn login_cookie(token: &str, remember_me: bool, secure: bool) -> String {
+    format!(
+        "sandpost_session={token}; HttpOnly; SameSite=Strict; Path=/api/v1{}{}",
+        if remember_me {
+            "; Max-Age=34560000"
+        } else {
+            ""
+        },
+        if secure { "; Secure" } else { "" }
+    )
+}
+
+/**
+ * Return the current user and renew remembered cookies whenever a client restores its session.
+ */
+pub(super) async fn current_session(
+    State(state): State<ApplicationState>,
+    Extension(user): Extension<SessionUser>,
+    Extension(token): Extension<SessionToken>,
+    Extension(secure): Extension<bool>,
+) -> Result<Response, HttpError> {
+    let mut response = Json(user).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    if state
+        .instance()
+        .is_persistent_session(&token.0)
+        .await
+        .map_err(map_instance_error)?
+    {
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            login_cookie(&token.0, true, secure).parse().map_err(|_| {
+                HttpError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "instance_unavailable".into(),
+                )
+            })?,
+        );
+    }
+    Ok(response)
 }
 
 /// Revoke the current session and clear its browser cookie.
 pub(super) async fn logout(
     State(state): State<ApplicationState>,
     Extension(secure): Extension<bool>,
-    headers: HeaderMap,
+    Extension(token): Extension<SessionToken>,
 ) -> Result<Response, HttpError> {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .or_else(|| {
-            headers
-                .get(header::COOKIE)
-                .and_then(|value| value.to_str().ok())
-                .and_then(session_cookie)
-        })
-        .ok_or_else(|| HttpError(StatusCode::UNAUTHORIZED, "authentication_required".into()))?;
-    state.instance().logout(token).map_err(map_instance_error)?;
+    state
+        .instance()
+        .logout(&token.0)
+        .await
+        .map_err(map_instance_error)?;
     let mut response = StatusCode::NO_CONTENT.into_response();
     let cookie = format!(
         "sandpost_session=; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=0{}",
