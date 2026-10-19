@@ -484,6 +484,40 @@ async fn login_owner(runtime: &NativeRuntime) {
         .unwrap();
 }
 
+/**
+ * Restore a durable token into a fresh native host and reject invalid or revoked tokens.
+ */
+#[tokio::test]
+async fn remembered_session_token_restores_through_instance_validation() {
+    let (runtime, _application, _storage, _completion_sender, _directory) =
+        authenticated_test_host().await;
+    let login = runtime
+        .login(json!({
+            "email": "smoke-owner@example.test",
+            "password": "smoke-owner-password",
+            "rememberMe": true
+        }))
+        .await
+        .unwrap();
+    let token = runtime.remembered_session_token().await.unwrap().unwrap();
+    runtime.session_token.send_replace(None);
+    assert_eq!(runtime.session().await.unwrap(), Value::Null);
+    assert_eq!(
+        runtime
+            .restore_session("invalid-token".into())
+            .await
+            .unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        runtime.restore_session(token.clone()).await.unwrap()["email"],
+        "smoke-owner@example.test"
+    );
+    runtime.logout().await.unwrap();
+    assert_eq!(runtime.restore_session(token).await.unwrap(), Value::Null);
+    assert_eq!(login["email"], "smoke-owner@example.test");
+}
+
 /// Report whether a serialized value contains a string anywhere in its tree.
 fn contains_text(value: &Value, text: &str) -> bool {
     match value {

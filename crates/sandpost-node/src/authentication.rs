@@ -103,6 +103,40 @@ impl NativeRuntime {
         }
         Ok(())
     }
+
+    /**
+     * Return the current native-held token only after validating it with the instance.
+     */
+    #[napi]
+    pub async fn remembered_session_token(&self) -> Result<Option<String>> {
+        self.ensure_running()?;
+        let Some(token) = self.valid_session_token().await? else {
+            return Ok(None);
+        };
+        let remembered = self
+            .application
+            .instance()
+            .is_persistent_session(&token)
+            .await
+            .map_err(instance_error)?;
+        Ok(remembered.then_some(token))
+    }
+
+    /**
+     * Restore a host-persisted token after validating it through the shared instance.
+     */
+    #[napi]
+    pub async fn restore_session(&self, token: String) -> Result<Value> {
+        self.ensure_running()?;
+        match self.application.instance().session(&token).await {
+            Ok(user) => {
+                self.session_token.send_replace(Some(token));
+                serialize(user)
+            }
+            Err(InstanceError::Authentication) => Ok(Value::Null),
+            Err(error) => Err(instance_error(error)),
+        }
+    }
 }
 
 impl NativeRuntime {
