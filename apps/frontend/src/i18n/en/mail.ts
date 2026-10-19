@@ -135,7 +135,6 @@ export default {
   'mail.detail.rawDescription': 'Download the raw RFC 822 message as captured.',
   'mail.detail.unnamedAttachment': 'Unnamed attachment',
   'mail.detail.downloading': 'Downloading…',
-  'mail.detail.noAttachments': 'This message has no attachments.',
   'mail.detail.capturedBy': 'Captured by Sandpost',
   'mail.detail.openFailed': 'Couldn’t open this message',
   'mail.detail.noSelection': 'No message selected',

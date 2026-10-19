@@ -254,8 +254,8 @@ async function copyAllHeaders(): Promise<void> {
               <TabsList variant="line" class="justify-start" :aria-label="t('mail.detail.inspection')">
                 <TabsTrigger value="preview" class="flex-none">{{ t('mail.detail.preview') }}</TabsTrigger>
                 <TabsTrigger value="headers" class="flex-none">{{ t('mail.detail.headers') }}</TabsTrigger>
-                <TabsTrigger value="attachments" class="flex-none">
-                  <PaperclipIcon v-if="renderedMessage.attachments.length" aria-hidden="true" />{{ t('mail.detail.attachments') }}
+                <TabsTrigger v-if="renderedMessage.attachments.length" value="attachments" class="flex-none">
+                  <PaperclipIcon aria-hidden="true" />{{ t('mail.detail.attachments') }}
                   <Badge variant="secondary" class="tabular-nums">{{ renderedMessage.attachments.length }}</Badge>
                 </TabsTrigger>
               </TabsList>
@@ -302,8 +302,8 @@ async function copyAllHeaders(): Promise<void> {
               </Item>
             </TabsContent>
 
-            <TabsContent value="attachments">
-              <ItemGroup v-if="renderedMessage.attachments.length" class="gap-2">
+            <TabsContent v-if="renderedMessage.attachments.length" value="attachments">
+              <ItemGroup class="gap-2">
                 <Item v-for="(attachment, index) in renderedMessage.attachments" :key="`${attachment.filename}-${index}`" variant="outline" size="sm">
                   <ItemMedia variant="icon" class="size-8 rounded-md bg-muted"><FileTextIcon /></ItemMedia>
                   <ItemContent class="min-w-0">
@@ -319,7 +319,6 @@ async function copyAllHeaders(): Promise<void> {
                   </ItemActions>
                 </Item>
               </ItemGroup>
-              <p v-else class="py-6 text-center text-muted-foreground">{{ t('mail.detail.noAttachments') }}</p>
             </TabsContent>
           </Tabs>
 
