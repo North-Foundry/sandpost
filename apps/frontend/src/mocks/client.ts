@@ -1,4 +1,5 @@
 import type { Inbox, MessageFlags, SandpostClient, SavedView, SessionUser, SetupInput, WebFolder, WebFolderInput } from '@/api/contracts'
+import { mockCompatibilityReport } from './compatibility'
 import { mockAttachments, mockDetail, mockSummaries } from './messages'
 import { createMockAdmin, matches } from './admin'
 import { createMockImap } from './imap'
@@ -330,6 +331,15 @@ export function createMockClient(): SandpostClient {
         const detail = getMessage(id)
         if (!detail) throw new Error(`Mock message not found: ${id}`)
         return detail
+      },
+
+      /**
+       * Return the synthetic compatibility report, or HTML absence for plain-text fixtures.
+       */
+      async htmlCheck(id) {
+        const detail = getMessage(id)
+        if (!detail) throw new Error(`Mock message not found: ${id}`)
+        return mockCompatibilityReport(Boolean(detail.html.trim()))
       },
 
       /**

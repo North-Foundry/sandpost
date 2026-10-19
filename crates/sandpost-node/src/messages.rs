@@ -334,6 +334,21 @@ impl NativeRuntime {
         )
     }
 
+    /**
+     * Check the original HTML of a message against email client support data.
+     */
+    #[napi]
+    pub async fn message_html_check(&self, identifier: String) -> Result<Value> {
+        let user = self.ensure_authenticated().await?;
+        serialize(
+            self.application
+                .authorized(&user)
+                .check_message_html(parse_message_identifier(&identifier)?)
+                .await
+                .map_err(application_error)?,
+        )
+    }
+
     /// Transfer original MIME as a Node Buffer rather than a JSON byte array.
     #[napi]
     pub async fn message_raw(&self, identifier: String) -> Result<Buffer> {

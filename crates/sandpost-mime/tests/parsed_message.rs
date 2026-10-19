@@ -1,5 +1,6 @@
 use sandpost_mime::{
     MimeError, ParsedMessage, RawMessage, attachment_bytes, content_reference_bytes,
+    native_html_body,
 };
 use sha2::{Digest, Sha256};
 
@@ -123,5 +124,41 @@ fn reusable_view_keeps_original_bytes_through_boundary_and_encoding_recovery() {
             .content_reference_bytes("mid:recovered@example.test")
             .unwrap(),
         raw_message
+    );
+}
+
+/**
+ * Verify the native HTML body excludes HTML generated from plain text and joins real HTML parts.
+ */
+#[test]
+fn native_html_body_ignores_generated_markup() {
+    let plain = b"Content-Type: text/plain\r\n\r\nHello";
+    assert_eq!(native_html_body(plain).unwrap(), None);
+    assert!(!ParsedMessage::parse(plain).unwrap().has_native_html());
+    assert!(
+        !RawMessage::new(plain.as_slice())
+            .parse()
+            .unwrap()
+            .facts
+            .markup_body
+            .is_empty(),
+        "the normalized markup body is generated from the text part"
+    );
+
+    let alternative = b"MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nHello\r\n--b\r\nContent-Type: text/html\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<p style=3D\"color:red\">Hello</p>\r\n--b--\r\n";
+    assert_eq!(
+        native_html_body(alternative).unwrap().as_deref(),
+        Some("<p style=\"color:red\">Hello</p>")
+    );
+
+    assert!(ParsedMessage::parse(alternative).unwrap().has_native_html());
+
+    let html_only = b"Content-Type: text/html\r\n\r\n<b>Hi</b>";
+    assert_eq!(
+        ParsedMessage::parse(html_only)
+            .unwrap()
+            .native_html_body()
+            .as_deref(),
+        Some("<b>Hi</b>")
     );
 }

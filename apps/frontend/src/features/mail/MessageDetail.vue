@@ -12,11 +12,11 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item'
 import { Spinner } from '@/components/ui/spinner'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { MailFolder } from '@/features/shell/workspace'
 import MoveToMenu from './MoveToMenu.vue'
 import MessageFlagsMenu from './MessageFlagsMenu.vue'
 import HtmlMessagePreview from './HtmlMessagePreview.vue'
+import HtmlCompatibility from './HtmlCompatibility.vue'
 import { createEmailPreviewDocument } from './previewLayout'
 import { useCopy } from '@/composables/useCopy'
 
@@ -104,11 +104,15 @@ watch(() => [props.message, props.loading], () => {
   else if (!props.loading) retainedMessage.value = null
 })
 
-const activeTab = ref<'preview' | 'headers' | 'attachments'>('preview')
-const previewMode = ref<'html' | 'text'>('html')
+const activeTab = ref<'html' | 'text' | 'headers' | 'attachments' | 'compatibility'>('html')
 const metadataExpanded = ref(false)
 const { copied, error: copyError, copy, reset: resetCopy } = useCopy<'headers'>(t('mail.error.copyHeaders'))
 const hasHtml = computed(() => Boolean(renderedMessage.value?.html.trim()))
+
+/**
+ * Only an HTML part written by the sender can be checked; markup generated from plain text cannot.
+ */
+const hasOriginalHtml = computed(() => hasHtml.value && !renderedMessage.value?.htmlGenerated)
 const formattedDate = computed(() => renderedMessage.value ? formatFullDate(renderedMessage.value.receivedAt) : '')
 
 /**
@@ -147,24 +151,16 @@ const htmlDocument = computed(() => hasHtml.value
   : '')
 
 watch(() => props.message?.id, () => {
-  activeTab.value = 'preview'
-  previewMode.value = hasHtml.value ? 'html' : 'text'
+  activeTab.value = hasHtml.value ? 'html' : 'text'
   metadataExpanded.value = false
   resetCopy()
-})
+}, { immediate: true })
 
 /**
  * Returns the joined values of a header field, matched without regard to case.
  */
 function header(name: string): string {
   return headers.value.get(name)?.join(', ') ?? ''
-}
-
-/**
- * Switches between HTML and plain text while ignoring attempts to deselect both.
- */
-function setPreviewMode(value: unknown): void {
-  if (value === 'html' || value === 'text') previewMode.value = value
 }
 
 /**
@@ -250,29 +246,28 @@ async function copyAllHeaders(): Promise<void> {
           </div>
 
           <Tabs v-model="activeTab" class="gap-3">
-            <div class="flex items-end justify-between gap-3 border-b">
-              <TabsList variant="line" class="justify-start" :aria-label="t('mail.detail.inspection')">
-                <TabsTrigger value="preview" class="flex-none">{{ t('mail.detail.preview') }}</TabsTrigger>
-                <TabsTrigger value="headers" class="flex-none">{{ t('mail.detail.headers') }}</TabsTrigger>
-                <TabsTrigger v-if="renderedMessage.attachments.length" value="attachments" class="flex-none">
-                  <PaperclipIcon aria-hidden="true" />{{ t('mail.detail.attachments') }}
-                  <Badge variant="secondary" class="tabular-nums">{{ renderedMessage.attachments.length }}</Badge>
-                </TabsTrigger>
-              </TabsList>
-              <ToggleGroup v-if="hasHtml && activeTab === 'preview'" type="single" variant="outline" size="sm" class="mb-1.5" :model-value="previewMode" :aria-label="t('mail.detail.previewFormat')" @update:model-value="setPreviewMode">
-                <ToggleGroupItem value="html" class="h-7 px-2 text-xs">HTML</ToggleGroupItem>
-                <ToggleGroupItem value="text" class="h-7 px-2 text-xs">{{ t('mail.detail.plainText') }}</ToggleGroupItem>
-              </ToggleGroup>
-            </div>
+            <TabsList variant="line" class="w-full justify-start border-b" :aria-label="t('mail.detail.inspection')">
+              <TabsTrigger v-if="hasHtml" value="html" class="flex-none">HTML</TabsTrigger>
+              <TabsTrigger value="text" class="flex-none">{{ t('mail.detail.plainText') }}</TabsTrigger>
+              <TabsTrigger value="headers" class="flex-none">{{ t('mail.detail.headers') }}</TabsTrigger>
+              <TabsTrigger v-if="renderedMessage.attachments.length" value="attachments" class="flex-none">
+                <PaperclipIcon aria-hidden="true" />{{ t('mail.detail.attachments') }}
+                <Badge variant="secondary" class="tabular-nums">{{ renderedMessage.attachments.length }}</Badge>
+              </TabsTrigger>
+              <TabsTrigger v-if="hasOriginalHtml" value="compatibility" class="flex-none">{{ t('mail.compatibility.tab') }}</TabsTrigger>
+            </TabsList>
 
-            <TabsContent value="preview" class="flex flex-col gap-3">
-              <div v-if="previewMode === 'html' && hasHtml" class="overflow-hidden rounded-lg border">
+            <TabsContent v-if="hasHtml" value="html">
+              <div class="overflow-hidden rounded-lg border">
                 <HtmlMessagePreview :document="htmlDocument" :message-identifier="renderedMessage.id" />
                 <p class="flex items-center gap-1.5 border-t bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
                   <ShieldCheckIcon class="size-3.5 text-success" aria-hidden="true" />{{ t('mail.detail.isolatedPreview') }}
                 </p>
               </div>
-              <pre v-else class="min-h-90 rounded-lg border bg-muted/30 p-4 font-mono text-[0.8125rem]/relaxed whitespace-pre-wrap break-words">{{ renderedMessage.text || t('mail.detail.noBody') }}</pre>
+            </TabsContent>
+
+            <TabsContent value="text">
+              <pre class="min-h-90 rounded-lg border bg-muted/30 p-4 font-mono text-[0.8125rem]/relaxed whitespace-pre-wrap break-words">{{ renderedMessage.text || t('mail.detail.noBody') }}</pre>
             </TabsContent>
 
             <TabsContent value="headers" class="flex flex-col gap-3">
@@ -319,6 +314,10 @@ async function copyAllHeaders(): Promise<void> {
                   </ItemActions>
                 </Item>
               </ItemGroup>
+            </TabsContent>
+
+            <TabsContent v-if="hasOriginalHtml" value="compatibility">
+              <HtmlCompatibility :message-id="renderedMessage.id" />
             </TabsContent>
           </Tabs>
 

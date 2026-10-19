@@ -1,6 +1,7 @@
 import type {
   InstanceStatus,
   LoginInput,
+  HtmlCompatibilityReport,
   MessageDetail,
   MessageSummary,
   SandpostClient,
@@ -15,6 +16,7 @@ import type {
   WireInbox,
   WireIssuedImapCredentials,
   WireIssuedSmtpCredentials,
+  WireCompatibilityReport,
   WireMessageDetail,
   WireMessageSummary,
   WireQueryValidation,
@@ -25,6 +27,7 @@ import type {
   WireWebFolder,
 } from '@/api/wire'
 import {
+  normalizeCompatibilityReport,
   normalizeDetail,
   normalizeSummary,
   normalizeView,
@@ -448,6 +451,16 @@ export function createHttpClient(): SandpostClient {
             await request(`/api/v1/messages/${encodeURIComponent(id)}/raw`)
           ).arrayBuffer()
         )
+      },
+
+      /**
+       * Request the compatibility report of the message's original HTML.
+       */
+      async htmlCheck(id): Promise<HtmlCompatibilityReport> {
+        const report = await (
+          await request(`/api/v1/messages/${encodeURIComponent(id)}/html-check`)
+        ).json() as WireCompatibilityReport
+        return normalizeCompatibilityReport(report)
       },
 
       /**

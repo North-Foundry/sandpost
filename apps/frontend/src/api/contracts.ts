@@ -121,6 +121,156 @@ export interface MessageDetail {
   html: string
   attachments: { filename: string | null; contentType: string; size: number }[]
   headers: Record<string, string[]>
+
+  /**
+   * True when the message has no HTML part and `html` was generated from its plain text.
+   */
+  htmlGenerated: boolean
+}
+
+/**
+ * How well one email client version supports an HTML, CSS or image feature.
+ */
+export type SupportLevel = 'yes' | 'no' | 'partial' | 'unknown'
+
+/**
+ * A client family on one platform, such as Gmail on Android.
+ */
+export interface EmailClient {
+  /**
+   * `<family>.<platform>`, as referenced by `ClientSupport.client`.
+   */
+  id: string
+  family: string
+  familyName: string
+  platform: string
+  platformName: string
+
+  /**
+   * Whether the client belongs to the families most recipients use; the default filter shows only these.
+   */
+  main: boolean
+}
+
+/**
+ * The support of one client version for one feature.
+ */
+export interface ClientSupport {
+  client: string
+  version: string
+
+  /**
+   * Whether this is the client's most recently tested version for the feature.
+   */
+  latest: boolean
+  support: SupportLevel
+  notes: number[]
+}
+
+/**
+ * One feature detected in a message's HTML, with its support results.
+ */
+export interface CompatibilityFeature {
+  slug: string
+  title: string
+  category: string
+  url: string
+
+  /**
+   * Markdown text from caniemail.com.
+   */
+  description: string
+
+  /**
+   * Markdown notes referenced by `ClientSupport.notes`, keyed by number.
+   */
+  notes: Record<string, string>
+  occurrences: number
+  examples: string[]
+
+  /**
+   * True when every occurrence comes from a selector that could not be checked against the document.
+   */
+  selectorUnverified: boolean
+
+  /**
+   * False for document-structure features that clients remove without breaking the message; they
+   * are listed but excluded from the summary and the weighted score.
+   */
+  scored: boolean
+
+  /**
+   * True when clients without support only lose an enhancement, accessibility metadata or a cosmetic
+   * detail, including features used only inside `@media` or interaction rules; such features cause
+   * differences, never problems.
+   */
+  graceful: boolean
+
+  /**
+   * Percentage points of clients without full support, weighted by the feature's share of elements.
+   */
+  impact: number
+  support: ClientSupport[]
+}
+
+/**
+ * Mailpit-style weighted coverage in percent: the worst feature's share of clients without full
+ * support, weighted by the fraction of elements using it.
+ */
+export interface WeightedScore {
+  supported: number
+  partial: number
+  unsupported: number
+}
+
+/**
+ * How clients render the message: with problems when a feature the layout or content depends on is
+ * unsupported, with differences when only graceful features are missing or support is partial,
+ * identical otherwise; untested without data.
+ */
+export interface CompatibilitySummary {
+  clients: number
+  identical: number
+  withDifferences: number
+  withProblems: number
+  untested: number
+}
+
+/**
+ * Email client compatibility of a message's original HTML, based on caniemail.com data.
+ */
+export interface HtmlCompatibilityReport {
+  /**
+   * False when the message has no HTML part; the HTML view then shows markup generated from text.
+   */
+  htmlPresent: boolean
+
+  /**
+   * Linked stylesheets, which are never downloaded and therefore not analysed.
+   */
+  externalStylesheets: number
+
+  /**
+   * Elements inside `<body>`, the denominator of each feature's weight.
+   */
+  elementCount: number
+  data: { source: string; url: string; updated: string; license: string }
+  clients: EmailClient[]
+
+  /**
+   * Outcomes using each client's latest tested version across all platforms.
+   */
+  summary: CompatibilitySummary
+
+  /**
+   * Weighted coverage over scored features using latest versions across all platforms.
+   */
+  weighted: WeightedScore
+
+  /**
+   * Detected features: scored ones first, by decreasing impact.
+   */
+  features: CompatibilityFeature[]
 }
 
 /**
@@ -768,6 +918,11 @@ export interface SandpostClient {
      * Perform the get raw operation.
      */
     getRaw(id: string): Promise<Uint8Array>
+
+    /**
+     * Check the message's original HTML against email client support data.
+     */
+    htmlCheck(id: string): Promise<HtmlCompatibilityReport>
 
     /**
      * Permanently hide one message for the caller; from outside Trash prefer `trash`.

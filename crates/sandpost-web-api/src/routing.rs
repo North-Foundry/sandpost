@@ -207,6 +207,10 @@ fn api_router() -> Router<ApplicationState> {
             "/api/v1/messages/{identifier}/raw",
             get(messages::raw_message),
         )
+        .route(
+            "/api/v1/messages/{identifier}/html-check",
+            get(messages::html_check),
+        )
         .route("/api/v1/events", get(events::events))
         .route("/api", any(api_not_found))
         .route("/api/{*path}", any(api_not_found))

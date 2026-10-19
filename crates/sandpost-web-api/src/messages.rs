@@ -10,7 +10,9 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use sandpost_application::{MessageDetail, MessageSummary, QueryOptions, SessionUser};
+use sandpost_application::{
+    CompatibilityReport, MessageDetail, MessageSummary, QueryOptions, SessionUser,
+};
 use sandpost_core::{InboxIdentifier, MessageIdentifier, MessageSequence, ViewIdentifier};
 use serde::{Deserialize, Serialize};
 
@@ -195,6 +197,23 @@ fn parse_view_identifier(value: &str) -> Result<ViewIdentifier, HttpError> {
     value
         .parse()
         .map_err(|_| HttpError(StatusCode::BAD_REQUEST, "invalid view identifier".into()))
+}
+
+/**
+ * Return the email client compatibility report for the requested message's original HTML.
+ */
+pub(super) async fn html_check(
+    State(state): State<ApplicationState>,
+    Extension(user): Extension<SessionUser>,
+    Path(identifier): Path<MessageIdentifier>,
+) -> Result<Json<CompatibilityReport>, HttpError> {
+    Ok(Json(
+        state
+            .authorized(&user)
+            .check_message_html(identifier)
+            .await
+            .map_err(map_application_error)?,
+    ))
 }
 
 /// Return the original RFC 822 bytes for the requested message.

@@ -113,6 +113,7 @@ export function mockDetail(id: string): MessageDetail | undefined {
     receivedAt: summary.receivedAt,
     text,
     html,
+    htmlGenerated: false,
     attachments: mockAttachments(id).map(({ content, ...metadata }) => metadata),
     headers: {
       from: [...summary.from],

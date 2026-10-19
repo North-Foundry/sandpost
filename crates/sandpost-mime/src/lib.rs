@@ -14,5 +14,5 @@ pub use content_reference::content_reference_bytes;
 pub use envelope::Envelope;
 pub use error::MimeError;
 pub use mailbox::normalize_mailbox;
-pub use parsed_message::ParsedMessage;
+pub use parsed_message::{ParsedMessage, native_html_body};
 pub use raw_message::{DEFAULT_SIZE_LIMIT, RawMessage};

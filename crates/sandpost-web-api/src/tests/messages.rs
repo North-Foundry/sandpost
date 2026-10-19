@@ -30,7 +30,7 @@ async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
     let (state, owner_token) = initialized_state(storage.clone(), events).await;
     let owner = state.instance().session(&owner_token).await.unwrap();
     let owner_application = with_test_auth(router(state.clone()), owner_token);
-    for suffix in ["", "/raw", "/attachments/0"] {
+    for suffix in ["", "/raw", "/attachments/0", "/html-check"] {
         let response = owner_application
             .clone()
             .oneshot(
@@ -101,6 +101,7 @@ async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
         ("GET", ""),
         ("GET", "/raw"),
         ("GET", "/attachments/0"),
+        ("GET", "/html-check"),
         ("DELETE", ""),
     ] {
         let uri = format!("/api/v1/messages/{identifier}{suffix}");
@@ -614,6 +615,91 @@ async fn health_list_detail_raw_and_validation() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/**
+ * Report the compatibility of an HTML message in snake_case JSON, and HTML absence for plain text.
+ */
+#[tokio::test]
+async fn html_check_reports_original_html_compatibility() {
+    let storage = memory_storage().await;
+    let mut identifiers = Vec::new();
+    for (content_type, body) in [
+        ("text/html", "<div style=\"display: grid\">Hello</div>"),
+        ("text/plain", "Hello"),
+    ] {
+        let raw_message =
+            format!("Subject: check\r\nContent-Type: {content_type}\r\n\r\n{body}\r\n");
+        let identifier = MessageIdentifier::new();
+        storage
+            .insert_message(&Message {
+                identifier,
+                facts: MessageFacts {
+                    subject: "check".into(),
+                    size: raw_message.len() as u64,
+                    ..MessageFacts::default()
+                },
+                raw_message: raw_message.into_bytes(),
+                attachments: Vec::new(),
+            })
+            .await
+            .unwrap();
+        identifiers.push(identifier);
+    }
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let (state, owner_token) = initialized_state(storage, events).await;
+    let application = with_test_auth(router(state), owner_token);
+
+    let mut reports = Vec::new();
+    for identifier in &identifiers {
+        let response = application
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/messages/{identifier}/html-check"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        reports.push(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+    }
+    let html = &reports[0];
+    assert_eq!(html["html_present"], true);
+    assert_eq!(html["data"]["license"], "MIT");
+    assert!(html["summary"]["clients"].as_u64().unwrap() > 0);
+    let grid = html["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|feature| feature["slug"] == "css-display-grid")
+        .unwrap();
+    assert_eq!(grid["examples"][0], "display: grid");
+    assert_eq!(grid["scored"], true);
+    assert!(grid["impact"].as_f64().unwrap() > 0.0);
+    assert_eq!(html["element_count"], 1);
+    assert!(html["weighted"]["supported"].is_number());
+    assert!(grid["support"][0]["support"].is_string());
+    assert!(grid["support"][0]["latest"].is_boolean());
+    assert_eq!(reports[1]["html_present"], false);
+    for (identifier, generated) in identifiers.iter().zip([false, true]) {
+        let response = application
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/messages/{identifier}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let detail: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(detail["html_generated"], generated);
+    }
+    assert_eq!(reports[1]["features"], serde_json::json!([]));
 }
 
 /// Verify inbox validation, inbox creation, attachment downloads, and message deletion.

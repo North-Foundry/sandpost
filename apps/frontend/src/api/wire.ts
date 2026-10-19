@@ -92,6 +92,53 @@ export interface WireMessageDetail {
     size: number
     content_hash: string
   }[]
+
+  /**
+   * True when the message has no `text/html` part, so `facts.html` was generated from its text.
+   * Absent from runtimes that predate the flag.
+   */
+  html_generated?: boolean
+}
+
+/**
+ * Rust email client compatibility report for a message's original HTML.
+ */
+export interface WireCompatibilityReport {
+  html_present: boolean
+  external_stylesheets: number
+  element_count: number
+  data: { source: string, url: string, updated: string, license: string }
+  clients: {
+    id: string
+    family: string
+    family_name: string
+    platform: string
+    platform_name: string
+    main: boolean
+  }[]
+  summary: { clients: number, identical: number, with_differences: number, with_problems: number, untested: number }
+  weighted: { supported: number, partial: number, unsupported: number }
+  features: {
+    slug: string
+    title: string
+    category: string
+    url: string
+    description: string
+    notes: Record<string, string>
+    occurrences: number
+    examples: string[]
+    selector_unverified: boolean
+    scored: boolean
+    graceful: boolean
+    impact: number
+    support: {
+      client: string
+      version: string
+      latest: boolean
+      support: 'yes' | 'no' | 'partial' | 'unknown'
+      notes: number[]
+    }[]
+  }[]
 }
 
 /**

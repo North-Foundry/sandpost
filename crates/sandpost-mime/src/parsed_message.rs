@@ -1,5 +1,7 @@
 //! Reusable MIME interpretation for reading several parts from one captured message.
 
+use mail_parser::PartType;
+
 use crate::{
     MimeError,
     attachments::attachment_bytes_from_parsed,
@@ -75,4 +77,48 @@ impl<'a> ParsedMessage<'a> {
     pub fn content_reference_bytes(&self, reference: &str) -> Result<Vec<u8>, MimeError> {
         content_reference_bytes_from_parsed(&self.parsed, reference)
     }
+
+    /**
+     * Return the decoded `text/html` body parts joined with newlines, or `None` without any.
+     *
+     * Unlike the normalized markup body, this never includes HTML generated from a plain-text
+     * part: the body selection fills a missing HTML representation with the text parts, which keep
+     * their text part type.
+     */
+    #[must_use]
+    pub fn native_html_body(&self) -> Option<String> {
+        let bodies: Vec<&str> = self.native_html_parts().collect();
+        (!bodies.is_empty()).then(|| bodies.join("\n"))
+    }
+
+    /**
+     * Report whether the message has a `text/html` body part, without copying it.
+     *
+     * When false, any normalized markup body was generated from plain text.
+     */
+    #[must_use]
+    pub fn has_native_html(&self) -> bool {
+        self.native_html_parts().next().is_some()
+    }
+
+    /**
+     * Iterate the decoded selected body parts whose type is really `text/html`.
+     */
+    fn native_html_parts(&self) -> impl Iterator<Item = &str> {
+        self.parsed.html_body.iter().filter_map(|index| {
+            match &self.parsed.parts.get(*index as usize)?.body {
+                PartType::Html(html) => Some(html.as_ref()),
+                _ => None,
+            }
+        })
+    }
+}
+
+/**
+ * Return a message's original `text/html` body, excluding HTML generated from plain text.
+ *
+ * See [`ParsedMessage::native_html_body`].
+ */
+pub fn native_html_body(raw_message: &[u8]) -> Result<Option<String>, MimeError> {
+    Ok(ParsedMessage::parse(raw_message)?.native_html_body())
 }

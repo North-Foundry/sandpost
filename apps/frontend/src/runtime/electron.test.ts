@@ -61,6 +61,18 @@ function makeBridge(): SandpostDesktopBridge {
       copy: vi.fn(async () => ({ copied: 2 })),
       setFlags: vi.fn(async () => ({ changed: 1 })),
       getRaw: vi.fn(async () => new Uint8Array([0, 255, 42])),
+      htmlCheck: vi.fn(async () => ({
+        html_present: true, external_stylesheets: 1, element_count: 4,
+        data: { source: 'caniemail.com', url: 'https://www.caniemail.com', updated: '2026-09-16', license: 'MIT' },
+        clients: [{ id: 'gmail.android', family: 'gmail', family_name: 'Gmail', platform: 'android', platform_name: 'Android', main: true }],
+        summary: { clients: 1, identical: 0, with_differences: 0, with_problems: 1, untested: 0 },
+        weighted: { supported: 50, partial: 0, unsupported: 50 },
+        features: [{
+          slug: 'css-display-grid', title: 'display:grid', category: 'css', url: 'https://www.caniemail.com/features/css-display-grid/',
+          description: 'Grid layout.', notes: { '1': 'Note.' }, occurrences: 2, examples: ['display: grid'], selector_unverified: false, scored: true, graceful: false, impact: 50,
+          support: [{ client: 'gmail.android', version: '2026-03', latest: true, support: 'no' as const, notes: [1] }],
+        }],
+      })),
       getAttachment: vi.fn(async () => new Uint8Array([10, 0, 255])),
       delete: vi.fn(async () => { }),
       move: vi.fn(async () => ({ moved: 2 })),
@@ -175,11 +187,21 @@ describe('Electron bridge adapter', () => {
     expect(bridge.messages.list).toHaveBeenCalledWith({ before: 20, limit: 10 })
     expect(await client.messages.get('mail-id')).toMatchObject({
       id: 'mail-id', subject: 'Hello', text: 'body', receivedAt: 42000,
-      attachments: [{ filename: null, contentType: 'application/octet-stream', size: 3 }],
+      attachments: [{ filename: null, contentType: 'application/octet-stream', size: 3 }], htmlGenerated: false,
     })
     expect(bridge.messages.get).toHaveBeenCalledWith('mail-id')
     expect(await client.messages.getRaw('mail-id')).toEqual(new Uint8Array([0, 255, 42]))
     expect(bridge.messages.getRaw).toHaveBeenCalledWith('mail-id')
+    expect(await client.messages.htmlCheck('mail-id')).toMatchObject({
+      htmlPresent: true, externalStylesheets: 1, elementCount: 4, weighted: { supported: 50, unsupported: 50 },
+      clients: [{ id: 'gmail.android', familyName: 'Gmail', platformName: 'Android', main: true }],
+      summary: { clients: 1, withProblems: 1 },
+      features: [{
+        slug: 'css-display-grid', occurrences: 2, examples: ['display: grid'], selectorUnverified: false, scored: true, impact: 50, notes: { '1': 'Note.' },
+        support: [{ client: 'gmail.android', version: '2026-03', latest: true, support: 'no', notes: [1] }],
+      }],
+    })
+    expect(bridge.messages.htmlCheck).toHaveBeenCalledWith('mail-id')
   })
 
   it('normalizes saved views both ways and forwards view and query list options', async () => {

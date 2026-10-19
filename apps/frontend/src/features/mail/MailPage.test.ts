@@ -242,7 +242,7 @@ const renderer = createRenderer<HostNode, HostNode>({
 const DEFAULT_ID = '00000000-0000-0000-0000-000000000000';
 const message: MessageDetail = {
   id: 'message-1', subject: 'Receipt', from: ['sender@example.test'], to: ['qa@sandpost.local'], cc: [], receivedAt: 1_760_000_000_000,
-  text: 'Receipt body', html: '', attachments: [{ filename: 'receipt.txt', contentType: 'text/plain', size: 8 }], headers: {},
+  text: 'Receipt body', html: '', attachments: [{ filename: 'receipt.txt', contentType: 'text/plain', size: 8 }], headers: {}, htmlGenerated: false,
 };
 const folders: MailFolder[] = [
   { id: DEFAULT_ID, kind: 'inbox', name: 'Inbox', address: null, view: null },

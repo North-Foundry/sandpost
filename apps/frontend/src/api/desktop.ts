@@ -17,6 +17,7 @@ import type {
   WireInbox,
   WireIssuedImapCredentials,
   WireIssuedSmtpCredentials,
+  WireCompatibilityReport,
   WireMessageDetail,
   WireMessageSummary,
   WireQueryValidation,
@@ -184,6 +185,11 @@ export interface SandpostDesktopBridge {
      * Perform the get raw operation.
      */
     getRaw(id: string): Promise<Uint8Array>
+
+    /**
+     * Check the message's original HTML against email client support data.
+     */
+    htmlCheck(id: string): Promise<WireCompatibilityReport>
 
     /**
      * Delete the record identified by the supplied ID.
@@ -504,6 +510,7 @@ export function isSandpostDesktopBridge(
     typeof bridge.messages.setFlags === 'function' &&
     typeof bridge.messages.get === 'function' &&
     typeof bridge.messages.getRaw === 'function' &&
+    typeof bridge.messages.htmlCheck === 'function' &&
     typeof bridge.messages.delete === 'function' &&
     typeof bridge.messages.move === 'function' &&
     typeof bridge.messages.trash === 'function' &&

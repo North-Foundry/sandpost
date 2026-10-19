@@ -202,6 +202,115 @@ async fn get_attachment_preserves_transfer_decoded_bytes_and_authorization() {
     ));
 }
 
+/**
+ * Store a message delivered to `recipient@example.test` and return its identifier.
+ */
+async fn store_raw_message(storage: &Arc<dyn Storage>, raw_message: &str) -> MessageIdentifier {
+    let message =
+        sandpost_mime::RawMessage::new(raw_message.as_bytes().to_vec())
+            .envelope(sandpost_mime::Envelope::new().with_recipient(
+                sandpost_mime::normalize_mailbox("recipient@example.test").unwrap(),
+            ))
+            .received_at(1_700_000_000)
+            .parse()
+            .unwrap();
+    storage.insert_message(&message).await.unwrap();
+    message.identifier
+}
+
+/**
+ * Check only original HTML, report generated markup as absent, and enforce message visibility.
+ */
+#[tokio::test]
+async fn check_message_html_uses_original_html_and_authorization() {
+    let storage = empty_storage().await;
+    let authorized_user = create_user(
+        &storage,
+        "Authorized",
+        GlobalRole::Member,
+        MailAccess::All,
+        None,
+    )
+    .await;
+    let unauthorized_user = create_user(
+        &storage,
+        "Unauthorized",
+        GlobalRole::Member,
+        MailAccess::Scoped,
+        None,
+    )
+    .await;
+    let html_message = store_raw_message(
+        &storage,
+        concat!(
+            "From: sender@example.test\r\n",
+            "To: recipient@example.test\r\n",
+            "Subject: HTML\r\n",
+            "Content-Type: text/html\r\n",
+            "\r\n",
+            "<div style=\"display: grid\">Hello</div>\r\n",
+        ),
+    )
+    .await;
+    let plain_message = store_raw_message(
+        &storage,
+        concat!(
+            "From: sender@example.test\r\n",
+            "To: recipient@example.test\r\n",
+            "Subject: Plain\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Hello\r\n",
+        ),
+    )
+    .await;
+
+    let application = application(storage).await;
+    let authorized_session = application.authorized(&session(&authorized_user));
+    let report = authorized_session
+        .check_message_html(html_message)
+        .await
+        .unwrap();
+    assert!(report.html_present);
+    assert!(
+        report
+            .features
+            .iter()
+            .any(|feature| feature.slug == "css-display-grid")
+    );
+
+    assert!(
+        !authorized_session
+            .get_message(html_message)
+            .await
+            .unwrap()
+            .markup_generated
+    );
+    assert!(
+        authorized_session
+            .get_message(plain_message)
+            .await
+            .unwrap()
+            .markup_generated,
+        "the plain-text message's markup is generated from its text"
+    );
+
+    let plain_report = authorized_session
+        .check_message_html(plain_message)
+        .await
+        .unwrap();
+    assert!(!plain_report.html_present);
+    assert!(plain_report.features.is_empty());
+
+    assert!(matches!(
+        application
+            .authorized(&session(&unauthorized_user))
+            .check_message_html(html_message)
+            .await,
+        Err(crate::ApplicationError::NotFound)
+    ));
+}
+
 /// Return the subjects of every message the user can list, sorted.
 async fn visible_subjects(application: &Application, user: &User) -> Vec<String> {
     let mut subjects: Vec<String> = application

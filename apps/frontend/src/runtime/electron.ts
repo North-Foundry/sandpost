@@ -1,6 +1,7 @@
 import type { SandpostDesktopBridge, WireDesktopEvent } from '@/api/desktop'
 import type { SandpostClient, SandpostEvent } from '@/api/contracts'
 import {
+  normalizeCompatibilityReport,
   normalizeDetail,
   normalizeSummary,
   normalizeView,
@@ -216,6 +217,13 @@ export function createElectronClient(
        */
       getRaw(id) {
         return bridge.messages.getRaw(id)
+      },
+
+      /**
+       * Request the compatibility report of the message's original HTML.
+       */
+      async htmlCheck(id) {
+        return normalizeCompatibilityReport(await bridge.messages.htmlCheck(id))
       },
 
       /**

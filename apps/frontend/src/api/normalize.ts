@@ -1,4 +1,5 @@
 import type {
+  HtmlCompatibilityReport,
   MessageDetail,
   MessageFlags,
   MessageSummary,
@@ -6,6 +7,7 @@ import type {
   WebFolder,
 } from './contracts'
 import type {
+  WireCompatibilityReport,
   WireMailbox,
   WireMessageDetail,
   WireMessageFlags,
@@ -71,6 +73,7 @@ export function normalizeDetail(
     receivedAt: Number(facts.received_at) * 1000,
     text: String(facts.text ?? ''),
     html: String(facts.html ?? ''),
+    htmlGenerated: Boolean(representation.html_generated),
     attachments: (representation.attachments ?? []).map(
       (attachment: Record<string, unknown>) => ({
         filename:
@@ -134,4 +137,64 @@ export function normalizeWebFolder(representation: WireWebFolder): WebFolder {
  */
 function addresses(value: WireMailbox[]): string[] {
   return value.map((mailbox) => mailbox.address)
+}
+
+/**
+ * Convert the Rust compatibility report to the camel-case frontend contract.
+ */
+export function normalizeCompatibilityReport(
+  representation: WireCompatibilityReport
+): HtmlCompatibilityReport {
+  return {
+    htmlPresent: Boolean(representation.html_present),
+    externalStylesheets: Number(representation.external_stylesheets ?? 0),
+    elementCount: Number(representation.element_count ?? 0),
+    data: {
+      source: String(representation.data?.source ?? ''),
+      url: String(representation.data?.url ?? ''),
+      updated: String(representation.data?.updated ?? ''),
+      license: String(representation.data?.license ?? ''),
+    },
+    clients: (representation.clients ?? []).map((client) => ({
+      id: String(client.id),
+      family: String(client.family),
+      familyName: String(client.family_name),
+      platform: String(client.platform),
+      platformName: String(client.platform_name),
+      main: Boolean(client.main),
+    })),
+    summary: {
+      clients: Number(representation.summary?.clients ?? 0),
+      identical: Number(representation.summary?.identical ?? 0),
+      withDifferences: Number(representation.summary?.with_differences ?? 0),
+      withProblems: Number(representation.summary?.with_problems ?? 0),
+      untested: Number(representation.summary?.untested ?? 0),
+    },
+    weighted: {
+      supported: Number(representation.weighted?.supported ?? 0),
+      partial: Number(representation.weighted?.partial ?? 0),
+      unsupported: Number(representation.weighted?.unsupported ?? 0),
+    },
+    features: (representation.features ?? []).map((feature) => ({
+      slug: String(feature.slug),
+      title: String(feature.title),
+      category: String(feature.category),
+      url: String(feature.url),
+      description: String(feature.description ?? ''),
+      notes: Object.fromEntries(Object.entries(feature.notes ?? {}).map(([number, note]) => [number, String(note)])),
+      occurrences: Number(feature.occurrences ?? 0),
+      examples: (feature.examples ?? []).map(String),
+      selectorUnverified: Boolean(feature.selector_unverified),
+      scored: feature.scored !== false,
+      graceful: Boolean(feature.graceful),
+      impact: Number(feature.impact ?? 0),
+      support: (feature.support ?? []).map((result) => ({
+        client: String(result.client),
+        version: String(result.version),
+        latest: Boolean(result.latest),
+        support: result.support,
+        notes: (result.notes ?? []).map(Number),
+      })),
+    })),
+  }
 }

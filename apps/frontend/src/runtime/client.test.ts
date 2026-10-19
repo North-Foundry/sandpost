@@ -25,6 +25,10 @@ const bridge = {
       }, attachments: []
     })),
     getRaw: vi.fn(async () => new Uint8Array()),
+    htmlCheck: vi.fn(async () => ({
+      html_present: false, external_stylesheets: 0, element_count: 0, weighted: { supported: 0, partial: 0, unsupported: 0 }, data: { source: '', url: '', updated: '', license: '' },
+      clients: [], summary: { clients: 0, identical: 0, with_differences: 0, with_problems: 0, untested: 0 }, features: [],
+    })),
     getAttachment: vi.fn(async () => new Uint8Array()),
     delete: vi.fn(async () => { }),
     move: vi.fn(async () => ({ moved: 0 })),

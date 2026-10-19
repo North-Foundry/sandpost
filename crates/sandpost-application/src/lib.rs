@@ -2,6 +2,7 @@
 mod authorization;
 mod changes;
 mod credentials;
+mod html_check;
 mod imap;
 mod inboxes;
 mod indexing;
@@ -12,6 +13,7 @@ mod management;
 mod read_status;
 mod smtp_access;
 pub use changes::ApplicationChange;
+pub use html_check::CompatibilityReport;
 pub use imap::{
     ImapAccessError, ImapAccountDetails, ImapAccountSession, ImapAccountUpdate, ImapChangeWatch,
     ImapFolderRequest, ImapLogin, ImapMailboxHandle, ImapMailboxListing, ImapMailboxPreview,
@@ -95,6 +97,9 @@ pub struct MessageDetail {
     pub identifier: MessageIdentifier,
     pub facts: MessageFacts,
     pub attachments: Vec<sandpost_core::Attachment>,
+    /// True when the message has no `text/html` part, so `facts.html` was generated from its text.
+    #[serde(rename = "html_generated")]
+    pub markup_generated: bool,
 }
 /// Selection constraints composed after security authorization.
 #[derive(Debug, Clone)]
@@ -364,19 +369,34 @@ impl AuthorizedApplication {
         &self,
         identifier: MessageIdentifier,
     ) -> Result<MessageDetail, ApplicationError> {
-        let (facts, attachments) = self
+        let message = self
             .application
             .storage
-            .get_user_message_metadata(self.user_identifier, identifier)
+            .get_user_message(self.user_identifier, identifier)
             .await?
             .ok_or(ApplicationError::NotFound)?;
-        authorization::require_snapshot(&self.application.storage, self.user_identifier, &facts)
-            .await?;
-        Ok(MessageDetail {
-            identifier,
-            facts,
-            attachments,
+        authorization::require_snapshot(
+            &self.application.storage,
+            self.user_identifier,
+            &message.facts,
+        )
+        .await?;
+        // The stored markup body does not record whether it was generated from text, so the
+        // captured MIME decides; uninterpretable MIME keeps any stored markup as original.
+        tokio::task::spawn_blocking(move || {
+            let markup_generated = match sandpost_mime::ParsedMessage::parse(&message.raw_message) {
+                Ok(parsed) => !parsed.has_native_html(),
+                Err(_) => message.facts.markup_body.is_empty(),
+            };
+            MessageDetail {
+                identifier,
+                facts: message.facts,
+                attachments: message.attachments,
+                markup_generated,
+            }
         })
+        .await
+        .map_err(ApplicationError::from)
     }
     /// Read original MIME through the same direct-access authorization boundary.
     pub async fn get_raw_message(

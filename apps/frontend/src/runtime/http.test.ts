@@ -264,6 +264,7 @@ describe('HTTP adapter', () => {
             received_at: 42, text: 'body', html: '', headers: { subject: ['Hello'] },
           },
           attachments: [{ filename: 'a.txt', content_type: 'text/plain', size: 3, content_hash: 'hash' }],
+          html_generated: true,
         })
       })
       .mockResolvedValueOnce({
@@ -274,6 +275,25 @@ describe('HTTP adapter', () => {
          */
         arrayBuffer: async () => new Uint8Array([0, 255, 42]).buffer
       })
+      .mockResolvedValueOnce({
+        ok: true,
+
+        /**
+         * Return the compatibility report payload configured for this adapter test.
+         */
+        json: async () => ({
+          html_present: true, external_stylesheets: 1, element_count: 4,
+          data: { source: 'caniemail.com', url: 'https://www.caniemail.com', updated: '2026-09-16', license: 'MIT' },
+          clients: [{ id: 'gmail.android', family: 'gmail', family_name: 'Gmail', platform: 'android', platform_name: 'Android', main: true }],
+          summary: { clients: 1, identical: 0, with_differences: 0, with_problems: 1, untested: 0 },
+        weighted: { supported: 50, partial: 0, unsupported: 50 },
+          features: [{
+            slug: 'css-display-grid', title: 'display:grid', category: 'css', url: 'https://www.caniemail.com/features/css-display-grid/',
+            description: 'Grid layout.', notes: { '1': 'Note.' }, occurrences: 2, examples: ['display: grid'], selector_unverified: false, scored: true, graceful: false, impact: 50,
+            support: [{ client: 'gmail.android', version: '2026-03', latest: true, support: 'no' as const, notes: [1] }],
+          }],
+        })
+      })
     vi.stubGlobal('fetch', fetchMock)
     const client = createHttpClient()
 
@@ -283,11 +303,21 @@ describe('HTTP adapter', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/messages?before=20&limit=10', expect.objectContaining({ credentials: 'same-origin' }))
     expect(await client.messages.get('mail/id')).toMatchObject({
       id: 'mail-id', subject: 'Hello', text: 'body', receivedAt: 42000,
-      attachments: [{ filename: 'a.txt', contentType: 'text/plain', size: 3 }],
+      attachments: [{ filename: 'a.txt', contentType: 'text/plain', size: 3 }], htmlGenerated: true,
     })
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/messages/mail%2Fid', expect.objectContaining({ credentials: 'same-origin' }))
     expect(await client.messages.getRaw('mail/id')).toEqual(new Uint8Array([0, 255, 42]))
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/messages/mail%2Fid/raw', expect.objectContaining({ credentials: 'same-origin' }))
+    expect(await client.messages.htmlCheck('mail/id')).toMatchObject({
+      htmlPresent: true, externalStylesheets: 1, elementCount: 4, weighted: { supported: 50, unsupported: 50 },
+      clients: [{ id: 'gmail.android', familyName: 'Gmail', platformName: 'Android', main: true }],
+      summary: { clients: 1, withProblems: 1 },
+      features: [{
+        slug: 'css-display-grid', occurrences: 2, examples: ['display: grid'], selectorUnverified: false, scored: true, impact: 50, notes: { '1': 'Note.' },
+        support: [{ client: 'gmail.android', version: '2026-03', latest: true, support: 'no', notes: [1] }],
+      }],
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/v1/messages/mail%2Fid/html-check', expect.objectContaining({ credentials: 'same-origin' }))
   })
 
   it('reports HTTP status errors for list, detail, and raw requests', async () => {

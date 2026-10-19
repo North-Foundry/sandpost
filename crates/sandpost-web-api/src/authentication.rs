@@ -103,7 +103,7 @@ fn is_protected_api_route(path: &str) -> bool {
             };
             let segments: Vec<_> = path.split('/').collect();
             segments.len() == 1
-                || (segments.len() == 2 && segments[1] == "raw")
+                || (segments.len() == 2 && matches!(segments[1], "raw" | "html-check"))
                 || (segments.len() == 3 && segments[1] == "attachments")
         }
     }

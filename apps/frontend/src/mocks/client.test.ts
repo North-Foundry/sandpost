@@ -120,6 +120,15 @@ describe('mock client', () => {
     const raw = new TextDecoder().decode(await client.messages.getRaw(attachmentMail.id))
     expect(raw).toContain(`filename="${attachmentMail.attachments[0]!.filename}"`)
     expect(raw).toContain('Content-Type: multipart/alternative')
+    const htmlMail = details.find((message) => message.html)!
+    const htmlReport = await client.messages.htmlCheck(htmlMail.id)
+    expect(htmlReport.htmlPresent).toBe(true)
+    expect(htmlReport.summary.clients).toBe(htmlReport.clients.filter((client) => client.main).length)
+    expect(htmlReport.summary.identical + htmlReport.summary.withDifferences + htmlReport.summary.withProblems + htmlReport.summary.untested).toBe(htmlReport.clients.filter((client) => client.main).length)
+    expect(htmlReport.features.every((feature) => feature.support.every((result) => htmlReport.clients.some((client) => client.id === result.client)))).toBe(true)
+    const plainMail = details.find((message) => !message.html)!
+    expect(await client.messages.htmlCheck(plainMail.id)).toMatchObject({ htmlPresent: false, features: [] })
+    await expect(client.messages.htmlCheck('missing')).rejects.toThrow('Mock message not found')
   })
 
   it('keeps IMAP accounts per owner, issues passwords once, and plans mailboxes from Smart Folders', async () => {
