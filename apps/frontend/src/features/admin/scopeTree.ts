@@ -86,3 +86,14 @@ export function nextPosition(scopes: Scope[], parentId: string | null, excludeId
     .filter((scope) => scope.id !== excludeId)
     .reduce((highest, scope) => Math.max(highest, scope.position + 1), 0)
 }
+
+/**
+ * Return, from the root down to the scope itself, whether each node on its path has a later
+ * sibling, so tree guides know which vertical branch lines continue past this row.
+ */
+export function branchContinuations(scopes: Scope[], scope: Scope): boolean[] {
+  return [...ancestors(scopes, scope.parentId), scope].map((node) => {
+    const peers = siblings(scopes, node.parentId)
+    return peers.at(-1)?.id !== node.id
+  })
+}

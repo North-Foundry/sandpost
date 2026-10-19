@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Scope } from '@/api/contracts'
-import { ancestors, flattenScopes, nextPosition, subtreeIds } from './scopeTree'
+import { ancestors, branchContinuations, flattenScopes, nextPosition, subtreeIds } from './scopeTree'
 
 /**
  * Build a scope fixture containing the fields needed by the tree helpers.
@@ -28,5 +28,12 @@ describe('scope tree', () => {
     expect(nextPosition(scopes, 'clients')).toBe(2)
     expect(nextPosition(scopes, 'clients', 'acme')).toBe(1)
     expect(nextPosition(scopes, 'it')).toBe(0)
+  })
+
+  it('reports which branches continue below each node on the path', () => {
+    const byId = (id: string) => scopes.find((item) => item.id === id)!
+    expect(branchContinuations(scopes, byId('bravo'))).toEqual([true, true])
+    expect(branchContinuations(scopes, byId('acme'))).toEqual([true, false])
+    expect(branchContinuations(scopes, byId('it'))).toEqual([false, false])
   })
 })
