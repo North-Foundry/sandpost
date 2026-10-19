@@ -20,6 +20,8 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
   dormant Independent state and revokes old sessions. EXPUNGE removes an occurrence;
   a final normal occurrence enters the active view's Trash. See [imap.md](imap.md).
 - **Roles** grant authority; **mail access** (`All`/`Scoped`) grants visibility.
+- **Link checks** are explicit, background, server-side verifications of a message's links;
+  every reader may start single or bulk checks. Their results are authoritative SQLite state per physical message, shared by all readers.
   Scope assignments are role-less inherited query restrictions. Personal/shared
   **Views** organize/filter mail, never grant access.
 
@@ -32,6 +34,7 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
 | `sandpost-search` | Tantivy schema, safe candidates, canonical verification, index lifecycle. |
 | `sandpost-application` | Authentication/authorization, management, mail access/events, index coordination; `SmtpAuthenticator`, `ImapService`, `MailListenerControl`. |
 | `sandpost-mime` | I/O-free MIME facts/captured bytes; alternative/related selection, boundary recovery, `cid:`/`mid:` resolution, shared attachment transfer decoding for size/hash/download without charset conversion. |
+| `sandpost-link-check` | Server-side link verification: I/O-free link extraction and normalization, public-address policy, HTTP/1.1 `HEAD`/`GET` checks over hyper/rustls with manual redirects, per-resolution address validation (no DNS rebinding), timeouts, concurrency limits and status classification. No storage dependency. |
 | `sandpost-smtp` | Bounded `SmtpServer`: selected RFC 5321 behavior, SIZE/8BITMIME, AUTH PLAIN/LOGIN, STARTTLS/implicit TLS (rustls), enhanced status/trace fields; MIME parsing and `SessionHandler` delivery. |
 | `sandpost-imap` | `ImapServer`: IMAP4rev1 framing/sessions/ENVELOPE/BODYSTRUCTURE/sections/SEARCH; IDLE, UIDPLUS, MOVE, UNSELECT, NAMESPACE, ID, CHILDREN, LITERAL-, SASL-IR, STARTTLS/implicit TLS. `ImapBackend` supplies accounts/mailboxes/UIDs/flags/access; no storage/search dependency. |
 | `sandpost-web-api` | HTTP/session middleware/SSE/SPA hosting, embedded at build time or served from a directory. |
@@ -128,7 +131,8 @@ to batch 1; older incompatible pre-deployment formats still fail without resetti
 The 46-script pre-release baseline creates current table definitions directly, with separate
 trigger groups and no historical ALTERs or data backfills. Migration 0047 appends durable
 remembered-session storage. Migration 0048 promotes legacy Admin users to Owners
-and prevents new Admin values without rebuilding the users table. Earlier development sequences require
+and prevents new Admin values without rebuilding the users table. Migrations 0049–0050
+append the per-message link check tables. All readers may start link checks. Earlier development sequences require
 explicit database recreation; startup does not reset them.
 See [storage.md](storage.md) and [backend-authoring.md](backend-authoring.md).
 
@@ -232,4 +236,17 @@ requests and enforced document policy. Trusted preview IPC supplies visible
 rectangles; main converts zoom/bounds. Native views hide for overlays/dragging/
 clipping, with iframe browser/clipped fallback. Email target survives message
 changes; closing inspector destroys its frontend, viewer/host teardown releases
-both. Client/inspector verification: [project.md](project.md).
+both. Link popovers never enter the email document: the browser reads the script-free,
+same-origin preview's hover/focus state from outside and draws a Vue popover.
+Client/inspector verification: [project.md](project.md).
+
+## Link checks
+
+`AuthorizedApplication` authorizes the message against one SQL snapshot and hands the
+snapshot's markup and text bodies to a process-wide coordinator. The
+coordinator keeps one queued or running check per message (later requests join it), bounds
+queued checks, messages checked at once and outbound connections, and spawns the run on the
+runtime. `sandpost-link-check` extracts and verifies links; the result replaces the message's
+stored check in one storage transaction, ignoring an older run. Reads combine stored results
+with the in-memory running state and never start a check. Runtime shutdown cancels runs. The
+`[link_check]` configuration only decides whether non-public destinations may be requested.

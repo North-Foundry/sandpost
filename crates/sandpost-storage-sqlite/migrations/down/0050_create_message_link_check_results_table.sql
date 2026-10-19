@@ -1,0 +1,1 @@
+DROP TABLE message_link_check_results;

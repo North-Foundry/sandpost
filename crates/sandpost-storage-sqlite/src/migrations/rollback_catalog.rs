@@ -52,4 +52,6 @@ pub(crate) const ROLLBACKS: [&str; super::MIGRATIONS.len()] = [
     ),
     include_str!("../../migrations/down/0047_create_persistent_sessions_table.sql"),
     include_str!("../../migrations/down/0048_promote_admin_users_to_owners.sql"),
+    include_str!("../../migrations/down/0049_create_message_link_checks_table.sql"),
+    include_str!("../../migrations/down/0050_create_message_link_check_results_table.sql"),
 ];

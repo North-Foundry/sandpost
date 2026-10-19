@@ -1,8 +1,10 @@
 import type { SandpostDesktopBridge, WireDesktopEvent } from '@/api/desktop'
 import type { SandpostClient, SandpostEvent } from '@/api/contracts'
 import {
+  normalizeBulkLinkCheck,
   normalizeCompatibilityReport,
   normalizeDetail,
+  normalizeLinkCheckReport,
   normalizeSummary,
   normalizeView,
   normalizeWebFolder,
@@ -61,12 +63,15 @@ export function createElectronClient(
     /**
      * Authenticate the supplied credentials and return the signed-in user.
      */
-    login: (input) => nativeCall(() => bridge.login(input)),
+    login: async (input) => nativeCall(() => bridge.login(input)),
 
     /**
      * Read the current session, returning null when it is no longer authenticated.
      */
-    session: () => nativeCall(() => bridge.session()),
+    session: async () => {
+      const session = await nativeCall(() => bridge.session())
+      return session
+    },
 
     /**
      * End the current authenticated session.
@@ -224,6 +229,33 @@ export function createElectronClient(
        */
       async htmlCheck(id) {
         return normalizeCompatibilityReport(await bridge.messages.htmlCheck(id))
+      },
+
+      /**
+       * Read the message's stored link check without starting one.
+       */
+      async linkCheck(id) {
+        return normalizeLinkCheckReport(
+          await nativeCall(() => bridge.messages.linkCheck(id))
+        )
+      },
+
+      /**
+       * Start, or join, a background check of the message's links.
+       */
+      async startLinkCheck(id) {
+        return normalizeLinkCheckReport(
+          await nativeCall(() => bridge.messages.linkCheckStart(id))
+        )
+      },
+
+      /**
+       * Start background link checks of the selected messages.
+       */
+      async checkLinks(identifiers) {
+        return normalizeBulkLinkCheck(
+          await nativeCall(() => bridge.messages.checkLinks({ identifiers }))
+        )
       },
 
       /**

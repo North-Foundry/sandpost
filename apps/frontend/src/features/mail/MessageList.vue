@@ -3,7 +3,7 @@ import { useI18n } from 'vue-i18n'
 import { computed, nextTick, onBeforeUnmount, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
 import {
-  CheckIcon, CopyIcon, PaperclipIcon, RefreshCwIcon, SearchIcon, SearchXIcon,
+  CheckIcon, CopyIcon, LinkIcon, PaperclipIcon, RefreshCwIcon, SearchIcon, SearchXIcon,
   MailIcon, MailOpenIcon, Trash2Icon, XIcon,
 } from '@lucide/vue'
 import type { MessageSummary } from '@/api/contracts'
@@ -82,6 +82,13 @@ const props = defineProps<{
   showEmptyTrash?: boolean
   emptyTrashDisabled?: boolean
   canMutate?: boolean
+
+  checkingLinks?: boolean
+
+  /**
+   * Confirmation of the last bulk link check request, announced to assistive technology.
+   */
+  linkCheckNotice?: string
 }>()
 const { t, locale } = useI18n()
 const emit = defineEmits<{
@@ -135,6 +142,11 @@ const emit = defineEmits<{
    * Requests permanently emptying Trash.
    */
   (event: 'emptyTrash'): void
+
+  /**
+   * Requests checking the links of the selected messages.
+   */
+  (event: 'check-links', ids: string[]): void
 }>()
 const scroller = useTemplateRef<HTMLElement>('scroller')
 const { copied, error: copyError, copy, reset: resetCopy } = useCopy<'address'>(t('mail.address.addressCopyError'))
@@ -532,6 +544,10 @@ watch(() => props.folder?.id, resetCopy)
         >
           <Trash2Icon data-icon="inline-start" />{{ inTrash ? t('mail.list.delete') : t('mail.list.trash') }}
         </Button>
+        <Button variant="ghost" size="icon-xs" :disabled="props.checkingLinks" :aria-label="t('mail.links.bulk')" :title="props.linkCheckNotice || t('mail.links.bulk')" @click="emit('check-links', orderedSelection(rowOrder, props.selection))">
+          <Spinner v-if="props.checkingLinks" aria-hidden="true" /><CheckIcon v-else-if="props.linkCheckNotice" class="text-success" /><LinkIcon v-else />
+        </Button>
+        <span class="sr-only" role="status">{{ props.linkCheckNotice }}</span>
         <Button variant="ghost" size="icon-xs" :aria-label="t('mail.list.clearSelection')" :title="t('mail.list.clearSelectionEsc')" @click="emit('update:selection', new Set())"><XIcon /></Button>
       </div>
       <div v-else class="flex min-h-5 min-w-0 items-center gap-1.5 text-xs text-muted-foreground">

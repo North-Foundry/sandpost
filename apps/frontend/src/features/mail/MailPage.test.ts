@@ -94,8 +94,8 @@ vi.mock('@/components/BusyDialog.vue', () => ({
 }));
 vi.mock('@/features/mail/MessageSelectionPanel.vue', () => ({
   default: defineComponent({
-    props: ['count', 'deleting', 'folders', 'trash'],
-    emits: ['delete', 'move', 'copy', 'set-flags', 'clear'],
+    props: ['count', 'deleting', 'folders', 'trash', 'canMutate', 'checkingLinks', 'linkCheckNotice'],
+    emits: ['delete', 'move', 'copy', 'set-flags', 'clear', 'check-links'],
 
     /**
      * Create the component stand-in render function used by the custom Vue test renderer.
@@ -109,8 +109,8 @@ vi.mock('@/features/mail/MessageSelectionPanel.vue', () => ({
 
 vi.mock('@/features/mail/MessageList.vue', () => ({
   default: defineComponent({
-    props: ['messages', 'folder', 'search', 'loading', 'hasOlder', 'error', 'selection', 'showEmptyTrash', 'emptyTrashDisabled', 'readMessageIds', 'seenBusy', 'canMutate'],
-    emits: ['select', 'clearSearch', 'refresh', 'older', 'filter', 'update:selection', 'delete', 'move', 'emptyTrash', 'set-seen'],
+    props: ['messages', 'folder', 'search', 'loading', 'hasOlder', 'error', 'selection', 'showEmptyTrash', 'emptyTrashDisabled', 'readMessageIds', 'seenBusy', 'canMutate', 'checkingLinks', 'linkCheckNotice'],
+    emits: ['select', 'clearSearch', 'refresh', 'older', 'filter', 'update:selection', 'delete', 'move', 'emptyTrash', 'set-seen', 'check-links'],
 
     /**
      * Create the component stand-in render function used by the custom Vue test renderer.
@@ -397,6 +397,7 @@ describe('MailPage', () => {
         setSeen: vi.fn(async (ids: string[]) => ids.length),
         copy: vi.fn(async (ids: string[]) => ids.length), setFlags: vi.fn(async () => 1),
         trash: vi.fn(async (ids: string[]) => ids.length), getAttachment: vi.fn(async () => new Uint8Array([1])),
+        checkLinks: vi.fn(async (ids: string[]) => ({ started: ids.length, alreadyRunning: 0, skipped: 0 })),
       },
       folders: { listMessages: vi.fn(async () => []) },
       trash: { listMessages: vi.fn(async () => []), empty: vi.fn(async () => 0) },
@@ -620,6 +621,25 @@ describe('MailPage', () => {
     harness.selectionPanels.at(-1)!.emit('set-flags', 'add', flags); await flushUi();
     expect(harness.client.messages.setFlags).toHaveBeenCalledWith({ identifiers: ['message-a', 'message-b'], operation: 'add', flags });
     app.unmount();
+  });
+
+  it('allows every role to start bulk link checks while viewers remain read-only', async () => {
+    vi.mocked(harness.client.messages.list).mockResolvedValue(summaries('message-a', 'message-b'));
+    for (const role of ['owner', 'member', 'viewer'] as const) {
+      harness.workspace = createWorkspaceDouble(role).workspace;
+      const app = mountPage(); await flushUi();
+      harness.lists.at(-1)!.emit('update:selection', new Set(['message-a', 'message-b'])); await flushUi();
+      const selectionPanel = harness.selectionPanels.at(-1)!;
+      expect(selectionPanel.props).toMatchObject({ canMutate: role !== 'viewer', count: 2 });
+      selectionPanel.emit('check-links'); await flushUi();
+      expect(harness.client.messages.checkLinks).toHaveBeenNthCalledWith(
+        role === 'owner' ? 1 : role === 'member' ? 2 : 3,
+        ['message-a', 'message-b'],
+      );
+      expect(harness.selectionPanels.at(-1)!.props.linkCheckNotice).toBe('Checking links in 2 messages. Results appear when you open them.');
+      expect(harness.lists.at(-1)!.props.selection.size).toBe(2);
+      app.unmount();
+    }
   });
 
   it('keeps inspector flags in sync after opening or marking a message unread', async () => {

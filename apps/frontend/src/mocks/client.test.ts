@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createMockClient } from './client'
 import { mockAttachments, mockSummaries } from './messages'
 
@@ -129,6 +129,28 @@ describe('mock client', () => {
     const plainMail = details.find((message) => !message.html)!
     expect(await client.messages.htmlCheck(plainMail.id)).toMatchObject({ htmlPresent: false, features: [] })
     await expect(client.messages.htmlCheck('missing')).rejects.toThrow('Mock message not found')
+  })
+
+  it('simulates shared link checks for signed-in users', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = createMockClient()
+      const messages = await client.messages.list()
+      const linked = messages.find((message) => message.subject === 'Weekly product update')!
+      await expect(client.messages.linkCheck(linked.id)).rejects.toThrow('authentication required')
+      await client.setup({ bootstrapSecret: 'sandpost-test-secret', name: 'Owner', email: 'owner@example.test', password: 'password12345' })
+      expect(await client.login({ email: 'owner@example.test', password: 'password12345' })).toMatchObject({ role: 'owner' })
+      expect(await client.messages.linkCheck(linked.id)).toMatchObject({ checkedAt: null, running: false, links: [] })
+      expect(await client.messages.startLinkCheck(linked.id)).toMatchObject({ running: true, checkedAt: null })
+      expect(await client.messages.checkLinks([linked.id, linked.id, 'missing', messages[0]!.id])).toEqual({ started: 1, alreadyRunning: 1, skipped: 2 })
+      await vi.advanceTimersByTimeAsync(1500)
+      const report = await client.messages.linkCheck(linked.id)
+      expect(report).toMatchObject({ running: false, summary: { total: 5, healthy: 2, broken: 1, serverError: 1, failed: 0, inconclusive: 1 } })
+      expect(report.links.find((link) => link.url === 'http://localhost:3000/preferences')).toMatchObject({ outcome: 'inconclusive', errorKind: 'blocked_address' })
+      expect(report.links.find((link) => link.outcome === 'healthy' && link.redirects === 1)?.finalUrl).toBe('https://postmark.example/guides/timeline')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps IMAP accounts per owner, issues passwords once, and plans mailboxes from Smart Folders', async () => {

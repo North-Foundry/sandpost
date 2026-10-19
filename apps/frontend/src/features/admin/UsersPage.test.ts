@@ -68,7 +68,7 @@ vi.mock('@/components/ui/command', () => primitives('Command CommandEmpty Comman
 vi.mock('@/components/ui/dialog', () => ({ DialogFooter: primitive('div') }))
 vi.mock('@/components/ui/dropdown-menu', () => primitives('DropdownMenu DropdownMenuContent DropdownMenuItem DropdownMenuTrigger'))
 vi.mock('@/components/ui/empty', () => primitives('Empty EmptyDescription EmptyHeader EmptyMedia EmptyTitle'))
-vi.mock('@/components/ui/field', () => primitives('Field FieldDescription FieldError FieldGroup FieldLabel'))
+vi.mock('@/components/ui/field', () => primitives('Field FieldContent FieldDescription FieldError FieldGroup FieldLabel FieldLegend FieldSet'))
 vi.mock('@/components/ui/input', () => ({ Input: primitive('input') }))
 vi.mock('@/components/ui/input-group', () => ({ InputGroup: primitive('div'), InputGroupAddon: primitive('div'), InputGroupInput: primitive('input') }))
 vi.mock('@/components/ui/native-select', () => ({ NativeSelect: primitive('select'), NativeSelectOption: primitive('option') }))
@@ -514,6 +514,20 @@ describe('UsersPage scoped access editing', () => {
     expect(harness.client.admin.scopes.assign).toHaveBeenCalledWith('scope-two', existingUser.id)
     expect(harness.client.admin.scopes.unassign).toHaveBeenCalledWith('scope-one', existingUser.id)
     expect(harness.client.admin.users.update).not.toHaveBeenCalled()
+  })
+
+  it('does not expose link check permissions in account forms', async () => {
+    mount(); await flush(); button('New user')!.props.onClick(); await flush()
+    expect(textOf()).not.toContain('Check links in an email')
+    expect(textOf()).not.toContain('Link checks')
+    find((item) => item.props.id === 'user-name')!.props.onInput({ target: { value: 'Checker' } })
+    find((item) => item.props.id === 'user-email')!.props.onInput({ target: { value: 'checker@example.test' } })
+    find((item) => item.props.id === 'user-password')!.props.onInput({ target: { value: 'long-enough-password' } })
+    find((item) => item.props.id === 'user-mail-access')!.props.onChange({ target: { value: 'all' } })
+    submitForm(); await flush()
+    expect(harness.client.admin.users.create).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'member', mailAccess: 'all',
+    }))
   })
 
   it('ignores scope responses from an earlier account form opened during a load', async () => {

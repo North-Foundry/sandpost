@@ -316,7 +316,9 @@ export function createMockAdmin(activeUser: () => SessionUser | null, summaries:
         const email = input.email.trim().toLowerCase()
         if (userList().some((user) => user.email === email)) fail('conflict')
         if (new TextEncoder().encode(input.password).length < 12) fail('password must contain 12 to 1024 bytes')
-        const user: UserAccount = { id: crypto.randomUUID(), name: input.name.trim(), email, role: input.role, mailAccess: input.mailAccess }
+        const user: UserAccount = {
+          id: crypto.randomUUID(), name: input.name.trim(), email, role: input.role, mailAccess: input.mailAccess,
+        }
         users.push(user)
         return { ...user }
       },

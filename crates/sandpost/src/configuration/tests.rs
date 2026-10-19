@@ -1675,6 +1675,53 @@ fn invalid_application_file_settings() {
     assert!(tracing_subscriber::EnvFilter::try_new(&configuration.log_level).is_err());
 }
 
+/// Link checks refuse internal destinations unless TOML or the environment explicitly allows them.
+#[test]
+fn link_check_internal_addresses_require_an_explicit_opt_in() {
+    assert!(
+        !listener_sources("", &[])
+            .unwrap()
+            .link_check_allow_internal_addresses
+    );
+    let allowed = "[link_check]\nallow_internal_addresses = true";
+    assert!(
+        listener_sources(allowed, &[])
+            .unwrap()
+            .link_check_allow_internal_addresses
+    );
+    assert!(
+        !listener_sources(
+            allowed,
+            &[("SANDPOST_LINK_CHECK_ALLOW_INTERNAL_ADDRESSES", "false")]
+        )
+        .unwrap()
+        .link_check_allow_internal_addresses
+    );
+    assert!(
+        listener_sources(
+            "",
+            &[("SANDPOST_LINK_CHECK_ALLOW_INTERNAL_ADDRESSES", "true")]
+        )
+        .unwrap()
+        .link_check_allow_internal_addresses
+    );
+    let error = listener_sources(
+        "",
+        &[("SANDPOST_LINK_CHECK_ALLOW_INTERNAL_ADDRESSES", "yes")],
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("SANDPOST_LINK_CHECK_ALLOW_INTERNAL_ADDRESSES"),
+        "{error}"
+    );
+    for field in ["allow_internal_addresses = 'true'", "allow_internal = true"] {
+        let error = listener_sources(&format!("[link_check]\n{field}"), &[]).unwrap_err();
+        assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+    }
+}
+
 /// SMTP certificate overrides preserve the other TOML field and incomplete merged pairs fail startup.
 #[test]
 fn mail_file_certificate_environment_overrides() {

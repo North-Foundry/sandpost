@@ -3,7 +3,6 @@ import type {
   MessageFlagOperation,
   MessageFlags,
   MessageListOptions,
-  SessionUser,
   SetupInput,
 } from './contracts'
 import type {
@@ -17,11 +16,14 @@ import type {
   WireInbox,
   WireIssuedImapCredentials,
   WireIssuedSmtpCredentials,
+  WireBulkLinkCheckResult,
   WireCompatibilityReport,
+  WireLinkCheckReport,
   WireMessageDetail,
   WireMessageSummary,
   WireQueryValidation,
   WireScope,
+  WireSessionUser,
   WireSmtpAccess,
   WireSmtpAccessInput,
   WireSmtpAccessUpdate,
@@ -62,12 +64,12 @@ export interface SandpostDesktopBridge {
   /**
    * Authenticate the supplied credentials and return the signed-in user.
    */
-  login(input: LoginInput): Promise<SessionUser>
+  login(input: LoginInput): Promise<WireSessionUser>
 
   /**
    * Read the current session, returning null when it is no longer authenticated.
    */
-  session(): Promise<SessionUser | null>
+  session(): Promise<WireSessionUser | null>
 
   /**
    * End the current authenticated session.
@@ -192,6 +194,21 @@ export interface SandpostDesktopBridge {
     htmlCheck(id: string): Promise<WireCompatibilityReport>
 
     /**
+     * Read the message's stored link check without starting one.
+     */
+    linkCheck(id: string): Promise<WireLinkCheckReport>
+
+    /**
+     * Start, or join, a background check of the message's links.
+     */
+    linkCheckStart(id: string): Promise<WireLinkCheckReport>
+
+    /**
+     * Start background link checks of up to 256 messages.
+     */
+    checkLinks(input: { identifiers: string[] }): Promise<WireBulkLinkCheckResult>
+
+    /**
      * Delete the record identified by the supplied ID.
      */
     delete(id: string): Promise<void>
@@ -285,6 +302,34 @@ export interface SandpostEmailPreviewBridge {
       error?: string
     }) => void
   ): () => void
+
+  /**
+   * Subscribe to the link under the pointer or keyboard focus in the native preview; `url` is
+   * null when no link is targeted. The email document runs no script for this.
+   */
+  subscribeLinks?(
+    listener: (event: { id: string; url: string | null }) => void
+  ): () => void
+
+  /**
+   * Show a stored link result next to the targeted link above the native preview, or hide it.
+   */
+  linkPopover?(input: {
+    id: string
+    popover: EmailPreviewLinkPopover | null
+  }): Promise<void>
+}
+
+/**
+ * Localized, plain-text content of the native link result popover.
+ */
+export interface EmailPreviewLinkPopover {
+  tone: 'success' | 'destructive' | 'warning' | 'muted'
+  title: string
+  status: string
+  explanation: string
+  destination: string | null
+  checked: string
 }
 
 export interface EmailPreviewRectangle {
@@ -511,6 +556,9 @@ export function isSandpostDesktopBridge(
     typeof bridge.messages.get === 'function' &&
     typeof bridge.messages.getRaw === 'function' &&
     typeof bridge.messages.htmlCheck === 'function' &&
+    typeof bridge.messages.linkCheck === 'function' &&
+    typeof bridge.messages.linkCheckStart === 'function' &&
+    typeof bridge.messages.checkLinks === 'function' &&
     typeof bridge.messages.delete === 'function' &&
     typeof bridge.messages.move === 'function' &&
     typeof bridge.messages.trash === 'function' &&

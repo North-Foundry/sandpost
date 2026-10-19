@@ -102,6 +102,7 @@ async fn unassigned_members_cannot_list_read_or_delete_captured_messages() {
         ("GET", "/raw"),
         ("GET", "/attachments/0"),
         ("GET", "/html-check"),
+        ("GET", "/link-check"),
         ("DELETE", ""),
     ] {
         let uri = format!("/api/v1/messages/{identifier}{suffix}");

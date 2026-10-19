@@ -17,7 +17,7 @@ boundary, and nothing in the contract depends on a backend.
 
 `sandpost-storage` defines the capability traits `UserStorage`,
 `SmtpServerStorage`, `ImapStorage`, `ScopeStorage`, `ViewStorage`, `MessageStorage`,
-`SearchSynchronizationStorage`, and `StorageHealth`, and composes them into the
+`LinkCheckStorage`, `SearchSynchronizationStorage`, and `StorageHealth`, and composes them into the
 object-safe `Storage` trait through a blanket implementation for any type that
 implements every capability. No database driver type, SQL text, connection, transaction object, or
 backend-specific error appears here.
@@ -82,6 +82,16 @@ ordered sequence of migration scripts.
   Views share their icon, managed by Owners; personal icons belong to their owner.
 - **Mail.** One pool of messages with normalized recipient/header/attachment facts, raw MIME in
   the mail row, and search synchronization state. Mail records no destination or SMTP access.
+- **Link checks.** `MessageLinkCheck { message_identifier, checked_at, omitted_link_count,
+  links }` is the latest completed check of a physical message, shared by every reader.
+  Each `LinkCheckResult` stores the normalized URL (unique per check, kept in message order),
+  `outcome` (`healthy`, `broken`, `server_error`, `failed`, `inconclusive`), optional final
+  `status_code`, optional `final_url` after redirects, `redirect_count`, optional `error_kind`
+  and `error_message`, and its own `checked_at`. `replace_message_link_check` atomically replaces
+  the whole check, refuses a duplicate URL with `ConstraintViolation` (leaving the previous
+  check), fails with `NotFound` for a missing message, and ignores a check older than the
+  stored one. Reads are not user-scoped; callers authorize the message first. Physical message
+  deletion cascades the check and its results. Running checks are application memory, not storage.
 - **Primary state.** `user_message_deletions` permanently removes a message from the
   primary user's view and every Mirror projection, while Independent references survive.
   `user_message_placements`, `user_message_copies`, `user_message_trash` and
@@ -130,7 +140,7 @@ Full behavior, protocol decisions, subscriptions, and notifications: [imap.md](i
 
 ## SQLite backend, startup, and migrations
 
-`sandpost-storage-sqlite` keeps one ordered sequence of 48 SQL scripts (0001–0048, without gaps),
+`sandpost-storage-sqlite` keeps one ordered sequence of 50 SQL scripts (0001–0050, without gaps),
 with table/index definitions and trigger groups in separate files. The `migrations` table records
 applied script names and a positive integer `batch`. Every execution with pending scripts records
 all of them in the same batch, one greater than the largest applied batch; fresh databases use batch
@@ -162,7 +172,11 @@ The users table retains `admin` in its CHECK constraint to avoid rebuilding its 
 relationships; its down migration removes the guards but keeps promoted roles as owners because
 the migration cannot distinguish them from owners created afterward. Rollback restores the
 preceding schema objects while retaining role normalization, without demoting users based on an
-assumption that could overwrite a later role change.
+assumption that could overwrite a later role change. Migrations 0049 and 0050 create
+`message_link_checks` (one row per checked message, cascading from `mail`) and
+`message_link_check_results` (unique URL and position per check, constrained outcome and status
+range, cascading from the check). Their down scripts drop the tables and stored results.
+Every authenticated reader may start checks; the user model has no link-check permission fields.
 
 The application has not shipped. Its pre-release baseline was consolidated: historical ALTERs,
 data backfills, trigger replacements, and fingerprint invalidation scripts were removed. Scripts

@@ -129,6 +129,107 @@ export interface MessageDetail {
 }
 
 /**
+ * Verdict of one verified link: a 2xx response, a 4xx client error, a 5xx server error, no
+ * response at all, or a response or policy that prevents a verdict.
+ */
+export type LinkOutcome = 'healthy' | 'broken' | 'server_error' | 'failed' | 'inconclusive'
+
+/**
+ * Why a link check produced no usable response.
+ */
+export type LinkCheckErrorKind =
+  | 'name_resolution'
+  | 'connection'
+  | 'tls'
+  | 'timeout'
+  | 'protocol'
+  | 'too_many_redirects'
+  | 'redirect_loop'
+  | 'invalid_redirect'
+  | 'blocked_address'
+
+/**
+ * The stored verification result of one distinct link of a message.
+ */
+export interface LinkCheckResult {
+  /**
+   * Absolute URL as found in the message, without its fragment.
+   */
+  url: string
+  outcome: LinkOutcome
+  statusCode: number | null
+
+  /**
+   * Registered reason phrase of the status code, such as `Not Found`.
+   */
+  statusText: string | null
+
+  /**
+   * The URL that produced the final response, present only after redirects.
+   */
+  finalUrl: string | null
+  redirects: number
+  errorKind: LinkCheckErrorKind | null
+  errorMessage: string | null
+
+  /**
+   * Unix seconds when this link's verification finished.
+   */
+  checkedAt: number
+}
+
+/**
+ * Counts of a message's stored link results by outcome.
+ */
+export interface LinkCheckSummary {
+  total: number
+  healthy: number
+  broken: number
+  serverError: number
+  failed: number
+  inconclusive: number
+}
+
+/**
+ * The shared link check state of one message, identical for every reader who can open it.
+ */
+export interface LinkCheckReport {
+  messageId: string
+
+  /**
+   * A check is queued or running; the stored results remain until it completes.
+   */
+  running: boolean
+  startedAt: number | null
+
+  /**
+   * Unix seconds when the stored check finished; null before the first check.
+   */
+  checkedAt: number | null
+
+  /**
+   * Distinct links found in the message, in first-appearance order, whether checked or not.
+   */
+  urls: string[]
+
+  /**
+   * Distinct links beyond the per-message limit, which are neither listed nor verified.
+   */
+  omittedLinks: number
+  summary: LinkCheckSummary
+  links: LinkCheckResult[]
+}
+
+/**
+ * What a bulk link check request did with the selected messages.
+ */
+export interface BulkLinkCheckResult {
+  started: number
+  alreadyRunning: number
+  skipped: number
+}
+
+/**
  * How well one email client version supports an HTML, CSS or image feature.
  */
 export type SupportLevel = 'yes' | 'no' | 'partial' | 'unknown'
@@ -923,6 +1024,21 @@ export interface SandpostClient {
      * Check the message's original HTML against email client support data.
      */
     htmlCheck(id: string): Promise<HtmlCompatibilityReport>
+
+    /**
+     * Read the message's stored link check without starting one.
+     */
+    linkCheck(id: string): Promise<LinkCheckReport>
+
+    /**
+     * Start, or join, a background check of the message's links and return its state.
+     */
+    startLinkCheck(id: string): Promise<LinkCheckReport>
+
+    /**
+     * Start background link checks of up to 256 messages.
+     */
+    checkLinks(identifiers: string[]): Promise<BulkLinkCheckResult>
 
     /**
      * Permanently hide one message for the caller; from outside Trash prefer `trash`.

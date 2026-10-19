@@ -2,10 +2,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc'
 import { createRenderer, defineComponent, h, nextTick, ssrContextKey } from 'vue'
 import * as VueRuntime from 'vue'
+import type { LinkCheckResult } from '@/api/contracts'
 import type { SandpostEmailPreviewBridge } from '@/api/desktop'
 import { i18n } from '@/i18n'
 
 const theme = vi.hoisted(() => ({ isDark: null as import('vue').Ref<boolean> | null }))
+const hoverCards = vi.hoisted(() => [] as { description: unknown; anchor: unknown }[])
+
+vi.mock('./LinkCheckHoverCard.vue', async () => {
+  const { defineComponent, h } = await vi.importActual<typeof import('vue')>('vue')
+  return {
+    default: defineComponent({
+      props: ['description', 'anchor'],
+
+      /**
+       * Record the hover card state the preview requests.
+       */
+      setup: (props) => {
+        hoverCards.push(props)
+        return () => h('aside')
+      },
+    }),
+  }
+})
 
 vi.mock('@/composables/useTheme', async () => {
   const { ref } = await vi.importActual<typeof import('vue')>('vue')
@@ -311,7 +330,7 @@ afterEach(() => vi.unstubAllGlobals())
 /**
  * Mount the preview with the shared English i18n plugin.
  */
-function mountPreview(props: { document: string; messageIdentifier: string }) {
+function mountPreview(props: { document: string; messageIdentifier: string; linkResults?: Map<string, LinkCheckResult>; now?: number }) {
   i18n.global.locale.value = 'en'
   const app = renderer.createApp(HtmlMessagePreview, props)
   app.use(i18n)
@@ -530,6 +549,85 @@ describe('HtmlMessagePreview', () => {
     await flush()
     expect(bridge.inspect).toHaveBeenCalledTimes(1)
     expect(bridge.inspect).toHaveBeenCalledWith(expect.objectContaining({ open: false }))
+    app.unmount()
+  })
+
+  it('describes a hovered or focused checked link by reading a script-free same-origin preview from outside', async () => {
+    vi.useFakeTimers()
+    hoverCards.length = 0
+    const broken: LinkCheckResult = {
+      url: 'https://example.test/missing', outcome: 'broken', statusCode: 404, statusText: 'Not Found', finalUrl: null,
+      redirects: 0, errorKind: null, errorMessage: null, checkedAt: 1_700_000_000,
+    }
+    const app = mountPreview({
+      document: '<a href="https://example.test/missing#top">Missing</a>', messageIdentifier: 'links',
+      linkResults: new Map([[broken.url, broken]]), now: 1_700_000_120_000,
+    })
+    await flush()
+    const iframe = findNodes(root, 'iframe')[0]!
+    expect(iframe.props.sandbox).toBe('allow-same-origin')
+
+    /**
+     * Model an anchor inside the preview document at a fixed position.
+     */
+    const anchor = (href: string) => {
+      const element: Record<string, unknown> = {
+        getAttribute: () => href,
+        matches: () => true,
+        getBoundingClientRect: () => ({ x: 10, y: 20, width: 50, height: 12 }),
+      }
+      element.closest = () => element
+      return element
+    }
+    let hovered: unknown[] = [anchor('https://example.test/missing#top')]
+    let active: unknown = null
+    Object.assign(iframe, {
+      clientLeft: 1, clientTop: 1,
+      contentDocument: { querySelectorAll: () => hovered, get activeElement() { return active } },
+      getBoundingClientRect: () => ({ x: 100, y: 200, width: 500, height: 420, bottom: 620 }),
+    })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(hoverCards.at(-1)!.description).toBeNull()
+    await vi.advanceTimersByTimeAsync(300)
+    expect(hoverCards.at(-1)!.description).toMatchObject({ tone: 'destructive', title: 'Broken link', status: 'HTTP 404 — Not Found', checked: 'Checked 2 minutes ago' })
+    expect(hoverCards.at(-1)!.anchor).toEqual({ x: 111, y: 221, width: 50, height: 12 })
+
+    hovered = [anchor('https://unchecked.example.test/')]
+    await vi.advanceTimersByTimeAsync(100)
+    expect(hoverCards.at(-1)!.description).toBeNull()
+
+    hovered = []
+    active = anchor('https://example.test/missing')
+    vi.stubGlobal('document', { hidden: false, activeElement: iframe, querySelectorAll: vi.fn(() => []), addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    await vi.advanceTimersByTimeAsync(400)
+    expect(hoverCards.at(-1)!.description).toMatchObject({ title: 'Broken link' })
+    app.unmount()
+    vi.useRealTimers()
+  })
+
+  it('describes links targeted in the native preview through the host without touching the email', async () => {
+    installEnvironment(true)
+    bridge.subscribeLinks = vi.fn(() => vi.fn())
+    bridge.linkPopover = vi.fn(async () => undefined)
+    const healthy: LinkCheckResult = {
+      url: 'https://example.test/', outcome: 'healthy', statusCode: 200, statusText: 'OK', finalUrl: 'https://www.example.test/',
+      redirects: 1, errorKind: null, errorMessage: null, checkedAt: 1_700_000_000,
+    }
+    const app = mountPreview({ document: '<a href="https://example.test">Home</a>', messageIdentifier: 'native-links', linkResults: new Map([[healthy.url, healthy]]), now: 1_700_000_000_000 })
+    await flush()
+    const id = vi.mocked(bridge.show).mock.calls[0]![0].id
+    const listener = vi.mocked(bridge.subscribeLinks!).mock.calls[0]![0]
+    listener({ id, url: 'https://EXAMPLE.test#hero' })
+    expect(bridge.linkPopover).toHaveBeenLastCalledWith({
+      id,
+      popover: expect.objectContaining({ tone: 'success', title: 'Healthy link', status: 'HTTP 200 — OK', destination: 'Redirected once to https://www.example.test/' }),
+    })
+    listener({ id, url: 'https://unchecked.example.test/' })
+    expect(bridge.linkPopover).toHaveBeenLastCalledWith({ id, popover: null })
+    listener({ id, url: null })
+    expect(bridge.linkPopover).toHaveBeenLastCalledWith({ id, popover: null })
+    listener({ id: 'stale', url: 'https://example.test/' })
+    expect(bridge.linkPopover).toHaveBeenCalledTimes(3)
     app.unmount()
   })
 })

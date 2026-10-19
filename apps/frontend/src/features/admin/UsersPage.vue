@@ -74,6 +74,7 @@ const passwordTooShort = computed(() => password.value.length > 0 && new TextEnc
 const grantableRoles = ROLES
 const roleDescription = computed(() => t(`admin.users.role.${role.value}Description`))
 const mailAccessDescription = computed(() => t(`admin.users.access.${mailAccess.value}Description`))
+
 const formValid = computed(() => name.value.trim() && (editing.value !== 'new' || (email.value.trim() && password.value)) && !passwordTooShort.value && (mailAccess.value !== 'scoped' || scopesLoaded.value))
 
 const filteredScopes = computed(() => {
@@ -255,7 +256,9 @@ async function save(): Promise<void> {
   try {
     let changes: UserUpdate = {}
     if (target === 'new') {
-      target = await client.admin.users.create({ name: name.value.trim(), email: email.value.trim(), password: password.value, role: role.value, mailAccess: mailAccess.value })
+      target = await client.admin.users.create({
+        name: name.value.trim(), email: email.value.trim(), password: password.value, role: role.value, mailAccess: mailAccess.value,
+      })
       // Keep a successfully created account open if assigning its scopes fails, avoiding duplicate creation.
       editing.value = target
       password.value = ''

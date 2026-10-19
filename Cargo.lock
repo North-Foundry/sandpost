@@ -2079,6 +2079,7 @@ dependencies = [
  "getrandom 0.4.3",
  "sandpost-core",
  "sandpost-html-check",
+ "sandpost-link-check",
  "sandpost-mime",
  "sandpost-query",
  "sandpost-search",
@@ -2127,6 +2128,24 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+]
+
+[[package]]
+name = "sandpost-link-check"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rcgen",
+ "rustls-native-certs",
+ "sandpost-core",
+ "scraper",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { computed, ref, shallowRef, watch } from 'vue'
-import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, CopyIcon, DownloadIcon, FileTextIcon, MailIcon, MailOpenIcon, PaperclipIcon, RotateCwIcon, ShieldCheckIcon, Trash2Icon } from '@lucide/vue'
+import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, CopyIcon, DownloadIcon, FileTextIcon, LinkIcon, MailIcon, MailOpenIcon, PaperclipIcon, RotateCwIcon, ShieldCheckIcon, Trash2Icon } from '@lucide/vue'
 import type { MessageDetail, MessageFlags, MessageFlagOperation } from '@/api/contracts'
 import { formatBytes, formatFullDate, mailboxName, senderInitial } from '@/utils/format'
 import { cn } from '@/lib/utils'
@@ -17,8 +17,12 @@ import MoveToMenu from './MoveToMenu.vue'
 import MessageFlagsMenu from './MessageFlagsMenu.vue'
 import HtmlMessagePreview from './HtmlMessagePreview.vue'
 import HtmlCompatibility from './HtmlCompatibility.vue'
+import LinkCheckStatus from './LinkCheckStatus.vue'
+import LinkCheckTab from './LinkCheckTab.vue'
 import { createEmailPreviewDocument } from './previewLayout'
+import { useLinkCheck } from './useLinkCheck'
 import { useCopy } from '@/composables/useCopy'
+import { useSandpostClient } from '@/runtime/client'
 
 const props = withDefaults(defineProps<{
   message: MessageDetail | null
@@ -105,7 +109,12 @@ watch(() => [props.message, props.loading], () => {
   else if (!props.loading) retainedMessage.value = null
 })
 
-const activeTab = ref<'html' | 'text' | 'headers' | 'attachments' | 'compatibility'>('html')
+/**
+ * Stored link results of the shown message; they load on open, but a check only runs on request.
+ */
+const linkCheck = useLinkCheck(useSandpostClient(), computed(() => props.message?.id ?? null))
+
+const activeTab = ref<'html' | 'text' | 'headers' | 'links' | 'attachments' | 'compatibility'>('html')
 const metadataExpanded = ref(false)
 const { copied, error: copyError, copy, reset: resetCopy } = useCopy<'headers'>(t('mail.error.copyHeaders'))
 const hasHtml = computed(() => Boolean(renderedMessage.value?.html.trim()))
@@ -247,10 +256,14 @@ async function copyAllHeaders(): Promise<void> {
           </div>
 
           <Tabs v-model="activeTab" class="gap-3">
-            <TabsList variant="line" class="w-full justify-start border-b" :aria-label="t('mail.detail.inspection')">
+            <TabsList variant="line" class="w-full justify-start overflow-x-auto overflow-y-hidden border-b [scrollbar-width:none]" :aria-label="t('mail.detail.inspection')">
               <TabsTrigger v-if="hasHtml" value="html" class="flex-none">HTML</TabsTrigger>
               <TabsTrigger value="text" class="flex-none">{{ t('mail.detail.plainText') }}</TabsTrigger>
               <TabsTrigger value="headers" class="flex-none">{{ t('mail.detail.headers') }}</TabsTrigger>
+              <TabsTrigger v-if="linkCheck.report.value?.urls.length" value="links" class="flex-none">
+                <LinkIcon aria-hidden="true" />{{ t('mail.links.tab') }}
+                <Badge variant="secondary" class="tabular-nums">{{ linkCheck.report.value.urls.length }}</Badge>
+              </TabsTrigger>
               <TabsTrigger v-if="renderedMessage.attachments.length" value="attachments" class="flex-none">
                 <PaperclipIcon aria-hidden="true" />{{ t('mail.detail.attachments') }}
                 <Badge variant="secondary" class="tabular-nums">{{ renderedMessage.attachments.length }}</Badge>
@@ -260,10 +273,21 @@ async function copyAllHeaders(): Promise<void> {
 
             <TabsContent v-if="hasHtml" value="html">
               <div class="overflow-hidden rounded-lg border">
-                <HtmlMessagePreview :document="htmlDocument" :message-identifier="renderedMessage.id" />
-                <p class="flex items-center gap-1.5 border-t bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
-                  <ShieldCheckIcon class="size-3.5 text-success" aria-hidden="true" />{{ t('mail.detail.isolatedPreview') }}
-                </p>
+                <HtmlMessagePreview :document="htmlDocument" :message-identifier="renderedMessage.id" :link-results="linkCheck.results.value" :now="linkCheck.now.value" />
+                <div class="flex min-h-7 items-center gap-3 border-t bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+                  <p class="flex min-w-0 flex-1 items-center gap-1.5">
+                    <ShieldCheckIcon class="size-3.5 shrink-0 text-success" aria-hidden="true" /><span :class="cn('truncate', linkCheck.report.value?.checkedAt && 'max-sm:sr-only')" :title="t('mail.detail.isolatedPreview')">{{ t('mail.detail.isolatedPreview') }}</span>
+                  </p>
+                  <LinkCheckStatus
+                    class="max-w-[65%] max-sm:max-w-[calc(100%-1.75rem)]"
+                    :report="linkCheck.report.value"
+                    :running="linkCheck.running.value"
+                    :error="linkCheck.error.value"
+                    :now="linkCheck.now.value"
+                    @check="linkCheck.start"
+                    @details="activeTab = 'links'"
+                  />
+                </div>
               </div>
             </TabsContent>
 
@@ -296,6 +320,16 @@ async function copyAllHeaders(): Promise<void> {
                 </ItemContent>
                 <ItemActions><Button variant="outline" size="sm" @click="emit('download')"><DownloadIcon data-icon="inline-start" />{{ t('mail.common.downloadEml') }}</Button></ItemActions>
               </Item>
+            </TabsContent>
+
+            <TabsContent v-if="linkCheck.report.value?.urls.length" value="links">
+              <LinkCheckTab
+                :report="linkCheck.report.value"
+                :running="linkCheck.running.value"
+                :error="linkCheck.error.value"
+                :now="linkCheck.now.value"
+                @check="linkCheck.start"
+              />
             </TabsContent>
 
             <TabsContent v-if="renderedMessage.attachments.length" value="attachments">

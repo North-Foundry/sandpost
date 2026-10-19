@@ -8,7 +8,8 @@ use sandpost_core::{
     UserIdentifier,
 };
 use sandpost_storage::{
-    MessageListQuery, MessageStorage, NewUser, ScopeStorage, StorageError, UserStorage,
+    LinkCheckStorage, MessageListQuery, MessageStorage, NewUser, ScopeStorage, StorageError,
+    UserStorage,
 };
 use sandpost_storage_sqlite::SqliteStorage;
 use sqlx::Connection;
@@ -97,7 +98,7 @@ async fn a_fresh_database_ignores_arbitrary_user_version() {
 
     let mut connection = open_connection(&path).await;
     let actual = migration_history(&mut connection).await;
-    assert_eq!(expected.len(), 48);
+    assert_eq!(expected.len(), 50);
     assert_eq!(actual, expected);
     let legacy_smtp_server_table: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'smtp_server'",
@@ -130,7 +131,7 @@ async fn admin_role_upgrade_preserves_related_rows_and_guards_future_values() {
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 48);
+    assert_eq!(scripts.len(), 50);
     let admin_identifier = uuid::Uuid::new_v4().to_string();
     let scoped_admin_identifier = uuid::Uuid::new_v4().to_string();
     let member_identifier = uuid::Uuid::new_v4().to_string();
@@ -211,7 +212,7 @@ async fn admin_role_upgrade_preserves_related_rows_and_guards_future_values() {
         .fetch_one(&mut connection)
         .await
         .unwrap();
-    assert_eq!(applied, 48);
+    assert_eq!(applied, 50);
     let message: (String, Vec<u8>) =
         sqlx::query_as("SELECT subject,raw_message FROM mail WHERE identifier='legacy-message'")
             .fetch_one(&mut connection)
@@ -234,7 +235,7 @@ async fn a_baseline_prefix_upgrade_preserves_imap_state_and_uses_final_table_sha
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 48);
+    assert_eq!(scripts.len(), 50);
 
     let owner = uuid::Uuid::new_v4().to_string();
     let account = uuid::Uuid::new_v4().to_string();
@@ -694,4 +695,101 @@ async fn a_foreign_key_violation_is_rejected_on_open() {
     connection.close().await.unwrap();
 
     assert!(SqliteStorage::open(&path).await.is_err());
+}
+
+/**
+ * Upgrade a database without link checks, then roll the new batch back without losing mail.
+ *
+ * Existing users and messages survive the upgrade; reverting the batch removes only the
+ * link-check tables and their stored results.
+ */
+#[tokio::test]
+async fn link_check_upgrade_rolls_back_cleanly() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut scripts: Vec<_> = std::fs::read_dir(&migration_directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect();
+    scripts.sort();
+    let member_identifier = uuid::Uuid::new_v4().to_string();
+    let message_identifier = MessageIdentifier::new();
+    {
+        let mut connection = open_connection(&path).await;
+        for script_path in scripts.iter().take(48) {
+            let name = script_path.file_name().unwrap().to_string_lossy();
+            let script = std::fs::read_to_string(script_path).unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(script.as_str()))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO migrations(migration, batch) VALUES (?1, 1)")
+                .bind(name.as_ref())
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO users(identifier,name,email,password_hash,global_role,mail_access,personal_filter,created_at,updated_at) VALUES (?1,'Member','member@example.test','hash','member','all',NULL,1,2)")
+            .bind(&member_identifier).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO mail(identifier,subject,text_body,markup_body,raw_message,received_at,size) VALUES (?1,'Kept','body','',X'010203',3,3)")
+            .bind(message_identifier.to_string()).execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+    }
+
+    let storage = SqliteStorage::open(&path).await.unwrap();
+    let member = storage
+        .get_user(member_identifier.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(member.email, "member@example.test");
+    let check = sandpost_core::MessageLinkCheck {
+        message_identifier,
+        checked_at: 10,
+        omitted_link_count: 0,
+        links: vec![sandpost_core::LinkCheckResult {
+            url: "https://example.test/".into(),
+            outcome: sandpost_core::LinkOutcome::Healthy,
+            status_code: Some(200),
+            final_url: None,
+            redirect_count: 0,
+            error_kind: None,
+            error_message: None,
+            checked_at: 10,
+        }],
+    };
+    assert!(storage.replace_message_link_check(&check).await.unwrap());
+    storage.close().await;
+
+    let reverted = SqliteStorage::rollback_last_migration_batch(&path)
+        .await
+        .unwrap();
+    assert_eq!(
+        reverted
+            .iter()
+            .map(|record| record.migration.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "0050_create_message_link_check_results_table.sql",
+            "0049_create_message_link_checks_table.sql",
+        ]
+    );
+    let mut connection = open_connection(&path).await;
+    let remaining_tables: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('message_link_checks', 'message_link_check_results')",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(remaining_tables, 0);
+    let preserved: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM mail WHERE subject = 'Kept')",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(preserved, (1, 1));
+    connection.close().await.unwrap();
 }

@@ -101,6 +101,56 @@ export interface WireMessageDetail {
 }
 
 /**
+ * Rust authenticated session identity.
+ */
+export interface WireSessionUser {
+  id: string
+  name: string
+  email: string
+  role: 'owner' | 'member' | 'viewer'
+}
+
+/**
+ * Rust shared link check state of one message.
+ */
+export interface WireLinkCheckReport {
+  message_id: string
+  running: boolean
+  started_at: number | null
+  checked_at: number | null
+  urls: string[]
+  omitted_links: number
+  summary: {
+    total: number
+    healthy: number
+    broken: number
+    server_error: number
+    failed: number
+    inconclusive: number
+  }
+  links: {
+    url: string
+    outcome: 'healthy' | 'broken' | 'server_error' | 'failed' | 'inconclusive'
+    status_code: number | null
+    status_text: string | null
+    final_url: string | null
+    redirects: number
+    error_kind: string | null
+    error_message: string | null
+    checked_at: number
+  }[]
+}
+
+/**
+ * Rust result of a bulk link check request.
+ */
+export interface WireBulkLinkCheckResult {
+  started: number
+  already_running: number
+  skipped: number
+}
+
+/**
  * Rust email client compatibility report for a message's original HTML.
  */
 export interface WireCompatibilityReport {

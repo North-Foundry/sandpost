@@ -189,6 +189,7 @@ async fn bootstrap_and_session_endpoints_protect_the_http_api() {
         "/api/v1/events",
         &format!("/api/v1/messages/{}/raw", MessageIdentifier::new()),
         &format!("/api/v1/messages/{}/html-check", MessageIdentifier::new()),
+        &format!("/api/v1/messages/{}/link-check", MessageIdentifier::new()),
         &format!(
             "/api/v1/messages/{}/attachments/0",
             MessageIdentifier::new()

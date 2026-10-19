@@ -1,0 +1,22 @@
+[package]
+name = "sandpost-link-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sandpost-core.workspace = true
+async-trait.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rustls-native-certs.workspace = true
+scraper.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true

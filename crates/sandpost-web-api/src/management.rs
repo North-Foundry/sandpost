@@ -221,7 +221,7 @@ pub(super) async fn list_users(
     ))
 }
 
-/// Create an account using the submitted explicit permission set.
+/// Create an account with the submitted identity, role and mail access.
 pub(super) async fn create_user(
     State(state): State<ApplicationState>,
     Extension(user): Extension<SessionUser>,

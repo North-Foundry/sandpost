@@ -32,6 +32,9 @@ Implement each capability trait for one concrete type, then expose that type as
 - `ViewStorage` — personal and shared views, plus the legacy recipient-view helper.
 - `MessageStorage` — physical ingestion/retrieval, user-scoped reads and logical deletion,
   privileged physical deletion, and global index projection.
+- `LinkCheckStorage` — the latest completed link check of each physical message: atomic whole
+  replacement (older checks ignored, duplicate URLs refused, missing messages `NotFound`),
+  ordered reads, and removal with the message.
 - `SearchSynchronizationStorage` — the durable search-outbox protocol.
 - `StorageHealth` — liveness probing.
 
@@ -64,6 +67,8 @@ operations:
   count only new tombstones. Physical collection is allowed only after every primary
   user and Independent reference releases the content; child facts and search-outbox
   deletion must be atomic with physical removal.
+- `replace_message_link_check` replaces the previous check and all its results atomically;
+  readers never observe a mixture of two checks.
 - `create_first_owner` atomically refuses if an Owner already exists. It may create the first
   Owner when non-Owner users remain, preserving those users and enforcing unique email.
 - `update_user`/`delete_user` atomically preserve the "at least one owner" invariant.
@@ -155,8 +160,8 @@ duplicate error; callers should not depend on driver-specific constraint names.
 - The backend must validate its own migration state on open and migrate supported older databases
   forward, preserving identities and mail. SQLite uses an applied script-name prefix, without a separate
   schema version; other backends may choose their own history representation.
-- The logical model (see `.agents/docs/storage.md`) is: users (with global role and mail
-  access), SMTP accesses, IMAP accounts with their configuration,
+- The logical model (see `.agents/docs/storage.md`) is: users (with global role, mail
+  access), per-message link checks, SMTP accesses, IMAP accounts with their configuration,
   mailbox identities, membership, and flags, scopes, scope memberships, views, one pool of
   mail + message facts, user-message deletions, and the search outbox. A backend may
   model these differently as long as the observable contract holds.
@@ -237,7 +242,7 @@ It is self-contained and independent of SQLite. A minimal harness looks like:
     let storage: Arc<dyn Storage> = Arc::new(MyStorage::open(config).await?);
     sandpost_storage_conformance::run_all(storage.as_ref()).await?;
 
-The suite covers user CRUD, roles, and mail access, the owner invariant, bootstrap, SMTP
+The suite covers user CRUD, roles, mail access, link check replacement, the owner invariant, bootstrap, SMTP
 accesses, IMAP accounts, configuration, mailbox identities, membership
 synchronization, flags, and expunges, scope membership invariants, views, message ingestion/retrieval/ordering/pagination,
 filtered listing equivalence with the canonical evaluator, deletion and revisions, and the search

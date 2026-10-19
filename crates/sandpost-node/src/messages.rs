@@ -8,7 +8,7 @@ use crate::boundary::{
 };
 use napi::{Error, Result, Status, bindgen_prelude::Buffer};
 use napi_derive::napi;
-use sandpost_application::QueryOptions;
+use sandpost_application::{BulkLinkCheckRequest, QueryOptions};
 use sandpost_core::ViewIdentifier;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -27,6 +27,13 @@ struct MoveMessagesRequest {
 struct SeenMessagesRequest {
     identifiers: Vec<String>,
     seen: bool,
+}
+
+/// JSON request for checking the links of several messages.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BulkLinkCheckInput {
+    identifiers: Vec<String>,
 }
 
 /// JSON request for moving messages to the Web Trash.
@@ -344,6 +351,55 @@ impl NativeRuntime {
             self.application
                 .authorized(&user)
                 .check_message_html(parse_message_identifier(&identifier)?)
+                .await
+                .map_err(application_error)?,
+        )
+    }
+
+    /**
+     * Read a message's stored and running link check state without starting a check.
+     */
+    #[napi]
+    pub async fn message_link_check(&self, identifier: String) -> Result<Value> {
+        let user = self.ensure_authenticated().await?;
+        serialize(
+            self.application
+                .authorized(&user)
+                .get_link_check(parse_message_identifier(&identifier)?)
+                .await
+                .map_err(application_error)?,
+        )
+    }
+
+    /**
+     * Start, or join, a background check of a message's links, like
+     * `POST /api/v1/messages/<id>/link-check`.
+     */
+    #[napi]
+    pub async fn message_link_check_start(&self, identifier: String) -> Result<Value> {
+        let user = self.ensure_authenticated().await?;
+        serialize(
+            self.application
+                .authorized(&user)
+                .start_link_check(parse_message_identifier(&identifier)?)
+                .await
+                .map_err(application_error)?,
+        )
+    }
+
+    /**
+     * Start background link checks of several messages, reported as
+     * `{ started, already_running, skipped }` like `POST /api/v1/messages/link-check`.
+     */
+    #[napi]
+    pub async fn messages_link_check(&self, input: Value) -> Result<Value> {
+        let user = self.ensure_authenticated().await?;
+        let request: BulkLinkCheckInput = deserialize(input, "invalid bulk link check")?;
+        let identifiers = parse_message_identifiers(request.identifiers)?;
+        serialize(
+            self.application
+                .authorized(&user)
+                .start_bulk_link_checks(BulkLinkCheckRequest { identifiers })
                 .await
                 .map_err(application_error)?,
         )

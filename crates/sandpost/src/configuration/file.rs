@@ -21,6 +21,14 @@ pub(super) struct FileConfiguration {
     pub smtp: MailConfiguration,
     pub imap: ImapConfiguration,
     pub frontend: FrontendConfiguration,
+    pub link_check: LinkCheckConfiguration,
+}
+
+/// Outbound link verification policy; omission keeps internal destinations refused.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct LinkCheckConfiguration {
+    pub allow_internal_addresses: Option<bool>,
 }
 
 /// Optional external frontend origin; omission retains embedded frontend serving.

@@ -74,6 +74,19 @@ function makeBridge(): SandpostDesktopBridge {
         }],
       })),
       getAttachment: vi.fn(async () => new Uint8Array([10, 0, 255])),
+      linkCheck: vi.fn(async () => ({
+        message_id: 'mail-id', running: false, started_at: null, checked_at: 1_700_000_000, urls: ['https://example.test/missing'], omitted_links: 0,
+        summary: { total: 1, healthy: 0, broken: 1, server_error: 0, failed: 0, inconclusive: 0 },
+        links: [{
+          url: 'https://example.test/missing', outcome: 'broken' as const, status_code: 404, status_text: 'Not Found',
+          final_url: null, redirects: 0, error_kind: null, error_message: null, checked_at: 1_700_000_000,
+        }],
+      })),
+      linkCheckStart: vi.fn(async () => ({
+        message_id: 'mail-id', running: true, started_at: 1_700_000_100, checked_at: null, urls: [], omitted_links: 0,
+        summary: { total: 0, healthy: 0, broken: 0, server_error: 0, failed: 0, inconclusive: 0 }, links: [],
+      })),
+      checkLinks: vi.fn(async () => ({ started: 2, already_running: 1, skipped: 0 })),
       delete: vi.fn(async () => { }),
       move: vi.fn(async () => ({ moved: 2 })),
       trash: vi.fn(async () => ({ trashed: 2 })),
@@ -163,11 +176,11 @@ describe('Electron bridge adapter', () => {
     expect(await client.instanceStatus()).toEqual({ initialized: true, setupKeyRequired: false })
     await expect(client.authorizeSetup({ setupKey: 'unused' })).rejects.toThrow('Setup key authorization is not required')
     await client.setup(setup)
-    expect(await client.login({ email: setup.email, password: setup.password })).toMatchObject({ role: 'owner' })
+    expect(await client.login({ email: setup.email, password: setup.password, rememberMe: true })).toMatchObject({ role: 'owner' })
     expect(await client.session()).toMatchObject({ email: setup.email })
     await client.logout()
     expect(bridge.setup).toHaveBeenCalledWith(setup)
-    expect(bridge.login).toHaveBeenCalledWith({ email: setup.email, password: setup.password })
+    expect(bridge.login).toHaveBeenCalledWith({ email: setup.email, password: setup.password, rememberMe: true })
     expect(bridge.logout).toHaveBeenCalledOnce()
   })
 
@@ -202,6 +215,31 @@ describe('Electron bridge adapter', () => {
       }],
     })
     expect(bridge.messages.htmlCheck).toHaveBeenCalledWith('mail-id')
+    expect(await client.messages.linkCheck('mail-id')).toEqual({
+      messageId: 'mail-id', running: false, startedAt: null, checkedAt: 1_700_000_000, urls: ['https://example.test/missing'], omittedLinks: 0,
+      summary: { total: 1, healthy: 0, broken: 1, serverError: 0, failed: 0, inconclusive: 0 },
+      links: [{
+        url: 'https://example.test/missing', outcome: 'broken', statusCode: 404, statusText: 'Not Found',
+        finalUrl: null, redirects: 0, errorKind: null, errorMessage: null, checkedAt: 1_700_000_000,
+      }],
+    })
+    expect(bridge.messages.linkCheck).toHaveBeenCalledWith('mail-id')
+    expect(await client.messages.startLinkCheck('mail-id')).toMatchObject({ running: true, startedAt: 1_700_000_100, checkedAt: null })
+    expect(bridge.messages.linkCheckStart).toHaveBeenCalledWith('mail-id')
+    expect(await client.messages.checkLinks(['a', 'b', 'c'])).toEqual({ started: 2, alreadyRunning: 1, skipped: 0 })
+    expect(bridge.messages.checkLinks).toHaveBeenCalledWith({ identifiers: ['a', 'b', 'c'] })
+  })
+
+  it('returns native sessions unchanged for every role', async () => {
+    const bridge = makeBridge()
+    const client = createElectronClient(bridge)
+    for (const role of ['owner', 'member', 'viewer'] as const) {
+      const user = { id: role, name: role, email: `${role}@example.test`, role }
+      vi.mocked(bridge.session).mockResolvedValueOnce(user)
+      expect(await client.session()).toEqual(user)
+    }
+    vi.mocked(bridge.session).mockResolvedValueOnce(null)
+    expect(await client.session()).toBeNull()
   })
 
   it('normalizes saved views both ways and forwards view and query list options', async () => {

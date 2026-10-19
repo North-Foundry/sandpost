@@ -1114,3 +1114,76 @@ async fn native_primary_copy_and_flags_preserve_shared_wire_contracts() {
             .is_err()
     );
 }
+
+/**
+ * Native link check reads, starts, and bulk starts share the HTTP wire contract and message access.
+ */
+#[tokio::test]
+async fn native_link_checks_share_wire_contracts_and_message_access() {
+    let (runtime, _application, storage, _completion_sender, _directory) =
+        authenticated_test_host().await;
+    let identifier = MessageIdentifier::new();
+    storage
+        .insert_message(&sandpost_core::Message {
+            identifier,
+            facts: sandpost_core::MessageFacts {
+                markup_body: r#"<a href="http://127.0.0.1:9/private">Private</a>"#.into(),
+                ..sandpost_core::MessageFacts::default()
+            },
+            raw_message: b"Subject: links\r\n\r\nlinks".to_vec(),
+            attachments: vec![],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .message_link_check(identifier.to_string())
+            .await
+            .unwrap_err()
+            .reason,
+        "authentication required"
+    );
+    login_owner(&runtime).await;
+    let unchecked = runtime
+        .message_link_check(identifier.to_string())
+        .await
+        .unwrap();
+    assert_eq!(unchecked["message_id"], json!(identifier.to_string()));
+    assert_eq!(unchecked["checked_at"], Value::Null);
+    assert_eq!(unchecked["urls"], json!(["http://127.0.0.1:9/private"]));
+    let started = runtime
+        .message_link_check_start(identifier.to_string())
+        .await
+        .unwrap();
+    assert_eq!(started["running"], json!(true));
+    let mut report = started;
+    for _ in 0..200 {
+        if report["running"] == json!(false) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        report = runtime
+            .message_link_check(identifier.to_string())
+            .await
+            .unwrap();
+    }
+    assert_eq!(report["links"][0]["outcome"], json!("inconclusive"));
+    assert_eq!(report["summary"]["total"], json!(1.0));
+    let bulk = runtime
+        .messages_link_check(json!({ "identifiers": [identifier.to_string()] }))
+        .await
+        .unwrap();
+    assert_eq!(bulk["skipped"], json!(0.0));
+    assert!(
+        runtime
+            .messages_link_check(json!({ "identifiers": ["invalid"] }))
+            .await
+            .is_err()
+    );
+    assert!(
+        runtime
+            .messages_link_check(json!({ "messages": [] }))
+            .await
+            .is_err()
+    );
+}

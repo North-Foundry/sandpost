@@ -1,5 +1,6 @@
 import type { Inbox, MessageFlags, SandpostClient, SavedView, SessionUser, SetupInput, WebFolder, WebFolderInput } from '@/api/contracts'
 import { mockCompatibilityReport } from './compatibility'
+import { createMockLinkChecks } from './linkChecks'
 import { mockAttachments, mockDetail, mockSummaries } from './messages'
 import { createMockAdmin, matches } from './admin'
 import { createMockImap } from './imap'
@@ -86,6 +87,7 @@ export function createMockClient(): SandpostClient {
    * Resolve a fixture detail unless the message has been permanently deleted.
    */
   const getMessage = (id: string) => !deleted.has(id) ? mockDetail(id) : undefined
+  const linkChecks = createMockLinkChecks(getMessage)
 
   return {
 
@@ -122,7 +124,10 @@ export function createMockClient(): SandpostClient {
       const passwordLength = new TextEncoder().encode(input.password).length
       if (passwordLength < 12 || passwordLength > 1024) throw new Error('password must contain 12 to 1024 bytes')
       const email = input.email.trim().toLowerCase()
-      owner = { user: { id: 'mock-owner', name: input.name.trim(), email, role: 'owner' }, password: input.password }
+      owner = {
+        user: { id: 'mock-owner', name: input.name.trim(), email, role: 'owner' },
+        password: input.password,
+      }
       initialized = true
       setupAuthorizations.clear()
     },
@@ -340,6 +345,30 @@ export function createMockClient(): SandpostClient {
         const detail = getMessage(id)
         if (!detail) throw new Error(`Mock message not found: ${id}`)
         return mockCompatibilityReport(Boolean(detail.html.trim()))
+      },
+
+      /**
+       * Return the simulated shared link check state without starting a check.
+       */
+      async linkCheck(id) {
+        if (!activeUser) throw new Error('authentication required')
+        return linkChecks.get(id)
+      },
+
+      /**
+       * Start, or join, a simulated check of one message's links.
+       */
+      async startLinkCheck(id) {
+        if (!activeUser) throw new Error('authentication required')
+        return linkChecks.start(id)
+      },
+
+      /**
+       * Start simulated checks of several messages' links.
+       */
+      async checkLinks(identifiers) {
+        if (!activeUser) throw new Error('authentication required')
+        return linkChecks.startMany(identifiers)
       },
 
       /**

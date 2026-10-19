@@ -2,12 +2,13 @@
 //!
 //! A third-party backend runs this suite against one dyn Storage implementation to prove it
 //! satisfies the behaviour the application relies on. The suite is self-contained: it creates
-//! its own users, SMTP accesses, IMAP accounts, scopes, views, and messages with fresh identifiers and depends only
+//! its own users, SMTP accesses, IMAP accounts, scopes, views, messages, and link checks with fresh identifiers and depends only
 //! on the storage contract, the shared domain types, the canonical query AST, and Tokio.
 //!
 //! The storage under test must have no users when run_all starts, because the first check proves
 //! bootstrap behaviour that is only observable before any user exists.
 mod imap;
+mod link_checks;
 mod messages;
 mod scopes;
 mod search;
@@ -21,6 +22,7 @@ pub use imap::{
     imap_flags_and_expunge, imap_mailbox_identities, imap_membership_synchronization,
     web_manual_folders_and_placements, web_trash,
 };
+pub use link_checks::link_check_results;
 pub use messages::{
     index_messages_revisions, message_deletion, message_filter_equivalence,
     message_ingestion_and_retrieval, message_ordering_and_pagination, user_message_deletions,
@@ -90,6 +92,7 @@ pub async fn run_all(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     message_filter_equivalence(storage).await?;
     user_message_deletions(storage).await?;
     message_deletion(storage).await?;
+    link_check_results(storage).await?;
     index_messages_revisions(storage).await?;
     search_outbox(storage).await?;
     imap_account_credentials(storage).await?;

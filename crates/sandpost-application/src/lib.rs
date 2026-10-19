@@ -7,6 +7,7 @@ mod imap;
 mod inboxes;
 mod indexing;
 mod instance;
+mod link_check;
 mod listeners;
 mod mailbox;
 mod management;
@@ -24,6 +25,10 @@ pub use inboxes::InboxDetails;
 pub use indexing::SearchCoordinator;
 pub use instance::{
     Instance, InstanceError, InstanceStatus, LoginRequest, LoginResponse, SessionUser, SetupRequest,
+};
+pub use link_check::{
+    BulkLinkCheckRequest, BulkLinkCheckResult, LinkCheckReport, LinkCheckSettings,
+    LinkCheckSummary, LinkReport, MAXIMUM_BULK_LINK_CHECKS,
 };
 pub use listeners::{
     MailListenerControl, MailListenerEncryption, MailListenerSource, MailListenerState,
@@ -161,6 +166,8 @@ pub struct Application {
     changes: broadcast::Sender<ApplicationChange>,
     /// Connection details of the runtime's IMAP service, when one runs.
     imap_server: Arc<std::sync::RwLock<Option<ImapServerDetails>>>,
+    /// Background link checks shared by every transport.
+    link_checks: Arc<link_check::LinkCheckCoordinator>,
 }
 /// Reusable message authorization boundary for HTTP, native hosts, and other callers.
 #[derive(Clone)]
@@ -202,6 +209,9 @@ impl Application {
             mail_listeners: None,
             changes: broadcast::channel(1024).0,
             imap_server: Arc::new(std::sync::RwLock::new(None)),
+            link_checks: Arc::new(link_check::LinkCheckCoordinator::new(
+                LinkCheckSettings::default(),
+            )),
         }
     }
     /// Attach the hosting runtime's read-only SMTP listener status.

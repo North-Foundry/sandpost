@@ -1,7 +1,7 @@
 //! Composite storage dependency.
 use crate::{
-    ImapStorage, MessageStorage, ScopeStorage, SearchSynchronizationStorage, SmtpServerStorage,
-    StorageHealth, UserStorage, ViewStorage,
+    ImapStorage, LinkCheckStorage, MessageStorage, ScopeStorage, SearchSynchronizationStorage,
+    SmtpServerStorage, StorageHealth, UserStorage, ViewStorage,
 };
 
 /// The complete storage dependency used by application and transport layers.
@@ -16,6 +16,7 @@ pub trait Storage:
     + ScopeStorage
     + ViewStorage
     + MessageStorage
+    + LinkCheckStorage
     + SearchSynchronizationStorage
     + StorageHealth
 {
@@ -28,6 +29,7 @@ impl<T> Storage for T where
         + ScopeStorage
         + ViewStorage
         + MessageStorage
+        + LinkCheckStorage
         + SearchSynchronizationStorage
         + StorageHealth
 {

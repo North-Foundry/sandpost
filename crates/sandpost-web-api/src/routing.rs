@@ -3,7 +3,7 @@
 use crate::{
     ApplicationState, authentication,
     error::{HttpError, map_application_error},
-    events, imap, inboxes, mailbox, management, messages, read_status, smtp,
+    events, imap, inboxes, link_checks, mailbox, management, messages, read_status, smtp,
 };
 use axum::{
     Json, Router,
@@ -106,6 +106,10 @@ fn api_router() -> Router<ApplicationState> {
         .route(
             "/api/v1/messages/trash",
             axum::routing::post(mailbox::trash_messages),
+        )
+        .route(
+            "/api/v1/messages/link-check",
+            axum::routing::post(link_checks::start_bulk_link_checks),
         )
         .route("/api/v1/trash", axum::routing::delete(mailbox::empty_trash))
         .route("/api/v1/trash/messages", get(mailbox::trash_messages_page))
@@ -210,6 +214,10 @@ fn api_router() -> Router<ApplicationState> {
         .route(
             "/api/v1/messages/{identifier}/html-check",
             get(messages::html_check),
+        )
+        .route(
+            "/api/v1/messages/{identifier}/link-check",
+            get(link_checks::link_check).post(link_checks::start_link_check),
         )
         .route("/api/v1/events", get(events::events))
         .route("/api", any(api_not_found))

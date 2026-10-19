@@ -5,7 +5,6 @@ import type {
   MessageDetail,
   MessageSummary,
   SandpostClient,
-  SessionUser,
   SetupInput,
 } from '@/api/contracts'
 import type {
@@ -16,19 +15,24 @@ import type {
   WireInbox,
   WireIssuedImapCredentials,
   WireIssuedSmtpCredentials,
+  WireBulkLinkCheckResult,
   WireCompatibilityReport,
+  WireLinkCheckReport,
   WireMessageDetail,
   WireMessageSummary,
   WireQueryValidation,
   WireScope,
+  WireSessionUser,
   WireSmtpAccess,
   WireSmtpServer,
   WireView,
   WireWebFolder,
 } from '@/api/wire'
 import {
+  normalizeBulkLinkCheck,
   normalizeCompatibilityReport,
   normalizeDetail,
+  normalizeLinkCheckReport,
   normalizeSummary,
   normalizeView,
   normalizeWebFolder,
@@ -218,7 +222,7 @@ export function createHttpClient(): SandpostClient {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(input),
         })
-      ).json() as { token: string; user: SessionUser }
+      ).json() as { token: string; user: WireSessionUser }
       token = result.token
       return result.user
     },
@@ -228,7 +232,7 @@ export function createHttpClient(): SandpostClient {
      */
     async session() {
       try {
-        return (await request('/api/v1/session')).json() as Promise<SessionUser>
+        return await (await request('/api/v1/session')).json() as WireSessionUser
       } catch (error) {
         if (
           error &&
@@ -461,6 +465,43 @@ export function createHttpClient(): SandpostClient {
           await request(`/api/v1/messages/${encodeURIComponent(id)}/html-check`)
         ).json() as WireCompatibilityReport
         return normalizeCompatibilityReport(report)
+      },
+
+      /**
+       * Read the message's stored link check without starting one.
+       */
+      async linkCheck(id) {
+        return normalizeLinkCheckReport(
+          await sendJson<WireLinkCheckReport>(
+            'GET',
+            `/api/v1/messages/${encodeURIComponent(id)}/link-check`
+          )
+        )
+      },
+
+      /**
+       * Start, or join, a background check of the message's links.
+       */
+      async startLinkCheck(id) {
+        return normalizeLinkCheckReport(
+          await sendJson<WireLinkCheckReport>(
+            'POST',
+            `/api/v1/messages/${encodeURIComponent(id)}/link-check`
+          )
+        )
+      },
+
+      /**
+       * Start background link checks of the selected messages.
+       */
+      async checkLinks(identifiers) {
+        return normalizeBulkLinkCheck(
+          await sendJson<WireBulkLinkCheckResult>(
+            'POST',
+            '/api/v1/messages/link-check',
+            { identifiers }
+          )
+        )
       },
 
       /**

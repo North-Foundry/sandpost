@@ -1,16 +1,39 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { CodeXmlIcon, GripHorizontalIcon } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { Skeleton } from '@/components/ui/skeleton'
+import type { LinkCheckResult } from '@/api/contracts'
 import type { SandpostEmailPreviewBridge } from '@/api/desktop'
 import { useTheme } from '@/composables/useTheme'
-import { constrainInspectorHeight, visiblePreviewRectangle } from './previewLayout'
+import { formatFullDate } from '@/utils/format'
+import LinkCheckHoverCard from './LinkCheckHoverCard.vue'
+import { describeLinkResult, normalizeLinkHref } from './linkCheck'
+import { constrainInspectorHeight, visiblePreviewRectangle, type PreviewRectangle } from './previewLayout'
 
-const props = defineProps<{ document: string; messageIdentifier: string }>()
-const { t } = useI18n()
+const props = withDefaults(defineProps<{
+  document: string
+  messageIdentifier: string
+
+  /**
+   * Stored link check results by normalized URL; hovering a link with a result describes it.
+   */
+  linkResults?: ReadonlyMap<string, LinkCheckResult>
+
+  /**
+   * Current time in milliseconds, so relative check times stay fresh.
+   */
+  now?: number
+}>(), {
+  /**
+   * Without results no link is described.
+   */
+  linkResults: () => new Map(),
+  now: () => Date.now(),
+})
+const { t, locale } = useI18n()
 const { isDark } = useTheme()
 const inspectorTheme = computed(() => isDark.value ? 'dark' as const : 'light' as const)
 const bridge: SandpostEmailPreviewBridge | undefined = typeof window !== 'undefined' && window.sandpost?.runtime === 'electron'
@@ -37,7 +60,115 @@ let animationFrame = 0
 let lastLayout = ''
 let stopped = false
 let stopSubscription: (() => void) | undefined
+let stopLinkSubscription: (() => void) | undefined
 let resizeObserver: ResizeObserver | undefined
+const frame = shallowRef<HTMLIFrameElement>()
+
+/**
+ * How often the browser preview's hovered or focused link is read, and how long a link must stay
+ * targeted before its result appears.
+ */
+const LINK_POLL_INTERVAL = 100
+const LINK_SHOW_DELAY = 250
+const hoveredLink = shallowRef<{ url: string; anchor: PreviewRectangle } | null>(null)
+let linkCandidate: { url: string; since: number } | null = null
+let linkTimer: ReturnType<typeof setInterval> | undefined
+
+/**
+ * Describe the targeted link's stored result for the browser hover card.
+ */
+const hoveredDescription = computed(() => {
+  const result = hoveredLink.value ? props.linkResults.get(hoveredLink.value.url) : undefined
+  return result ? describeLinkResult(result, t, props.now, locale.value, formatFullDate) : null
+})
+
+/**
+ * Find the link under the pointer, or the keyboard-focused link, in the browser preview.
+ *
+ * The preview document is same-origin but runs no script: the application reads its hover and
+ * focus state and geometry from outside, without adding listeners, elements or styles to it.
+ * Only links with a stored result are reported, with their box in viewport coordinates.
+ */
+function targetedPreviewLink(): { url: string; anchor: PreviewRectangle } | null {
+  const element = frame.value
+  let preview: Document | null = null
+  try {
+    preview = element?.contentDocument ?? null
+  } catch {
+    return null
+  }
+  if (!element || !preview || nativeVisible.value) return null
+  const hovered = preview.querySelectorAll(':hover')
+  let link = hovered[hovered.length - 1]?.closest('a[href], area[href]') ?? null
+  if (!link && document.activeElement === element) {
+    const focused = preview.activeElement
+    if (focused?.matches('a[href]:focus-visible, area[href]:focus-visible')) link = focused
+  }
+  const url = normalizeLinkHref(link?.getAttribute('href'))
+  if (!link || !url || !props.linkResults.has(url)) return null
+  const frameBounds = element.getBoundingClientRect()
+  const bounds = link.getBoundingClientRect()
+  const anchor = {
+    x: frameBounds.x + element.clientLeft + bounds.x,
+    y: frameBounds.y + element.clientTop + bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  }
+  const visible = bounds.width > 0 && bounds.height > 0
+    && anchor.y + anchor.height > frameBounds.y && anchor.y < frameBounds.bottom
+  return visible ? { url, anchor } : null
+}
+
+/**
+ * Follow the targeted link, showing its result after a short delay and switching immediately
+ * between links once a result is visible.
+ */
+function trackPreviewLink(): void {
+  const targeted = targetedPreviewLink()
+  if (!targeted) {
+    linkCandidate = null
+    hoveredLink.value = null
+    return
+  }
+  if (hoveredLink.value) {
+    hoveredLink.value = targeted
+    return
+  }
+  if (linkCandidate?.url !== targeted.url) linkCandidate = { url: targeted.url, since: Date.now() }
+  else if (Date.now() - linkCandidate.since >= LINK_SHOW_DELAY) hoveredLink.value = targeted
+}
+
+/**
+ * Read the browser preview's targeted link only while some link has a stored result.
+ */
+watch(() => props.linkResults.size > 0, (active) => {
+  if (linkTimer !== undefined) clearInterval(linkTimer)
+  linkTimer = undefined
+  hoveredLink.value = null
+  linkCandidate = null
+  if (active && !stopped) linkTimer = setInterval(trackPreviewLink, LINK_POLL_INTERVAL)
+}, { immediate: true })
+
+/**
+ * Show or hide the native popover for a link targeted in the native preview.
+ */
+function describeNativeLink(event: { id: string; url: string | null }): void {
+  if (!bridge?.linkPopover || event.id !== previewIdentifier || stopped) return
+  const url = normalizeLinkHref(event.url)
+  const result = url ? props.linkResults.get(url) : undefined
+  const description = result ? describeLinkResult(result, t, props.now, locale.value, formatFullDate) : null
+  void bridge.linkPopover({
+    id: event.id,
+    popover: description && {
+      tone: description.tone,
+      title: description.title,
+      status: description.status,
+      explanation: description.explanation,
+      destination: description.destination,
+      checked: `${description.checked} · ${description.checkedAbsolute}`,
+    },
+  }).catch(() => { })
+}
 
 /**
  * Fall back to the browser sandbox if the native target cannot be loaded.
@@ -194,6 +325,7 @@ function resizeWithKeyboard(event: KeyboardEvent): void {
 
 onMounted(() => {
   if (!bridge) return
+  stopLinkSubscription = bridge.subscribeLinks?.(describeNativeLink)
   stopSubscription = bridge.subscribe((state) => {
     if (state.id !== previewIdentifier || stopped) return
     if (state.error) { failPreview(state.error); return }
@@ -225,8 +357,10 @@ function invalidateLayout(): void {
 onBeforeUnmount(() => {
   stopped = true
   cancelAnimationFrame(animationFrame)
+  if (linkTimer !== undefined) clearInterval(linkTimer)
   resizeObserver?.disconnect()
   stopSubscription?.()
+  stopLinkSubscription?.()
   window.removeEventListener('resize', invalidateLayout)
   window.removeEventListener('pointermove', moveResize)
   window.removeEventListener('pointerup', finishResize)
@@ -246,14 +380,20 @@ onBeforeUnmount(() => {
     </div>
     <div ref="region" class="flex h-[max(420px,calc(100dvh-340px))] flex-col overflow-hidden" :style="{ maxHeight: maximumNativeHeight === undefined ? undefined : `${maximumNativeHeight}px` }">
       <div ref="previewRegion" class="relative min-h-0 flex-1 bg-white [color-scheme:light]">
+        <!--
+          Same-origin without allow-scripts: the email still runs no script, while the application
+          can read hover and focus state from outside to describe checked links.
+        -->
         <iframe
+          ref="frame"
           class="block size-full border-0 bg-white [color-scheme:light]"
           :style="{ visibility: nativeVisible ? 'hidden' : 'visible', pointerEvents: dragging ? 'none' : undefined }"
           :srcdoc="props.document"
-          sandbox=""
+          sandbox="allow-same-origin"
           :title="t('mail.preview.title')"
           referrerpolicy="no-referrer"
         />
+        <LinkCheckHoverCard :description="hoveredDescription" :anchor="hoveredLink?.anchor ?? null" />
       </div>
       <template v-if="bridge && inspectorOpen">
         <div

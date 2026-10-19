@@ -3,7 +3,9 @@
 use crate::smtp_delivery::MailDelivery;
 use crate::smtp_listener::{MailEncryption, MailServer, authentication_policy};
 use crate::{Configuration, bootstrap};
-use sandpost_application::{Application, Instance, SearchCoordinator, SmtpAuthenticator};
+use sandpost_application::{
+    Application, Instance, LinkCheckSettings, SearchCoordinator, SmtpAuthenticator,
+};
 use sandpost_smtp::AuthenticationPolicy;
 use std::{error::Error, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -71,7 +73,11 @@ impl SandpostRuntime {
             search.clone(),
         )
         .with_scope_depth_limit(configuration.maximum_scope_depth)
-        .with_mail_listeners(Arc::new(mail_server.clone()));
+        .with_mail_listeners(Arc::new(mail_server.clone()))
+        .with_link_check_settings(LinkCheckSettings {
+            allow_internal_addresses: configuration.link_check_allow_internal_addresses,
+            ..LinkCheckSettings::default()
+        });
         let mail_authentication_required = authentication_policy(
             configuration.mail_authentication,
             configuration.mail_listen_address,
@@ -130,6 +136,13 @@ impl SandpostRuntime {
         });
         let indexing_task =
             tokio::spawn(indexing_worker(search.clone(), shutdown_receiver.clone()));
+        let link_check_application = application.clone();
+        let link_check_shutdown = shutdown_receiver.clone();
+        tokio::spawn(async move {
+            // Outbound checks are bounded but can outlive transports; stop them with the listeners.
+            wait_for_shutdown(link_check_shutdown).await;
+            link_check_application.cancel_link_checks();
+        });
         let supervision_shutdown = shutdown_sender.clone();
         let supervisor = tokio::spawn(async move {
             let (result, shutdown_deadline) = supervise(

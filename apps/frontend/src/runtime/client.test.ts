@@ -30,6 +30,15 @@ const bridge = {
       clients: [], summary: { clients: 0, identical: 0, with_differences: 0, with_problems: 0, untested: 0 }, features: [],
     })),
     getAttachment: vi.fn(async () => new Uint8Array()),
+    linkCheck: vi.fn(async () => ({
+      message_id: 'mail-id', running: false, started_at: null, checked_at: null, urls: [], omitted_links: 0,
+      summary: { total: 0, healthy: 0, broken: 0, server_error: 0, failed: 0, inconclusive: 0 }, links: [],
+    })),
+    linkCheckStart: vi.fn(async () => ({
+      message_id: 'mail-id', running: true, started_at: 1, checked_at: null, urls: [], omitted_links: 0,
+      summary: { total: 0, healthy: 0, broken: 0, server_error: 0, failed: 0, inconclusive: 0 }, links: [],
+    })),
+    checkLinks: vi.fn(async () => ({ started: 0, already_running: 0, skipped: 0 })),
     delete: vi.fn(async () => { }),
     move: vi.fn(async () => ({ moved: 0 })),
     trash: vi.fn(async () => ({ trashed: 0 })),

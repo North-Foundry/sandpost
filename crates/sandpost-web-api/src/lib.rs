@@ -6,6 +6,7 @@ mod error;
 mod events;
 mod imap;
 mod inboxes;
+mod link_checks;
 mod mailbox;
 mod management;
 mod messages;

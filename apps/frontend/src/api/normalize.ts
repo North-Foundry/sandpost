@@ -1,5 +1,9 @@
 import type {
+  BulkLinkCheckResult,
   HtmlCompatibilityReport,
+  LinkCheckErrorKind,
+  LinkCheckReport,
+  LinkOutcome,
   MessageDetail,
   MessageFlags,
   MessageSummary,
@@ -7,7 +11,9 @@ import type {
   WebFolder,
 } from './contracts'
 import type {
+  WireBulkLinkCheckResult,
   WireCompatibilityReport,
+  WireLinkCheckReport,
   WireMailbox,
   WireMessageDetail,
   WireMessageFlags,
@@ -196,5 +202,64 @@ export function normalizeCompatibilityReport(
         notes: (result.notes ?? []).map(Number),
       })),
     })),
+  }
+}
+
+const LINK_OUTCOMES: readonly LinkOutcome[] = ['healthy', 'broken', 'server_error', 'failed', 'inconclusive']
+const LINK_CHECK_ERROR_KINDS: readonly LinkCheckErrorKind[] = [
+  'name_resolution', 'connection', 'tls', 'timeout', 'protocol', 'too_many_redirects', 'redirect_loop', 'invalid_redirect', 'blocked_address',
+]
+
+/**
+ * Read an optional Unix timestamp, keeping absence distinct from zero.
+ */
+function optionalTimestamp(value: number | null | undefined): number | null {
+  return value === null || value === undefined ? null : Number(value)
+}
+
+/**
+ * Convert the Rust link check state to the camel-case frontend contract.
+ *
+ * Unknown outcomes from a newer backend read as inconclusive and unknown error kinds as absent,
+ * so the interface never presents an unrecognized verdict as healthy.
+ */
+export function normalizeLinkCheckReport(representation: WireLinkCheckReport): LinkCheckReport {
+  return {
+    messageId: String(representation.message_id),
+    running: Boolean(representation.running),
+    startedAt: optionalTimestamp(representation.started_at),
+    checkedAt: optionalTimestamp(representation.checked_at),
+    urls: (representation.urls ?? []).map(String),
+    omittedLinks: Number(representation.omitted_links ?? 0),
+    summary: {
+      total: Number(representation.summary?.total ?? 0),
+      healthy: Number(representation.summary?.healthy ?? 0),
+      broken: Number(representation.summary?.broken ?? 0),
+      serverError: Number(representation.summary?.server_error ?? 0),
+      failed: Number(representation.summary?.failed ?? 0),
+      inconclusive: Number(representation.summary?.inconclusive ?? 0),
+    },
+    links: (representation.links ?? []).map((link) => ({
+      url: String(link.url),
+      outcome: LINK_OUTCOMES.includes(link.outcome) ? link.outcome : 'inconclusive',
+      statusCode: link.status_code === null || link.status_code === undefined ? null : Number(link.status_code),
+      statusText: link.status_text ? String(link.status_text) : null,
+      finalUrl: link.final_url ? String(link.final_url) : null,
+      redirects: Number(link.redirects ?? 0),
+      errorKind: LINK_CHECK_ERROR_KINDS.find((kind) => kind === link.error_kind) ?? null,
+      errorMessage: link.error_message ? String(link.error_message) : null,
+      checkedAt: Number(link.checked_at),
+    })),
+  }
+}
+
+/**
+ * Convert the Rust bulk link check counts.
+ */
+export function normalizeBulkLinkCheck(representation: WireBulkLinkCheckResult): BulkLinkCheckResult {
+  return {
+    started: Number(representation.started ?? 0),
+    alreadyRunning: Number(representation.already_running ?? 0),
+    skipped: Number(representation.skipped ?? 0),
   }
 }

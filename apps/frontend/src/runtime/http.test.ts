@@ -320,6 +320,39 @@ describe('HTTP adapter', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/v1/messages/mail%2Fid/html-check', expect.objectContaining({ credentials: 'same-origin' }))
   })
 
+  it('reads, starts and bulk-starts shared link checks with snake-case wire fields', async () => {
+    const report = {
+      message_id: 'mail/id', running: true, started_at: 1_700_000_100, checked_at: 1_700_000_000, urls: ['https://example.test/', 'http://localhost:3000/'], omitted_links: 2,
+      summary: { total: 2, healthy: 1, broken: 0, server_error: 0, failed: 0, inconclusive: 1 },
+      links: [
+        { url: 'https://example.test/', outcome: 'healthy', status_code: 200, status_text: 'OK', final_url: 'https://www.example.test/', redirects: 1, error_kind: null, error_message: null, checked_at: 1_700_000_000 },
+        { url: 'http://localhost:3000/', outcome: 'inconclusive', status_code: null, status_text: null, final_url: null, redirects: 0, error_kind: 'blocked_address', error_message: '127.0.0.1 is not a public address', checked_at: 1_700_000_000 },
+      ],
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => report })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...report, running: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ started: 1, already_running: 0, skipped: 1 }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'member', name: 'Member', email: 'm@example.test', role: 'member' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = createHttpClient()
+
+    expect(await client.messages.linkCheck('mail/id')).toEqual({
+      messageId: 'mail/id', running: true, startedAt: 1_700_000_100, checkedAt: 1_700_000_000, urls: ['https://example.test/', 'http://localhost:3000/'], omittedLinks: 2,
+      summary: { total: 2, healthy: 1, broken: 0, serverError: 0, failed: 0, inconclusive: 1 },
+      links: [
+        { url: 'https://example.test/', outcome: 'healthy', statusCode: 200, statusText: 'OK', finalUrl: 'https://www.example.test/', redirects: 1, errorKind: null, errorMessage: null, checkedAt: 1_700_000_000 },
+        { url: 'http://localhost:3000/', outcome: 'inconclusive', statusCode: null, statusText: null, finalUrl: null, redirects: 0, errorKind: 'blocked_address', errorMessage: '127.0.0.1 is not a public address', checkedAt: 1_700_000_000 },
+      ],
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/messages/mail%2Fid/link-check', expect.objectContaining({ method: 'GET' }))
+    expect(await client.messages.startLinkCheck('mail/id')).toMatchObject({ running: true })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/messages/mail%2Fid/link-check', expect.objectContaining({ method: 'POST' }))
+    expect(await client.messages.checkLinks(['a', 'b'])).toEqual({ started: 1, alreadyRunning: 0, skipped: 1 })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/messages/link-check', expect.objectContaining({ method: 'POST', body: JSON.stringify({ identifiers: ['a', 'b'] }) }))
+    expect(await client.session()).toEqual({ id: 'member', name: 'Member', email: 'm@example.test', role: 'member' })
+  })
+
   it('reports HTTP status errors for list, detail, and raw requests', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false, status: 404,

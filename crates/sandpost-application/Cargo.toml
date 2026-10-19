@@ -14,6 +14,7 @@ async-trait.workspace = true
 tracing.workspace = true
 sandpost-mime.workspace = true
 sandpost-html-check.workspace = true
+sandpost-link-check.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

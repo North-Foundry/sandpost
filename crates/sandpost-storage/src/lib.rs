@@ -4,8 +4,8 @@ mod imap;
 mod types;
 
 pub use capabilities::{
-    MessageStorage, ScopeStorage, SearchSynchronizationStorage, SmtpServerStorage, Storage,
-    StorageHealth, UserStorage, ViewStorage,
+    LinkCheckStorage, MessageStorage, ScopeStorage, SearchSynchronizationStorage,
+    SmtpServerStorage, Storage, StorageHealth, UserStorage, ViewStorage,
 };
 pub use error::StorageError;
 pub use imap::{
@@ -22,8 +22,9 @@ pub use types::{
 pub use sandpost_core::{
     Attachment, GlobalRole, ImapAccount, ImapAccountIdentifier, ImapFolderIdentifier,
     ImapFolderKind, ImapLinkedView, ImapLocalFolder, ImapMailboxIdentifier, ImapMailboxSource,
-    ImapMessageFlags, InboxIdentifier, MailAccess, Mailbox, Message, MessageFacts,
-    MessageIdentifier, MessageSequence, Scope, ScopeIdentifier, ScopeMembership, ScopeTree,
-    SmtpAccess, SmtpAccessIdentifier, SmtpAuthenticationMechanism, User, UserIdentifier, View,
-    ViewIdentifier, WebFolder,
+    ImapMessageFlags, InboxIdentifier, LinkCheckErrorKind, LinkCheckResult, LinkOutcome,
+    MailAccess, Mailbox, Message, MessageFacts, MessageIdentifier, MessageLinkCheck,
+    MessageSequence, Scope, ScopeIdentifier, ScopeMembership, ScopeTree, SmtpAccess,
+    SmtpAccessIdentifier, SmtpAuthenticationMechanism, User, UserIdentifier, View, ViewIdentifier,
+    WebFolder,
 };

@@ -119,6 +119,8 @@ pub struct Configuration {
     pub database_path: PathBuf,
     /// Maximum scope depth, counting roots as zero; defaults to two.
     pub maximum_scope_depth: Option<usize>,
+    /// Let link checks contact loopback, private and other non-public addresses; off by default.
+    pub link_check_allow_internal_addresses: bool,
     pub log_level: String,
     /// The configuration file that was read; absent while defaults and environment alone apply.
     pub configuration_path: Option<PathBuf>,
@@ -401,6 +403,12 @@ impl Configuration {
             [&file.smtp.tls_certificate, &file.smtp.tls_private_key],
         )?;
         let imap = imap_configuration(environment_value, &file.imap, mail_certificate.as_ref())?;
+        let link_check_allow_internal_addresses = environment_setting(
+            environment_value,
+            "SANDPOST_LINK_CHECK_ALLOW_INTERNAL_ADDRESSES",
+            file.link_check.allow_internal_addresses.unwrap_or(false),
+            "true or false",
+        )?;
         let web_listen_address = listener_address(
             environment_value,
             "SANDPOST_HTTP_BIND_ADDRESS",
@@ -431,6 +439,7 @@ impl Configuration {
             data_directory,
             database_path,
             maximum_scope_depth,
+            link_check_allow_internal_addresses,
             log_level: environment_value("SANDPOST_LOG_LEVEL")
                 .or_else(|| file.sandpost.log_level.clone())
                 .unwrap_or_else(|| "info".into()),

@@ -113,6 +113,7 @@ async fn build_test_application() -> Router {
 mod authentication;
 mod events;
 mod imap;
+mod link_checks;
 mod mailbox;
 mod management;
 mod messages;

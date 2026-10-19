@@ -108,6 +108,9 @@ const inTrash = computed(() => !appliedSearch.value && folder.value?.kind === 't
  */
 const canDeleteMail = computed(() => workspace.user.value !== null && workspace.user.value.role !== 'viewer');
 const canMutateMail = canDeleteMail;
+
+const checkingLinks = ref(false);
+const linkCheckNotice = ref('');
 const visibleMessages = computed(() => messages.value.filter((message) => !unreadOnly.value || !readMessageIds.value.has(message.id)));
 const multipleSelected = computed(() => selection.value.size > 1);
 const selectedInOrder = computed(() => orderedSelection(visibleMessages.value.map((message) => message.id), selection.value));
@@ -269,6 +272,30 @@ async function updateFlags(identifiers: string[], operation: MessageFlagOperatio
 function updateDetailFlags(operation: MessageFlagOperation, flags: MessageFlags): void {
   if (detail.value) void updateFlags([detail.value.id], operation, flags)
 }
+
+/**
+ * Starts background link checks of the selected messages in API-sized batches. Results are stored on
+ * the server and appear when each message is opened; nothing is awaited beyond accepting the request.
+ */
+async function checkSelectedLinks(identifiers: string[]): Promise<void> {
+  if (!identifiers.length || checkingLinks.value) return;
+  checkingLinks.value = true;
+  linkCheckNotice.value = '';
+  let accepted = 0;
+  try {
+    for (let offset = 0; offset < identifiers.length; offset += MESSAGE_BATCH_SIZE) {
+      const result = await client.messages.checkLinks(identifiers.slice(offset, offset + MESSAGE_BATCH_SIZE));
+      accepted += result.started + result.alreadyRunning;
+    }
+    if (!stopped) linkCheckNotice.value = t(accepted === 1 ? 'mail.links.bulkStarted_one' : 'mail.links.bulkStarted_other', { count: accepted });
+  } catch (error) {
+    if (!stopped) listError.value = error instanceof Error ? error.message : t('mail.links.bulkFailed');
+  } finally {
+    checkingLinks.value = false;
+  }
+}
+
+watch(selection, () => { linkCheckNotice.value = ''; });
 
 /**
  * Moves messages to Trash at once, without confirmation, in API-sized batches. Batches trashed before a failure
@@ -609,6 +636,8 @@ onBeforeUnmount(() => {
       :error="listError"
       :show-empty-trash="canDeleteMail"
       :can-mutate="canMutateMail"
+      :checking-links="checkingLinks"
+      :link-check-notice="linkCheckNotice"
       :empty-trash-disabled="!messages.length || loading || refreshing || trashing || deleting || emptyingTrash"
       @clear-search="clearAppliedSearch"
       @filter="unreadOnly = $event"
@@ -616,15 +645,19 @@ onBeforeUnmount(() => {
       @refresh="refreshMessages"
       @older="loadOlder"
       @update:selection="updateSelection"
+      @check-links="checkSelectedLinks"
       @delete="requestDelete"
       @move="moveMessages"
       @set-seen="updateSeen"
       @empty-trash="confirmEmptyTrash"
     />
     <MessageSelectionPanel
-      v-if="multipleSelected && canMutateMail"
+      v-if="multipleSelected"
       class="min-h-0 max-lg:hidden"
       :count="selectedInOrder.length"
+      :can-mutate="canMutateMail"
+      :checking-links="checkingLinks"
+      :link-check-notice="linkCheckNotice"
       :deleting="deleting || trashing || copying || pendingFlagRequests > 0"
       :folders="workspace.folders.value"
       :flags="selectedFlags"
@@ -634,6 +667,7 @@ onBeforeUnmount(() => {
       @copy="copyMessages(selectedInOrder, $event)"
       @set-flags="(operation, flags) => updateFlags(selectedInOrder, operation, flags)"
       @clear="selection = new Set()"
+      @check-links="checkSelectedLinks(selectedInOrder)"
     />
     <MessageDetailPane
       v-else

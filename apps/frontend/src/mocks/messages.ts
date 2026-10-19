@@ -71,6 +71,21 @@ const bodies = [
 ];
 
 /**
+ * Labelled links shown below the body of some fixtures, so link checks have something to verify.
+ * Their paths choose the mock check outcome; no request ever leaves the browser.
+ */
+const mockLinks: Record<number, [label: string, url: string][]> = {
+  14: [['Review pull request', 'https://github.example/northfoundry/web/pull/247']],
+  21: [
+    ['Read the update', 'https://postmark.example/blog/weekly'],
+    ['Delivery timeline guide', 'https://postmark.example/redirect/guides/timeline'],
+    ['Rendering checklist', 'https://postmark.example/missing/rendering-checklist'],
+    ['Status page', 'https://status.postmark.example/server-error'],
+    ['Local preferences', 'http://localhost:3000/preferences'],
+  ],
+};
+
+/**
  * Return real synthetic attachment bytes together with their presentation metadata.
  */
 export function mockAttachments(id: string) {
@@ -103,7 +118,9 @@ export function mockDetail(id: string): MessageDetail | undefined {
   const text = bodies[index]!;
   const plainOnly = [7, 17, 19].includes(index);
   const receipt = index === 3 || index === 8;
-  const html = plainOnly ? '' : `<html><head><style>body{margin:0;padding:28px;font:14px/1.65 system-ui;color:#27272a;background:#fff}article{max-width:580px;margin:auto}h1{font-size:22px;line-height:1.3}p{margin:0 0 18px}pre{padding:18px;background:#f4f4f5;white-space:pre-wrap}footer{border-top:1px solid #e4e4e7;padding-top:16px;color:#71717a;font-size:12px}</style></head><body><article><h1>${escapeHtml(receipt ? 'Payment confirmation' : summary.subject)}</h1>${index === 0 ? `<pre>${escapeHtml(text)}</pre>` : text.split('\n\n').map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll('\n', '<br>')}</p>`).join('')}<footer>${escapeHtml(samples[index]![3])} · Local development sample</footer></article></body></html>`;
+  const links = mockLinks[index] ?? [];
+  const linkList = links.length ? `<p>${links.map(([label, url]) => `<a href="${escapeHtml(url)}" style="color:#2563eb">${escapeHtml(label)}</a>`).join(' · ')}</p>` : '';
+  const html = plainOnly ? '' : `<html><head><style>body{margin:0;padding:28px;font:14px/1.65 system-ui;color:#27272a;background:#fff}article{max-width:580px;margin:auto}h1{font-size:22px;line-height:1.3}p{margin:0 0 18px}pre{padding:18px;background:#f4f4f5;white-space:pre-wrap}footer{border-top:1px solid #e4e4e7;padding-top:16px;color:#71717a;font-size:12px}</style></head><body><article><h1>${escapeHtml(receipt ? 'Payment confirmation' : summary.subject)}</h1>${index === 0 ? `<pre>${escapeHtml(text)}</pre>` : text.split('\n\n').map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll('\n', '<br>')}</p>`).join('')}${linkList}<footer>${escapeHtml(samples[index]![3])} · Local development sample</footer></article></body></html>`;
   return {
     id,
     subject: summary.subject,

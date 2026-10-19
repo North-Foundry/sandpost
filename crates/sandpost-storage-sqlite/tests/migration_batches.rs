@@ -108,7 +108,7 @@ async fn opening_batches_suffix_migrations_and_reopening_is_a_no_op() {
 
     open_and_close(&path).await;
     let first_history = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(first_history.len(), 48);
+    assert_eq!(first_history.len(), 50);
     assert!(first_history[..12].iter().all(|record| record.batch == 1));
     assert!(first_history[12..].iter().all(|record| record.batch == 2));
 
@@ -223,7 +223,7 @@ async fn concurrent_upgrades_record_one_shared_batch() {
     first.unwrap().close().await;
     second.unwrap().close().await;
     let history = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(history.len(), 48);
+    assert_eq!(history.len(), 50);
     assert!(history[..11].iter().all(|record| record.batch == 1));
     assert!(history[11..].iter().all(|record| record.batch == 2));
 }
@@ -318,13 +318,13 @@ async fn fully_applied_legacy_history_remains_batch_one_after_open() {
     assert!(before.iter().all(|record| record.batch == 1));
     open_and_close(&path).await;
     let after = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(after.len(), 48);
+    assert_eq!(after.len(), 50);
     assert_eq!(&after[..47], before.as_slice());
     assert_eq!(
         after[47].migration,
         "0048_promote_admin_users_to_owners.sql"
     );
-    assert_eq!(after[47].batch, 2);
+    assert!(after[47..].iter().all(|record| record.batch == 2));
 
     let mut database = connection(&path).await;
     let current_script: String = sqlx::query_scalar(
@@ -426,7 +426,7 @@ async fn rolling_back_fresh_database_allows_full_reinitialization() {
     let path = directory.database();
     open_and_close(&path).await;
     let initial = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(initial.len(), 48);
+    assert_eq!(initial.len(), 50);
     assert!(initial.iter().all(|record| record.batch == 1));
     open_and_close(&path).await;
     assert_eq!(
@@ -447,6 +447,6 @@ async fn rolling_back_fresh_database_allows_full_reinitialization() {
 
     open_and_close(&path).await;
     let reinitialized = SqliteStorage::migration_history(&path).await.unwrap();
-    assert_eq!(reinitialized.len(), 48);
+    assert_eq!(reinitialized.len(), 50);
     assert!(reinitialized.iter().all(|record| record.batch == 1));
 }

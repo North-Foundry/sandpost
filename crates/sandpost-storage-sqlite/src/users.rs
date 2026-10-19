@@ -117,7 +117,7 @@ async fn insert_user(
     .bind(now)
     .bind(now)
     .bind(mail_access_text(user.mail_access))
-    .execute(connection)
+    .execute(&mut *connection)
     .await
     .storage()?;
     Ok(User {
