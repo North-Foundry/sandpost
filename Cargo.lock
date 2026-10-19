@@ -2040,7 +2040,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sandpost"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2072,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-application"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "argon2",
  "async-trait",
@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-core"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "serde",
  "thiserror",
@@ -2106,7 +2106,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-html-check"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "cssparser",
  "indexmap",
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-imap"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "imap-codec",
  "mail-parser",
@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-link-check"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "http-body-util",
@@ -2150,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-mime"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "mail-parser",
  "sandpost-core",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-node"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "napi",
  "napi-build",
@@ -2179,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-query"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "sandpost-core",
  "sha2 0.11.0",
@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-search"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "sandpost-core",
  "sandpost-query",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-smtp"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "mail-parser",
  "rcgen",
@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-storage"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "sandpost-core",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-storage-conformance"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "sandpost-core",
  "sandpost-query",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-storage-sqlite"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "sandpost-core",
@@ -2250,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-test-runner"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "libc",
  "mail-parser",
@@ -2263,7 +2263,7 @@ dependencies = [
 
 [[package]]
 name = "sandpost-web-api"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "axum",
  "http-body-util",
