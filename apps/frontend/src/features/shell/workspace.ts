@@ -1,6 +1,6 @@
 import { i18n } from '@/i18n'
 import { computed, inject, ref, type ComputedRef, type InjectionKey, type Ref } from 'vue'
-import type { Inbox, InboxInput, ImapAccount, SandpostClient, SandpostEvent, SavedView, SessionUser, WebFolder, WebFolderInput } from '@/api/contracts'
+import type { Inbox, InboxInput, ImapAccount, Persona, PersonaInput, SandpostClient, SandpostEvent, SavedView, SessionUser, WebFolder, WebFolderInput } from '@/api/contracts'
 import { describeError } from '@/utils/errors'
 import { collectReadableIds, deleteEach, type BulkDeleteResult } from '@/features/mail/bulkDelete'
 
@@ -30,9 +30,9 @@ const UNREAD_RECOUNT_DELAY = 500
  *
  * `inbox` is all visible mail, `trash` the messages the user deleted and can still restore, `address` a recipient
  * inbox, and `smart` a saved canonical query. Manual `folder`s are user-owned manual placements, independent from
- * smart filters and address inboxes.
+ * smart filters and address inboxes. A `persona` lists readable mail addressed to one of the user's Personas.
  */
-export type MailFolderKind = 'inbox' | 'trash' | 'address' | 'smart' | 'folder'
+export type MailFolderKind = 'inbox' | 'trash' | 'address' | 'smart' | 'folder' | 'persona'
 
 export interface MailFolder {
   id: string
@@ -53,6 +53,11 @@ export interface MailFolder {
    * User-owned explicit-membership folder, when this is a manual folder.
    */
   manual?: WebFolder | null
+
+  /**
+   * The Persona behind a Persona view.
+   */
+  persona?: Persona | null
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
@@ -74,6 +79,16 @@ export interface Workspace {
   capabilitiesLoaded: Ref<boolean>
   connection: Ref<ConnectionState>
   folders: ComputedRef<MailFolder[]>
+
+  /**
+   * The user's Personas as mail views, sorted by name; empty when the transport offers no Personas.
+   */
+  personaFolders: ComputedRef<MailFolder[]>
+
+  /**
+   * Whether the transport offers Personas.
+   */
+  personasAvailable: boolean
   imapAccounts: Ref<ImapAccount[]>
   foldersLoading: Ref<boolean>
   foldersLoaded: Ref<boolean>
@@ -146,6 +161,26 @@ export interface Workspace {
   deleteManualFolder(id: string): Promise<void>
 
   /**
+   * Create or replace one of the user's Personas.
+   */
+  savePersona(id: string | null, input: PersonaInput): Promise<Persona>
+
+  /**
+   * Enable or disable one of the user's Personas.
+   */
+  setPersonaEnabled(id: string, enabled: boolean): Promise<Persona>
+
+  /**
+   * Delete a Persona and its history without deleting its mail.
+   */
+  deletePersona(id: string): Promise<void>
+
+  /**
+   * Replace one Persona's local copy, for example after reading its newest execution.
+   */
+  updatePersona(persona: Persona): void
+
+  /**
    * Receive application mail events while mounted; returns the unsubscribe function.
    */
   onMailEvent(listener: (event: SandpostEvent) => void): () => void
@@ -176,6 +211,7 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
   const inboxes = ref<Inbox[]>([DEFAULT_INBOX])
   const views = ref<SavedView[]>([])
   const manualFolders = ref<WebFolder[]>([])
+  const personas = ref<Persona[]>([])
   const imapAccounts = ref<ImapAccount[]>([])
   const foldersLoading = ref(false)
   const foldersLoaded = ref(false)
@@ -214,6 +250,13 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
       { id: TRASH_FOLDER_ID, kind: 'trash', name: i18n.global.t('common.trash'), address: null, view: null, manual: null },
       ...addresses, ...smart, ...manual,
     ]
+  })
+
+  const personaFolders = computed<MailFolder[]>(() => {
+    const collator = new Intl.Collator(i18n.global.locale.value, { sensitivity: 'base', numeric: true })
+    return personas.value
+      .map((persona): MailFolder => ({ id: persona.id, kind: 'persona', name: persona.name, address: persona.address, view: null, manual: null, persona }))
+      .sort((first, second) => collator.compare(first.name, second.name))
   })
 
   const inboxUnreadCount = computed(() => {
@@ -297,17 +340,19 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
   async function reloadFolders(): Promise<void> {
     const request = ++folderRequest
     foldersLoading.value = true
-    const [loadedInboxes, loadedViews, loadedManualFolders, loadedImapAccounts] = await Promise.allSettled([
+    const [loadedInboxes, loadedViews, loadedManualFolders, loadedImapAccounts, loadedPersonas] = await Promise.allSettled([
       client.inboxes.list(), client.views.list(), client.folders.list(), client.imap.list(),
+      client.personas ? client.personas.list() : Promise.resolve([]),
     ])
     if (stopped || request !== folderRequest) return
+    if (loadedPersonas.status === 'fulfilled') personas.value = loadedPersonas.value
     if (loadedInboxes.status === 'fulfilled') {
       inboxes.value = loadedInboxes.value.some((inbox) => inbox.system) ? loadedInboxes.value : [DEFAULT_INBOX, ...loadedInboxes.value]
     }
     if (loadedViews.status === 'fulfilled') views.value = loadedViews.value
     if (loadedManualFolders.status === 'fulfilled') manualFolders.value = loadedManualFolders.value
     if (loadedImapAccounts.status === 'fulfilled') imapAccounts.value = loadedImapAccounts.value
-    const failure = [loadedInboxes, loadedViews, loadedManualFolders, loadedImapAccounts].find((result) => result.status === 'rejected')
+    const failure = [loadedInboxes, loadedViews, loadedManualFolders, loadedImapAccounts, loadedPersonas].find((result) => result.status === 'rejected')
     const reason = failure?.status === 'rejected' ? failure.reason : null
     foldersError.value = reason ? describeError(reason, i18n.global.t('common.foldersLoadFailed')) : ''
     foldersLoading.value = false
@@ -375,6 +420,48 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
     folderRequest += 1
     foldersLoading.value = false
     manualFolders.value = manualFolders.value.filter((folder) => folder.id !== id)
+  }
+
+  /**
+   * Return the transport's Persona client, which the shell only offers when it exists.
+   */
+  function personaClient() {
+    if (!client.personas) throw new Error('Personas are not available in this client')
+    return client.personas
+  }
+
+  /**
+   * Replace a Persona's local copy and keep it across in-flight list requests.
+   */
+  function rememberPersona(persona: Persona): Persona {
+    folderRequest += 1
+    foldersLoading.value = false
+    personas.value = [...personas.value.filter((candidate) => candidate.id !== persona.id), persona]
+    return persona
+  }
+
+  /**
+   * Create or replace a Persona.
+   */
+  async function savePersona(id: string | null, input: PersonaInput): Promise<Persona> {
+    return rememberPersona(id ? await personaClient().update(id, input) : await personaClient().create(input))
+  }
+
+  /**
+   * Enable or disable a Persona.
+   */
+  async function setPersonaEnabled(id: string, enabled: boolean): Promise<Persona> {
+    return rememberPersona(await personaClient().setEnabled(id, enabled))
+  }
+
+  /**
+   * Delete a Persona; its mail stays where it is.
+   */
+  async function deletePersona(id: string): Promise<void> {
+    await personaClient().delete(id)
+    folderRequest += 1
+    foldersLoading.value = false
+    personas.value = personas.value.filter((persona) => persona.id !== id)
   }
 
   /**
@@ -449,6 +536,8 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
     capabilitiesLoaded,
     connection,
     folders,
+    personaFolders,
+    personasAvailable: Boolean(client.personas),
     imapAccounts,
     foldersLoading,
     foldersLoaded,
@@ -462,7 +551,10 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
     /**
      * Resolve a folder identifier, using the virtual Inbox for an empty identifier.
      */
-    findFolder: (id) => folders.value.find((folder) => folder.id === (id || DEFAULT_INBOX.id)) ?? null,
+    findFolder: (id) => {
+      const wanted = id || DEFAULT_INBOX.id
+      return folders.value.find((folder) => folder.id === wanted) ?? personaFolders.value.find((folder) => folder.id === wanted) ?? null
+    },
     reloadFolders,
     createAddressInbox,
     saveView,
@@ -470,6 +562,16 @@ export function createWorkspace(client: SandpostClient, options: WorkspaceOption
     createManualFolder,
     saveManualFolder,
     deleteManualFolder,
+    savePersona,
+    setPersonaEnabled,
+    deletePersona,
+
+    /**
+     * Replace one Persona's local copy without a server request.
+     */
+    updatePersona(persona) {
+      if (personas.value.some((candidate) => candidate.id === persona.id)) rememberPersona(persona)
+    },
 
     /**
      * Subscribe a mounted consumer and return a function that removes its listener.

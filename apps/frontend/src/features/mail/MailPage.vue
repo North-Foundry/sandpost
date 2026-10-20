@@ -17,6 +17,8 @@ import { deleteEach } from '@/features/mail/bulkDelete';
 import { orderedSelection } from '@/features/mail/messageSelection';
 import { interpretSearch } from '@/features/mail/searchSyntax';
 import { DEFAULT_INBOX, useWorkspace } from '@/features/shell/workspace';
+import PersonaActivitySheet from '@/features/personas/PersonaActivitySheet.vue';
+import PersonaDialog from '@/features/personas/PersonaDialog.vue';
 
 const PAGE_SIZE = 50;
 
@@ -109,6 +111,13 @@ const inTrash = computed(() => !appliedSearch.value && folder.value?.kind === 't
 const canDeleteMail = computed(() => workspace.user.value !== null && workspace.user.value.role !== 'viewer');
 const canMutateMail = canDeleteMail;
 
+/**
+ * Run history and editing of the open Persona view, shown on demand.
+ */
+const personaActivityOpen = ref(false);
+const personaEditOpen = ref(false);
+const openPersona = computed(() => folder.value?.kind === 'persona' ? folder.value.persona ?? null : null);
+
 const checkingLinks = ref(false);
 const linkCheckNotice = ref('');
 const visibleMessages = computed(() => messages.value.filter((message) => !unreadOnly.value || !readMessageIds.value.has(message.id)));
@@ -156,6 +165,7 @@ function fetchMessages(before?: number): Promise<MessageSummary[]> {
   if (!current) return Promise.resolve([]);
   if (current.kind === 'inbox') return client.messages.list({ before, limit: PAGE_SIZE });
   if (current.kind === 'trash') return client.trash.listMessages({ before, limit: PAGE_SIZE });
+  if (current.kind === 'persona') return client.personas ? client.personas.listMessages(current.id, { before, limit: PAGE_SIZE }) : Promise.resolve([]);
   return current.kind === 'smart'
     ? client.messages.list({ viewId: current.id, before, limit: PAGE_SIZE })
     : current.kind === 'folder'
@@ -638,6 +648,7 @@ onBeforeUnmount(() => {
       :can-mutate="canMutateMail"
       :checking-links="checkingLinks"
       :link-check-notice="linkCheckNotice"
+      :current-user-id="workspace.user.value?.id ?? null"
       :empty-trash-disabled="!messages.length || loading || refreshing || trashing || deleting || emptyingTrash"
       @clear-search="clearAppliedSearch"
       @filter="unreadOnly = $event"
@@ -646,6 +657,8 @@ onBeforeUnmount(() => {
       @older="loadOlder"
       @update:selection="updateSelection"
       @check-links="checkSelectedLinks"
+      @persona-activity="personaActivityOpen = true"
+      @persona-edit="personaEditOpen = true"
       @delete="requestDelete"
       @move="moveMessages"
       @set-seen="updateSeen"
@@ -658,6 +671,7 @@ onBeforeUnmount(() => {
       :can-mutate="canMutateMail"
       :checking-links="checkingLinks"
       :link-check-notice="linkCheckNotice"
+      :current-user-id="workspace.user.value?.id ?? null"
       :deleting="deleting || trashing || copying || pendingFlagRequests > 0"
       :folders="workspace.folders.value"
       :flags="selectedFlags"
@@ -718,5 +732,9 @@ onBeforeUnmount(() => {
         </Button>
       </DialogFooter>
     </BusyDialog>
+    <template v-if="workspace.personasAvailable">
+      <PersonaActivitySheet v-model:open="personaActivityOpen" :persona="openPersona" @open-message="(id) => router.push({ name: 'mail-message', params: { id }, query: listQuery() })" />
+      <PersonaDialog v-model:open="personaEditOpen" :persona="openPersona" />
+    </template>
   </div>
 </template>

@@ -77,7 +77,8 @@ impl SandpostRuntime {
         .with_link_check_settings(LinkCheckSettings {
             allow_internal_addresses: configuration.link_check_allow_internal_addresses,
             ..LinkCheckSettings::default()
-        });
+        })
+        .with_persona_settings(configuration.personas.settings());
         let mail_authentication_required = authentication_policy(
             configuration.mail_authentication,
             configuration.mail_listen_address,
@@ -142,6 +143,13 @@ impl SandpostRuntime {
             // Outbound checks are bounded but can outlive transports; stop them with the listeners.
             wait_for_shutdown(link_check_shutdown).await;
             link_check_application.cancel_link_checks();
+        });
+        let persona_application = application.clone();
+        let persona_shutdown = shutdown_receiver.clone();
+        tokio::spawn(async move {
+            // Persona executions run outside transport supervision: a failing Persona must never
+            // stop a listener. Shutdown stops them, leaving recorded state to resume after restart.
+            persona_application.run_personas(persona_shutdown).await;
         });
         let supervision_shutdown = shutdown_sender.clone();
         let supervisor = tokio::spawn(async move {

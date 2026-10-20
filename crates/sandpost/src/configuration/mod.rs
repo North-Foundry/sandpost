@@ -121,9 +121,57 @@ pub struct Configuration {
     pub maximum_scope_depth: Option<usize>,
     /// Let link checks contact loopback, private and other non-public addresses; off by default.
     pub link_check_allow_internal_addresses: bool,
+    /// Persona execution limits and network policy from `[personas]` and `SANDPOST_PERSONAS_*`.
+    pub personas: PersonaConfiguration,
     pub log_level: String,
     /// The configuration file that was read; absent while defaults and environment alone apply.
     pub configuration_path: Option<PathBuf>,
+}
+
+/// Persona execution limits and outbound network policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonaConfiguration {
+    /// Let Personas request loopback, private and other non-public addresses; off by default.
+    pub allow_internal_addresses: bool,
+    /// Longest single `wait`; defaults to 600 seconds.
+    pub maximum_wait_seconds: u64,
+    /// Longest execution including waits and requests; defaults to 1800 seconds.
+    pub execution_timeout_seconds: u64,
+    /// Executions active at once, including waiting ones; defaults to 64.
+    pub concurrent_executions: usize,
+    /// Outbound requests in flight at once; defaults to 8.
+    pub concurrent_requests: usize,
+}
+
+impl Default for PersonaConfiguration {
+    /**
+     * Return the documented defaults.
+     */
+    fn default() -> Self {
+        Self {
+            allow_internal_addresses: false,
+            maximum_wait_seconds: 600,
+            execution_timeout_seconds: 1800,
+            concurrent_executions: 64,
+            concurrent_requests: 8,
+        }
+    }
+}
+
+impl PersonaConfiguration {
+    /**
+     * Convert the configuration into application settings, keeping other defaults.
+     */
+    pub fn settings(&self) -> sandpost_application::PersonaSettings {
+        sandpost_application::PersonaSettings {
+            allow_internal_addresses: self.allow_internal_addresses,
+            maximum_wait: std::time::Duration::from_secs(self.maximum_wait_seconds),
+            execution_timeout: std::time::Duration::from_secs(self.execution_timeout_seconds),
+            concurrent_executions: self.concurrent_executions,
+            concurrent_requests: self.concurrent_requests,
+            ..sandpost_application::PersonaSettings::default()
+        }
+    }
 }
 
 /// A configuration file or setting that cannot be used, named for the operator.
@@ -186,6 +234,33 @@ impl Configuration {
             return Err(invalid(
                 "SANDPOST_IMAP_BIND_ADDRESS",
                 "IMAP on a non-loopback address needs a TLS certificate (SANDPOST_IMAP_TLS_CERTIFICATE and SANDPOST_IMAP_TLS_PRIVATE_KEY); set SANDPOST_IMAP_TLS=off to accept passwords in clear text",
+            ));
+        }
+        let personas = &self.personas;
+        if !(4..=86_400).contains(&personas.execution_timeout_seconds) {
+            return Err(invalid(
+                "SANDPOST_PERSONAS_EXECUTION_TIMEOUT_SECONDS",
+                "expected a number of seconds from 4 to 86400",
+            ));
+        }
+        if personas.maximum_wait_seconds == 0
+            || personas.maximum_wait_seconds > personas.execution_timeout_seconds / 4 * 3
+        {
+            return Err(invalid(
+                "SANDPOST_PERSONAS_MAXIMUM_WAIT_SECONDS",
+                "expected at least 1 second and at most three quarters of the execution timeout",
+            ));
+        }
+        if !(1..=1024).contains(&personas.concurrent_executions) {
+            return Err(invalid(
+                "SANDPOST_PERSONAS_CONCURRENT_EXECUTIONS",
+                "expected a number from 1 to 1024",
+            ));
+        }
+        if !(1..=256).contains(&personas.concurrent_requests) {
+            return Err(invalid(
+                "SANDPOST_PERSONAS_CONCURRENT_REQUESTS",
+                "expected a number from 1 to 256",
             ));
         }
         if !(1..=10_000).contains(&self.imap.maximum_connection_count) {
@@ -409,6 +484,49 @@ impl Configuration {
             file.link_check.allow_internal_addresses.unwrap_or(false),
             "true or false",
         )?;
+        let defaults = PersonaConfiguration::default();
+        let personas = PersonaConfiguration {
+            allow_internal_addresses: environment_setting(
+                environment_value,
+                "SANDPOST_PERSONAS_ALLOW_INTERNAL_ADDRESSES",
+                file.personas
+                    .allow_internal_addresses
+                    .unwrap_or(defaults.allow_internal_addresses),
+                "true or false",
+            )?,
+            maximum_wait_seconds: environment_setting(
+                environment_value,
+                "SANDPOST_PERSONAS_MAXIMUM_WAIT_SECONDS",
+                file.personas
+                    .maximum_wait_seconds
+                    .unwrap_or(defaults.maximum_wait_seconds),
+                "a whole number of seconds",
+            )?,
+            execution_timeout_seconds: environment_setting(
+                environment_value,
+                "SANDPOST_PERSONAS_EXECUTION_TIMEOUT_SECONDS",
+                file.personas
+                    .execution_timeout_seconds
+                    .unwrap_or(defaults.execution_timeout_seconds),
+                "a whole number of seconds",
+            )?,
+            concurrent_executions: environment_setting(
+                environment_value,
+                "SANDPOST_PERSONAS_CONCURRENT_EXECUTIONS",
+                file.personas
+                    .concurrent_executions
+                    .unwrap_or(defaults.concurrent_executions),
+                "a whole number",
+            )?,
+            concurrent_requests: environment_setting(
+                environment_value,
+                "SANDPOST_PERSONAS_CONCURRENT_REQUESTS",
+                file.personas
+                    .concurrent_requests
+                    .unwrap_or(defaults.concurrent_requests),
+                "a whole number",
+            )?,
+        };
         let web_listen_address = listener_address(
             environment_value,
             "SANDPOST_HTTP_BIND_ADDRESS",
@@ -440,6 +558,7 @@ impl Configuration {
             database_path,
             maximum_scope_depth,
             link_check_allow_internal_addresses,
+            personas,
             log_level: environment_value("SANDPOST_LOG_LEVEL")
                 .or_else(|| file.sandpost.log_level.clone())
                 .unwrap_or_else(|| "info".into()),

@@ -11,6 +11,7 @@ mod link_check;
 mod listeners;
 mod mailbox;
 mod management;
+mod personas;
 mod read_status;
 mod smtp_access;
 pub use changes::ApplicationChange;
@@ -37,6 +38,11 @@ pub use listeners::{
 pub use mailbox::WebFolderRequest;
 pub use management::{
     AccountDetails, NewAccount, QueryDiagnostic, QueryValidation, ScopePreview, UpdateAccount,
+};
+pub use personas::{
+    AddressAccess, MAXIMUM_PERSONAS_PER_USER, PersonaDetails, PersonaEnabledRequest,
+    PersonaExecutionDetails, PersonaExecutionSummary, PersonaRequest, PersonaScriptDiagnostic,
+    PersonaScriptRequest, PersonaScriptValidation, PersonaSettings,
 };
 pub use read_status::WebMessageFlagsRequest;
 use sandpost_core::{
@@ -168,6 +174,8 @@ pub struct Application {
     imap_server: Arc<std::sync::RwLock<Option<ImapServerDetails>>>,
     /// Background link checks shared by every transport.
     link_checks: Arc<link_check::LinkCheckCoordinator>,
+    /// Background Persona executions shared by every transport.
+    personas: Arc<personas::PersonaRuntime>,
 }
 /// Reusable message authorization boundary for HTTP, native hosts, and other callers.
 #[derive(Clone)]
@@ -212,6 +220,7 @@ impl Application {
             link_checks: Arc::new(link_check::LinkCheckCoordinator::new(
                 LinkCheckSettings::default(),
             )),
+            personas: Arc::new(personas::PersonaRuntime::new(PersonaSettings::default())),
         }
     }
     /// Attach the hosting runtime's read-only SMTP listener status.

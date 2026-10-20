@@ -4,7 +4,11 @@
 // reusable patterns if measured policy workloads justify it. Never truncate a
 // match, because changing a result also changes the meaning of `not`.
 /// Match a complete string against `*` and `?` using Unicode scalar values.
-pub(crate) fn glob_matches(text: &str, pattern: &str, basic_latin_case_insensitive: bool) -> bool {
+///
+/// This is the matcher behind the `matches` operator. `*` matches any number of scalar values,
+/// `?` exactly one, and every other character is literal; an empty pattern matches only an empty
+/// text. With `basic_latin_case_insensitive`, ASCII letters compare without regard to case.
+pub fn glob_matches(text: &str, pattern: &str, basic_latin_case_insensitive: bool) -> bool {
     let pattern_characters: Vec<char> = pattern.chars().collect();
     if !pattern_characters.is_empty()
         && pattern_characters.iter().all(|character| *character == '*')

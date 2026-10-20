@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, reactive, ref, useTemplateRef, wat
 import { useEventListener } from '@vueuse/core'
 import {
   CheckIcon, CopyIcon, LinkIcon, PaperclipIcon, RefreshCwIcon, SearchIcon, SearchXIcon,
-  MailIcon, MailOpenIcon, Trash2Icon, XIcon,
+  MailIcon, MailOpenIcon, Trash2Icon, XIcon, ActivityIcon, InfoIcon, PencilIcon,
 } from '@lucide/vue'
 import type { MessageSummary } from '@/api/contracts'
 import { formatFullDate, formatListDate, sendersLabel } from '@/utils/format'
@@ -89,6 +89,11 @@ const props = defineProps<{
    * Confirmation of the last bulk link check request, announced to assistive technology.
    */
   linkCheckNotice?: string
+
+  /**
+   * The signed-in user, who may edit Personas they own.
+   */
+  currentUserId?: string | null
 }>()
 const { t, locale } = useI18n()
 const emit = defineEmits<{
@@ -147,6 +152,16 @@ const emit = defineEmits<{
    * Requests checking the links of the selected messages.
    */
   (event: 'check-links', ids: string[]): void
+
+  /**
+   * Requests the open Persona's run history.
+   */
+  (event: 'persona-activity'): void
+
+  /**
+   * Requests editing the open Persona.
+   */
+  (event: 'persona-edit'): void
 }>()
 const scroller = useTemplateRef<HTMLElement>('scroller')
 const { copied, error: copyError, copy, reset: resetCopy } = useCopy<'address'>(t('mail.address.addressCopyError'))
@@ -163,6 +178,11 @@ const canonicalSearch = computed(() => looksLikeCanonicalQuery(props.search))
 const inTrash = computed(() => !props.search && props.folder?.kind === 'trash')
 const title = computed(() => props.search ? t('mail.list.searchResults') : props.folder?.name ?? t('mail.list.inbox'))
 const icon = computed(() => props.search ? SearchIcon : folderIcon(props.folder?.view?.icon ?? props.folder?.manual?.icon, props.folder?.kind ?? 'inbox'))
+
+/**
+ * Only a Persona's owner edits it; administrators may still read its activity.
+ */
+const personaEditable = computed(() => Boolean(props.canMutate && props.folder?.persona && props.folder.persona.ownerId === props.currentUserId))
 const countLabel = computed(() => {
   const count = props.messages.length
   const plus = props.hasOlder ? '+' : ''
@@ -561,6 +581,25 @@ watch(() => props.folder?.id, resetCopy)
           <Button variant="ghost" size="icon-xs" :aria-label="copied ? t('mail.list.addressCopied') : t('mail.list.copyAddress')" :title="copied ? t('mail.list.copied') : t('mail.list.copyAddress')" @click="copyAddress">
             <CheckIcon v-if="copied" class="text-success" /><CopyIcon v-else />
           </Button>
+        </template>
+        <template v-else-if="props.folder?.kind === 'persona' && props.folder.persona">
+          <code class="min-w-0 truncate font-mono select-all" :title="props.folder.address ?? undefined">{{ props.folder.address }}</code>
+          <Button variant="ghost" size="icon-xs" :aria-label="copied ? t('mail.list.addressCopied') : t('mail.list.copyAddress')" :title="copied ? t('mail.list.copied') : t('mail.list.copyAddress')" @click="copyAddress">
+            <CheckIcon v-if="copied" class="text-success" /><CopyIcon v-else />
+          </Button>
+          <span v-if="!props.folder.persona.enabled" class="shrink-0 rounded-sm border px-1.5 py-px text-[11px] leading-4">{{ t('personas.list.disabled') }}</span>
+          <span
+            v-if="props.folder.persona.addressAccess !== 'confirmed'"
+            class="flex shrink-0 items-center"
+            :title="props.folder.persona.addressAccess === 'denied' ? t('personas.access.denied') : t('personas.access.perMessage')"
+          >
+            <InfoIcon class="size-3.5" aria-hidden="true" />
+            <span class="sr-only">{{ props.folder.persona.addressAccess === 'denied' ? t('personas.access.denied') : t('personas.access.perMessage') }}</span>
+          </span>
+          <span class="ml-auto flex shrink-0 items-center gap-0.5">
+            <Button variant="ghost" size="xs" @click="emit('persona-activity')"><ActivityIcon data-icon="inline-start" />{{ t('personas.list.activity') }}</Button>
+            <Button v-if="personaEditable" variant="ghost" size="xs" @click="emit('persona-edit')"><PencilIcon data-icon="inline-start" />{{ t('personas.list.edit') }}</Button>
+          </span>
         </template>
         <code v-else-if="props.folder?.kind === 'smart'" class="min-w-0 truncate font-mono" :title="props.folder.view?.filter">
           <QueryHighlight v-if="props.folder.view?.filter.trim()" :source="props.folder.view.filter" /><span v-else>{{ t('mail.list.allReadable') }}</span>

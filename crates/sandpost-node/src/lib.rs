@@ -23,6 +23,7 @@ mod events;
 mod imap;
 mod management;
 mod messages;
+mod personas;
 mod runtime;
 
 #[cfg(test)]

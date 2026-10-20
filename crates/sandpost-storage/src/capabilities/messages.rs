@@ -9,6 +9,9 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait MessageStorage: Send + Sync {
     /// Insert a normalized message and all relational facts atomically.
+    ///
+    /// The same atomic operation schedules pending Persona executions for the message's SMTP
+    /// envelope recipients, as described by [`crate::PersonaStorage`].
     async fn insert_message(&self, message: &Message) -> Result<MessageSequence, StorageError>;
 
     /// Load a message and its original bytes from one snapshot.

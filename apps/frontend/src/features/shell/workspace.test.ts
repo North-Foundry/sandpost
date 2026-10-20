@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Inbox, MessageSummary, SandpostClient, SavedView, SessionUser } from '@/api/contracts'
+import type { Inbox, MessageSummary, Persona, SandpostClient, SavedView, SessionUser } from '@/api/contracts'
 import { createWorkspace, DEFAULT_INBOX, TRASH_FOLDER_ID } from './workspace'
 
 const owner: SessionUser = { id: 'owner', name: 'Owner', email: 'owner@example.test', role: 'owner' }
@@ -7,6 +7,11 @@ const member: SessionUser = { ...owner, id: 'member', role: 'member' }
 const addressInbox: Inbox = { id: 'address', name: 'QA', address: 'qa@sandpost.local', system: false }
 const addressView: SavedView = { id: 'address', ownerId: 'owner', name: 'QA', filter: 'envelope.to.address == "qa@sandpost.local"' }
 const smartView: SavedView = { id: 'smart', ownerId: 'owner', name: 'Receipts', filter: 'subject contains "Receipt"' }
+const alice: Persona = {
+  id: 'persona-alice', ownerId: 'owner', name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true,
+  revision: 1, createdAt: 1, updatedAt: 1, addressAccess: 'confirmed', lastExecution: null,
+}
+const zed: Persona = { ...alice, id: 'persona-zed', name: 'Zed', address: 'zed@example.test' }
 
 /**
  * Create a promise whose resolution the test controls to model a pending request.
@@ -35,6 +40,13 @@ function createClient(user: SessionUser | null): SandpostClient {
     views: { list: vi.fn(async () => [addressView, smartView]), save: vi.fn(async (view) => view), delete: vi.fn(async () => { }) },
     folders: { list: vi.fn(async () => []), create: vi.fn(), update: vi.fn(), delete: vi.fn(), listMessages: vi.fn(async () => []) },
     imap: { list: vi.fn(async () => []) },
+    personas: {
+      list: vi.fn(async () => [zed, alice]),
+      create: vi.fn(async (input) => ({ ...alice, ...input, id: 'created' })),
+      update: vi.fn(),
+      setEnabled: vi.fn(async (id: string, enabled: boolean) => ({ ...(id === alice.id ? alice : zed), enabled })),
+      delete: vi.fn(async () => { }),
+    },
     events: { subscribe: vi.fn(async () => () => { }) },
     messages: { list: vi.fn(async () => []), setSeen: vi.fn(async () => 1) },
   } as unknown as SandpostClient
@@ -230,5 +242,38 @@ describe('workspace', () => {
       vi.useRealTimers()
       vi.unstubAllGlobals()
     }
+  })
+
+  it('lists Personas as their own sorted views and keeps local changes', async () => {
+    const client = createClient(owner)
+    const created = createWorkspace(client, { onSignedOut: vi.fn() })
+    stop = created.stop
+    created.start()
+    await flush()
+    const { workspace } = created
+    expect(workspace.personasAvailable).toBe(true)
+    expect(workspace.personaFolders.value.map((folder) => [folder.kind, folder.name, folder.address])).toEqual([
+      ['persona', 'Alice', 'alice@example.test'], ['persona', 'Zed', 'zed@example.test'],
+    ])
+    expect(workspace.folders.value.some((folder) => folder.kind === 'persona')).toBe(false)
+    expect(workspace.findFolder(alice.id)).toMatchObject({ kind: 'persona', persona: alice })
+    await workspace.setPersonaEnabled(alice.id, false)
+    expect(workspace.findFolder(alice.id)?.persona?.enabled).toBe(false)
+    await workspace.savePersona(null, { name: 'Bea', address: 'bea@example.test', script: 'open;', enabled: true })
+    expect(workspace.personaFolders.value.map((folder) => folder.name)).toEqual(['Alice', 'Bea', 'Zed'])
+    await workspace.deletePersona(zed.id)
+    expect(workspace.findFolder(zed.id)).toBeNull()
+  })
+
+  it('offers no Personas when the transport lacks them', async () => {
+    const client = createClient(owner)
+    delete (client as { personas?: unknown }).personas
+    const created = createWorkspace(client, { onSignedOut: vi.fn() })
+    stop = created.stop
+    created.start()
+    await flush()
+    expect(created.workspace.personasAvailable).toBe(false)
+    expect(created.workspace.personaFolders.value).toEqual([])
+    expect(created.workspace.foldersError.value).toBe('')
   })
 })

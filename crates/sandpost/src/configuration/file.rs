@@ -22,6 +22,18 @@ pub(super) struct FileConfiguration {
     pub imap: ImapConfiguration,
     pub frontend: FrontendConfiguration,
     pub link_check: LinkCheckConfiguration,
+    pub personas: PersonaFileConfiguration,
+}
+
+/// Persona execution limits and network policy; omitted fields keep their defaults.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct PersonaFileConfiguration {
+    pub allow_internal_addresses: Option<bool>,
+    pub maximum_wait_seconds: Option<u64>,
+    pub execution_timeout_seconds: Option<u64>,
+    pub concurrent_executions: Option<usize>,
+    pub concurrent_requests: Option<usize>,
 }
 
 /// Outbound link verification policy; omission keeps internal destinations refused.

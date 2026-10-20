@@ -4,7 +4,8 @@ use napi::{Error, Result, Status};
 use sandpost_application::{ApplicationError, InstanceError};
 use sandpost_core::{
     ImapAccountIdentifier, ImapFolderIdentifier, InboxIdentifier, MessageIdentifier,
-    MessageSequence, ScopeIdentifier, SmtpAccessIdentifier, UserIdentifier, ViewIdentifier,
+    MessageSequence, PersonaExecutionIdentifier, PersonaIdentifier, ScopeIdentifier,
+    SmtpAccessIdentifier, UserIdentifier, ViewIdentifier,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -118,6 +119,26 @@ pub(super) fn parse_imap_folder_identifier(value: &str) -> Result<ImapFolderIden
     value
         .parse()
         .map_err(|_| Error::new(Status::InvalidArg, "invalid IMAP folder identifier"))
+}
+
+/**
+ * Parse a Persona UUID at the native trust boundary.
+ */
+pub(super) fn parse_persona_identifier(value: &str) -> Result<PersonaIdentifier> {
+    value
+        .parse()
+        .map_err(|_| Error::new(Status::InvalidArg, "invalid persona identifier"))
+}
+
+/**
+ * Parse a Persona execution UUID at the native trust boundary.
+ */
+pub(super) fn parse_persona_execution_identifier(
+    value: &str,
+) -> Result<PersonaExecutionIdentifier> {
+    value
+        .parse()
+        .map_err(|_| Error::new(Status::InvalidArg, "invalid persona execution identifier"))
 }
 
 /// Decode a native JSON object into its typed application input.

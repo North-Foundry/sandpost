@@ -10,6 +10,7 @@ mod link_checks;
 mod mailbox;
 mod management;
 mod messages;
+mod personas;
 mod read_status;
 mod routing;
 mod smtp;

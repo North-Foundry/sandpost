@@ -1,7 +1,7 @@
 //! Extraction, destination policy, classification and live HTTP verification tests.
 use crate::client::{AddressFilter, Resolve};
 use crate::{
-    LinkCheckSettings, LinkChecker, MAXIMUM_LINKS, classify_status, extract_links,
+    LinkCheckSettings, LinkChecker, MAXIMUM_LINKS, VisitPurpose, classify_status, extract_links,
     is_public_address, normalize_link, status_reason,
 };
 use async_trait::async_trait;
@@ -30,6 +30,8 @@ enum Reply {
     Delayed(Duration, u16),
     /// Accept the request and never answer.
     Hang,
+    /// Answer 200 with a content type and a body of the given length, streamed in chunks.
+    Body(&'static str, usize),
 }
 
 /// A loopback HTTP/1.1 server recording its connections and requests.
@@ -37,6 +39,7 @@ struct TestServer {
     address: SocketAddr,
     connections: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<(String, String)>>>,
+    heads: Arc<Mutex<Vec<String>>>,
     maximum_active: Arc<AtomicUsize>,
     task: JoinHandle<()>,
 }
@@ -60,12 +63,14 @@ impl TestServer {
         let address = listener.local_addr().unwrap();
         let connections = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let heads = Arc::new(Mutex::new(Vec::new()));
         let active = Arc::new(AtomicUsize::new(0));
         let maximum_active = Arc::new(AtomicUsize::new(0));
         let handler = Arc::new(handler);
         let task = tokio::spawn({
             let connections = connections.clone();
             let requests = requests.clone();
+            let heads = heads.clone();
             let maximum_active = maximum_active.clone();
             async move {
                 loop {
@@ -75,6 +80,7 @@ impl TestServer {
                     connections.fetch_add(1, Ordering::SeqCst);
                     let handler = handler.clone();
                     let requests = requests.clone();
+                    let heads = heads.clone();
                     let active = active.clone();
                     let maximum_active = maximum_active.clone();
                     let tls = tls.clone();
@@ -84,10 +90,10 @@ impl TestServer {
                         match tls {
                             Some(acceptor) => {
                                 if let Ok(stream) = acceptor.accept(stream).await {
-                                    answer(stream, &*handler, &requests).await;
+                                    answer(stream, &*handler, &requests, &heads).await;
                                 }
                             }
-                            None => answer(stream, &*handler, &requests).await,
+                            None => answer(stream, &*handler, &requests, &heads).await,
                         }
                         active.fetch_sub(1, Ordering::SeqCst);
                     });
@@ -98,6 +104,7 @@ impl TestServer {
             address,
             connections,
             requests,
+            heads,
             maximum_active,
             task,
         }
@@ -115,6 +122,13 @@ impl TestServer {
      */
     fn requests(&self) -> Vec<(String, String)> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /**
+     * Return the complete request heads received so far, in arrival order.
+     */
+    fn heads(&self) -> Vec<String> {
+        self.heads.lock().unwrap().clone()
     }
 }
 
@@ -134,6 +148,7 @@ async fn answer<Stream>(
     mut stream: Stream,
     handler: &(dyn Fn(&str, &str) -> Reply + Send + Sync),
     requests: &Mutex<Vec<(String, String)>>,
+    heads: &Mutex<Vec<String>>,
 ) where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -146,6 +161,7 @@ async fn answer<Stream>(
         }
     }
     let head = String::from_utf8_lossy(&head).into_owned();
+    heads.lock().unwrap().push(head.clone());
     let mut request_line = head.lines().next().unwrap_or_default().split(' ');
     let method = request_line.next().unwrap_or_default().to_owned();
     let path = request_line.next().unwrap_or_default().to_owned();
@@ -161,6 +177,25 @@ async fn answer<Stream>(
         }
         Reply::Hang => {
             tokio::time::sleep(Duration::from_secs(3600)).await;
+            return;
+        }
+        Reply::Body(content_type, length) => {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let chunk = vec![b'x'; 16 * 1024];
+            let mut remaining = length;
+            while remaining > 0 {
+                let size = remaining.min(chunk.len());
+                if stream.write_all(&chunk[..size]).await.is_err() {
+                    return;
+                }
+                remaining -= size;
+            }
+            let _ = stream.shutdown().await;
             return;
         }
     };
@@ -745,4 +780,211 @@ async fn batches_preserve_order_within_the_concurrency_bound() {
         assert_eq!(result.outcome, expected, "{}", result.url);
     }
     assert!(server.maximum_active.load(Ordering::SeqCst) <= 3);
+}
+
+/**
+ * A visit reads the final body up to the limit and reports its content type.
+ */
+#[tokio::test]
+async fn visits_read_bounded_bodies() {
+    let server = TestServer::start(|_, _| Reply::Body("image/gif", 1000)).await;
+    let result = permissive_checker()
+        .visit(&server.url("/open.gif?u=1"), VisitPurpose::Image, 4096)
+        .await;
+    assert!(result.responded(), "{result:?}");
+    assert_eq!(result.status_code, Some(200));
+    assert_eq!(result.received_bytes, 1000);
+    assert!(!result.truncated);
+    assert_eq!(result.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(server.requests(), [("GET".into(), "/open.gif?u=1".into())]);
+}
+
+/**
+ * An oversized response stops at the limit instead of being transferred completely.
+ */
+#[tokio::test]
+async fn oversized_responses_stop_at_the_limit() {
+    let server = TestServer::start(|_, _| Reply::Body("text/html", 512 * 1024 * 1024)).await;
+    let started = std::time::Instant::now();
+    let result = permissive_checker()
+        .visit(&server.url("/huge"), VisitPurpose::Document, 64 * 1024)
+        .await;
+    assert!(result.responded(), "{result:?}");
+    assert_eq!(result.received_bytes, 64 * 1024);
+    assert!(result.truncated);
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "reading stopped early"
+    );
+}
+
+/**
+ * Each redirect hop is requested exactly once and only the final body is read.
+ */
+#[tokio::test]
+async fn visits_follow_redirects_with_one_request_per_hop() {
+    let server = TestServer::start(|_, path| match path {
+        "/click" => Reply::Status(302, vec![("Location", "/landing".into())]),
+        "/landing" => Reply::Status(303, vec![("Location", "/final#top".into())]),
+        _ => Reply::Body("text/html", 10),
+    })
+    .await;
+    let result = permissive_checker()
+        .visit(&server.url("/click"), VisitPurpose::Document, 1024)
+        .await;
+    assert_eq!(result.status_code, Some(200));
+    assert_eq!(result.redirect_count, 2);
+    assert_eq!(result.final_url, Some(server.url("/final")));
+    assert_eq!(result.received_bytes, 10);
+    assert_eq!(
+        server.requests(),
+        [
+            ("GET".into(), "/click".into()),
+            ("GET".into(), "/landing".into()),
+            ("GET".into(), "/final".into())
+        ]
+    );
+}
+
+/**
+ * Error statuses are responses: they are reported once and never retried.
+ */
+#[tokio::test]
+async fn visits_are_never_retried() {
+    let server = TestServer::start(|_, _| Reply::Status(503, Vec::new())).await;
+    let result = permissive_checker()
+        .visit(&server.url("/confirm"), VisitPurpose::Document, 1024)
+        .await;
+    assert!(result.responded());
+    assert_eq!(result.status_code, Some(503));
+    assert_eq!(server.requests().len(), 1);
+    let hanging = TestServer::start(|_, _| Reply::Hang).await;
+    let result = checker(
+        LinkCheckSettings {
+            link_timeout: Duration::from_millis(400),
+            ..test_settings()
+        },
+        &[],
+        Arc::new(|_| true),
+    )
+    .visit(&hanging.url("/slow"), VisitPurpose::Image, 1024)
+    .await;
+    assert_eq!(result.error_kind, Some(LinkCheckErrorKind::Timeout));
+    assert!(!result.responded());
+    assert_eq!(
+        hanging.requests().len(),
+        1,
+        "a timed-out request is not repeated"
+    );
+}
+
+/**
+ * Visits identify themselves and never send cookies, credentials, or a referrer.
+ */
+#[tokio::test]
+async fn visits_send_no_credentials() {
+    let server = TestServer::start(|_, _| Reply::Body("image/png", 1)).await;
+    let url = format!("http://user:secret@{}/pixel.png", server.address);
+    permissive_checker()
+        .visit(&url, VisitPurpose::Image, 1024)
+        .await;
+    let head = server.heads().pop().unwrap().to_ascii_lowercase();
+    assert!(
+        head.contains("user-agent: mozilla/5.0 (compatible; sandpost-persona/"),
+        "{head}"
+    );
+    assert!(head.contains("accept: image/"), "{head}");
+    assert!(
+        head.contains(&format!("host: {}", server.address)),
+        "{head}"
+    );
+    for forbidden in ["authorization", "cookie", "referer", "secret"] {
+        assert!(!head.contains(forbidden), "{forbidden} leaked: {head}");
+    }
+}
+
+/**
+ * Visits apply the destination policy to literals, names, redirects and mixed DNS answers.
+ */
+#[tokio::test]
+async fn visits_refuse_internal_destinations() {
+    let internal = TestServer::start(|_, _| Reply::Body("image/gif", 1)).await;
+    let port = internal.address.port();
+    let public_only = checker(
+        LinkCheckSettings {
+            allow_internal_addresses: false,
+            ..test_settings()
+        },
+        &[
+            ("internal.test", vec![loopback()]),
+            ("metadata.test", vec![IpAddr::from([169, 254, 169, 254])]),
+            (
+                "rebinding.test",
+                vec![IpAddr::from([93, 184, 216, 34]), loopback()],
+            ),
+        ],
+        Arc::new(|address: SocketAddr| is_public_address(address.ip())),
+    );
+    for url in [
+        internal.url("/"),
+        format!("http://internal.test:{port}/"),
+        format!("http://metadata.test:{port}/latest/meta-data/"),
+        format!("http://rebinding.test:{port}/"),
+        format!("http://[::ffff:127.0.0.1]:{port}/"),
+        format!("http://0.0.0.0:{port}/"),
+        format!("http://10.0.0.1:{port}/"),
+    ] {
+        let result = public_only.visit(&url, VisitPurpose::Image, 1024).await;
+        assert_eq!(
+            result.error_kind,
+            Some(LinkCheckErrorKind::BlockedAddress),
+            "{url}"
+        );
+    }
+    assert_eq!(internal.connections.load(Ordering::SeqCst), 0);
+
+    let internal_url = internal.url("/secret");
+    let public =
+        TestServer::start(move |_, _| Reply::Status(307, vec![("Location", internal_url.clone())]))
+            .await;
+    let permitted = public.address;
+    let result = checker(
+        test_settings(),
+        &[],
+        Arc::new(move |address: SocketAddr| address == permitted),
+    )
+    .visit(&public.url("/start"), VisitPurpose::Document, 1024)
+    .await;
+    assert_eq!(result.error_kind, Some(LinkCheckErrorKind::BlockedAddress));
+    assert_eq!(result.status_code, Some(307));
+    assert_eq!(internal.connections.load(Ordering::SeqCst), 0);
+}
+
+/**
+ * Only HTTP and HTTPS are requested, including after redirects.
+ */
+#[tokio::test]
+async fn visits_refuse_unsafe_schemes() {
+    let checker = permissive_checker();
+    for url in [
+        "ftp://example.test/a",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+    ] {
+        let result = checker.visit(url, VisitPurpose::Document, 1024).await;
+        assert_eq!(
+            result.error_kind,
+            Some(LinkCheckErrorKind::InvalidRedirect),
+            "{url}"
+        );
+    }
+    let server = TestServer::start(|_, _| {
+        Reply::Status(302, vec![("Location", "file:///etc/passwd".into())])
+    })
+    .await;
+    let result = checker
+        .visit(&server.url("/"), VisitPurpose::Document, 1024)
+        .await;
+    assert_eq!(result.error_kind, Some(LinkCheckErrorKind::InvalidRedirect));
+    assert_eq!(server.requests().len(), 1);
 }

@@ -3,7 +3,7 @@
 use crate::{
     ApplicationState, authentication,
     error::{HttpError, map_application_error},
-    events, imap, inboxes, link_checks, mailbox, management, messages, read_status, smtp,
+    events, imap, inboxes, link_checks, mailbox, management, messages, personas, read_status, smtp,
 };
 use axum::{
     Json, Router,
@@ -157,6 +157,36 @@ fn api_router() -> Router<ApplicationState> {
         .route(
             "/api/v1/imap/accounts/{identifier}/folders/{folder}",
             axum::routing::put(imap::update_imap_folder).delete(imap::delete_imap_folder),
+        )
+        .route(
+            "/api/v1/personas",
+            get(personas::list_personas).post(personas::create_persona),
+        )
+        .route(
+            "/api/v1/personas/validate",
+            axum::routing::post(personas::validate_persona_script),
+        )
+        .route(
+            "/api/v1/personas/{identifier}",
+            get(personas::persona)
+                .put(personas::update_persona)
+                .delete(personas::delete_persona),
+        )
+        .route(
+            "/api/v1/personas/{identifier}/enabled",
+            axum::routing::put(personas::set_persona_enabled),
+        )
+        .route(
+            "/api/v1/personas/{identifier}/messages",
+            get(personas::persona_messages),
+        )
+        .route(
+            "/api/v1/personas/{identifier}/executions",
+            get(personas::persona_executions),
+        )
+        .route(
+            "/api/v1/personas/{identifier}/executions/{execution}",
+            get(personas::persona_execution),
         )
         .route(
             "/api/v1/query/validate",

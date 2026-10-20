@@ -21,6 +21,9 @@ import type {
   WireLinkCheckReport,
   WireMessageDetail,
   WireMessageSummary,
+  WirePersona,
+  WirePersonaExecution,
+  WirePersonaScriptValidation,
   WireQueryValidation,
   WireScope,
   WireSessionUser,
@@ -259,7 +262,67 @@ export interface SandpostDesktopBridge {
     subscribe(listener: (event: WireDesktopEvent) => void): Promise<() => void>
   }
   imap: SandpostDesktopImapBridge
+
+  /**
+   * Persona management; absent in preloads that predate Personas.
+   */
+  personas?: SandpostDesktopPersonaBridge
   admin: SandpostDesktopAdminBridge
+}
+
+/**
+ * Persona operations of the native runtime, exchanging the shared Rust wire DTOs.
+ */
+export interface SandpostDesktopPersonaBridge {
+  /**
+   * List the caller's own Personas.
+   */
+  list(): Promise<WirePersona[]>
+
+  /**
+   * Read one Persona.
+   */
+  get(id: string): Promise<WirePersona>
+
+  /**
+   * Create a Persona owned by the caller.
+   */
+  create(input: { name: string; address: string; script: string; enabled: boolean }): Promise<WirePersona>
+
+  /**
+   * Replace the caller's own Persona definition.
+   */
+  update(id: string, input: { name: string; address: string; script: string; enabled: boolean }): Promise<WirePersona>
+
+  /**
+   * Enable or disable a Persona.
+   */
+  setEnabled(id: string, enabled: boolean): Promise<WirePersona>
+
+  /**
+   * Delete a Persona and its history.
+   */
+  delete(id: string): Promise<void>
+
+  /**
+   * Validate PersonaScript without saving it.
+   */
+  validate(script: string): Promise<WirePersonaScriptValidation>
+
+  /**
+   * List readable mail addressed to a Persona.
+   */
+  messages(id: string, options?: { before?: number; limit?: number; query?: string }): Promise<WireMessageSummary[]>
+
+  /**
+   * List a Persona's visible executions.
+   */
+  executions(id: string, options?: { before?: number; limit?: number }): Promise<WirePersonaExecution[]>
+
+  /**
+   * Read one execution with its recorded steps.
+   */
+  execution(id: string, executionId: string): Promise<WirePersonaExecution>
 }
 
 /**

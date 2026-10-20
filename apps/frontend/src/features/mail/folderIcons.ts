@@ -152,6 +152,7 @@ import {
   WorkflowIcon,
   WrenchIcon,
   ZapIcon,
+  VenetianMaskIcon,
 } from '@lucide/vue'
 
 /**
@@ -325,7 +326,7 @@ const iconById = new Map(FOLDER_ICON_OPTIONS.map(({ id, component }) => [id, com
 /**
  * Resolve a stored folder icon, using a kind-specific default for missing or unknown IDs.
  */
-export function folderIcon(icon: string | null | undefined, kind: 'inbox' | 'trash' | 'address' | 'smart' | 'folder'): Component {
+export function folderIcon(icon: string | null | undefined, kind: 'inbox' | 'trash' | 'address' | 'smart' | 'folder' | 'persona'): Component {
   const selectedIcon = icon ? iconById.get(icon) : undefined
   if (selectedIcon) return selectedIcon
   switch (kind) {
@@ -334,5 +335,6 @@ export function folderIcon(icon: string | null | undefined, kind: 'inbox' | 'tra
     case 'address': return AtSignIcon
     case 'smart': return FolderSearchIcon
     case 'folder': return FolderIcon
+    case 'persona': return VenetianMaskIcon
   }
 }

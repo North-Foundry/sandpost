@@ -1,5 +1,5 @@
-import type { SandpostDesktopBridge, WireDesktopEvent } from '@/api/desktop'
-import type { SandpostClient, SandpostEvent } from '@/api/contracts'
+import type { SandpostDesktopBridge, SandpostDesktopPersonaBridge, WireDesktopEvent } from '@/api/desktop'
+import type { SandpostClient, SandpostEvent, SandpostPersonaClient } from '@/api/contracts'
 import {
   normalizeBulkLinkCheck,
   normalizeCompatibilityReport,
@@ -33,6 +33,70 @@ import {
   normalizeImapServer,
   normalizeIssuedImapCredentials,
 } from '@/api/imap'
+import {
+  normalizePersona,
+  normalizePersonaExecution,
+  normalizePersonaExecutionDetails,
+  normalizePersonaScriptValidation,
+  personaWire,
+} from '@/api/personas'
+
+/**
+ * Adapt the native Persona bridge to the shared client contract.
+ */
+function personaClient(bridge: SandpostDesktopPersonaBridge): SandpostPersonaClient {
+  return {
+    /**
+     * List the caller's own Personas.
+     */
+    list: async () => (await nativeCall(() => bridge.list())).map(normalizePersona),
+
+    /**
+     * Read one Persona.
+     */
+    get: async (id) => normalizePersona(await nativeCall(() => bridge.get(id))),
+
+    /**
+     * Create a Persona owned by the caller.
+     */
+    create: async (input) => normalizePersona(await nativeCall(() => bridge.create(personaWire(input)))),
+
+    /**
+     * Replace the caller's own Persona definition.
+     */
+    update: async (id, input) => normalizePersona(await nativeCall(() => bridge.update(id, personaWire(input)))),
+
+    /**
+     * Enable or disable a Persona.
+     */
+    setEnabled: async (id, enabled) => normalizePersona(await nativeCall(() => bridge.setEnabled(id, enabled))),
+
+    /**
+     * Delete a Persona and its history.
+     */
+    delete: (id) => nativeCall(() => bridge.delete(id)),
+
+    /**
+     * Validate PersonaScript without saving it.
+     */
+    validate: async (script) => normalizePersonaScriptValidation(await nativeCall(() => bridge.validate(script))),
+
+    /**
+     * List readable mail addressed to a Persona.
+     */
+    listMessages: async (id, options = {}) => (await nativeCall(() => bridge.messages(id, options))).map(normalizeSummary),
+
+    /**
+     * List a Persona's visible executions.
+     */
+    executions: async (id, options = {}) => (await nativeCall(() => bridge.executions(id, options))).map(normalizePersonaExecution),
+
+    /**
+     * Read one execution with its recorded steps.
+     */
+    execution: async (id, executionId) => normalizePersonaExecutionDetails(await nativeCall(() => bridge.execution(id, executionId))),
+  }
+}
 
 /**
  * Adapt the typed Electron bridge while preserving the shared Rust wire DTOs.
@@ -318,6 +382,7 @@ export function createElectronClient(
         return Number((await nativeCall(() => bridge.trash.empty())).deleted)
       },
     },
+    personas: bridge.personas ? personaClient(bridge.personas) : undefined,
     imap: {
       /**
        * Read the global SMTP listener configuration and runtime status.

@@ -4,6 +4,7 @@ import { createMockLinkChecks } from './linkChecks'
 import { mockAttachments, mockDetail, mockSummaries } from './messages'
 import { createMockAdmin, matches } from './admin'
 import { createMockImap } from './imap'
+import { createMockPersonas } from './personas'
 import { normalizeInboxAddress } from '@/api/inboxAddress'
 
 const defaultInbox: Inbox = {
@@ -549,6 +550,9 @@ export function createMockClient(): SandpostClient {
       },
     },
     imap: mockImap,
+    personas: createMockPersonas(() => activeUser, () => mockSummaries
+      .filter(({ id }) => !deleted.has(id) && !trashed.has(id))
+      .map((message) => ({ ...withFlags(message), from: [...message.from], to: [...message.to], envelopeTo: [...(message.envelopeTo ?? message.to)] }))),
     admin: createMockAdmin(() => activeUser, mockSummaries),
     events: {
 

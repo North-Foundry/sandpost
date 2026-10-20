@@ -199,7 +199,10 @@ const documentation = hoverTooltip((view, pos, side) => {
  * Tooltips render outside the editor element, so their rules must not require `.cm-editor`.
  */
 const TOOLTIP = '& .cm-tooltip'
-const theme = EditorView.theme({
+/**
+ * The editor theme shared by every CodeMirror editor drawn from the application's CSS tokens.
+ */
+export const editorTheme = EditorView.theme({
   '&': { fontSize: '13px', color: 'var(--foreground)', backgroundColor: 'transparent', maxHeight: '20rem' },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '1.625' },
@@ -380,7 +383,7 @@ export function createQueryEditor(parent: HTMLElement, options: QueryEditorOptio
           if (update.docChanged) options.onChange(update.state.doc.toString())
           if (update.docChanged || update.selectionSet) reportCursor(update.state)
         }),
-        theme,
+        editorTheme,
       ],
     }),
   })

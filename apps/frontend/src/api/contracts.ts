@@ -878,6 +878,174 @@ export interface MessageListOptions {
   query?: string
 }
 
+/**
+ * Whether a Persona owner's current access covers mail addressed to the Persona: every message (`confirmed`),
+ * decided message by message (`perMessage`), or none (`denied`).
+ */
+export type PersonaAddressAccess = 'confirmed' | 'perMessage' | 'denied'
+
+export type PersonaExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export type PersonaActionStatus = 'started' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled'
+
+/**
+ * A user-owned virtual recipient that runs a PersonaScript on mail addressed to it.
+ *
+ * Personas only act on mail their owner can read; they never grant access. Timestamps are Unix seconds.
+ */
+export interface Persona {
+  id: string
+  ownerId: string
+  name: string
+  address: string
+  script: string
+  enabled: boolean
+  revision: number
+  createdAt: number
+  updatedAt: number
+  addressAccess: PersonaAddressAccess
+
+  /**
+   * The newest execution whose message the reader can currently read.
+   */
+  lastExecution: PersonaExecutionSummary | null
+}
+
+export interface PersonaInput {
+  name: string
+  address: string
+  script: string
+  enabled: boolean
+}
+
+/**
+ * One run of a Persona's script for one message. Timestamps are Unix seconds.
+ */
+export interface PersonaExecutionSummary {
+  id: string
+  sequence: number
+  personaId: string
+  messageId: string
+  status: PersonaExecutionStatus
+  scheduledAt: number
+  startedAt: number | null
+  completedAt: number | null
+  error: string | null
+  subject: string
+}
+
+/**
+ * The outcome of one outbound request made by a Persona.
+ */
+export interface PersonaHttpRequest {
+  url: string
+  finalUrl: string | null
+  statusCode: number | null
+  redirectCount: number
+  contentType: string | null
+  receivedBytes: number
+  truncated: boolean
+  errorKind: LinkCheckErrorKind | null
+  error: string | null
+  durationMilliseconds: number
+}
+
+export type PersonaActionDetail =
+  | { kind: 'branch'; condition: string; outcome: boolean }
+  | { kind: 'open'; images: PersonaHttpRequest[]; omittedImages: number; embeddedImages: number; rejectedImages: number }
+  | { kind: 'wait'; milliseconds: number }
+  | { kind: 'click'; selector: string; href: string | null; text: string | null; url: string | null; request: PersonaHttpRequest | null }
+
+/**
+ * One recorded step of an execution.
+ */
+export interface PersonaExecutionAction {
+  step: number
+  status: PersonaActionStatus
+  line: number
+  column: number
+  startedAt: number
+  durationMilliseconds: number | null
+  error: string | null
+  detail: PersonaActionDetail
+}
+
+export interface PersonaExecutionDetails extends PersonaExecutionSummary {
+  actions: PersonaExecutionAction[]
+}
+
+/**
+ * The first problem in a script; `position` is a UTF-8 byte offset.
+ */
+export interface PersonaScriptDiagnostic {
+  message: string
+  position: number
+  line: number
+  column: number
+}
+
+export interface PersonaScriptValidation {
+  valid: boolean
+  error: PersonaScriptDiagnostic | null
+  statements: number | null
+  longestWaitMilliseconds: number | null
+}
+
+/**
+ * Persona management, the Persona mail view, and execution history.
+ */
+export interface SandpostPersonaClient {
+  /**
+   * List the caller's own Personas.
+   */
+  list(): Promise<Persona[]>
+
+  /**
+   * Read one Persona.
+   */
+  get(id: string): Promise<Persona>
+
+  /**
+   * Create a Persona owned by the caller.
+   */
+  create(input: PersonaInput): Promise<Persona>
+
+  /**
+   * Replace the caller's own Persona definition.
+   */
+  update(id: string, input: PersonaInput): Promise<Persona>
+
+  /**
+   * Enable or disable a Persona.
+   */
+  setEnabled(id: string, enabled: boolean): Promise<Persona>
+
+  /**
+   * Delete a Persona and its history; its mail is kept.
+   */
+  delete(id: string): Promise<void>
+
+  /**
+   * Validate PersonaScript without saving it.
+   */
+  validate(script: string): Promise<PersonaScriptValidation>
+
+  /**
+   * List readable mail addressed to a Persona, newest first.
+   */
+  listMessages(id: string, options?: { before?: number; limit?: number; query?: string }): Promise<MessageSummary[]>
+
+  /**
+   * List a Persona's executions whose messages the caller can read, newest first.
+   */
+  executions(id: string, options?: { before?: number; limit?: number }): Promise<PersonaExecutionSummary[]>
+
+  /**
+   * Read one execution with its recorded steps.
+   */
+  execution(id: string, executionId: string): Promise<PersonaExecutionDetails>
+}
+
 export interface SandpostClient {
   /**
    * Read whether initial setup is complete and whether a setup key is required.
@@ -1091,5 +1259,10 @@ export interface SandpostClient {
    * Personal IMAP accounts for mail clients such as Apple Mail and Thunderbird.
    */
   imap: SandpostImapClient
+
+  /**
+   * Personas; absent when the transport does not offer them, such as an older desktop preload.
+   */
+  personas?: SandpostPersonaClient
   admin: SandpostAdminClient
 }

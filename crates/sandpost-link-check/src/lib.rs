@@ -7,6 +7,10 @@
 //! resolved once per request and the connection uses only the validated addresses, so private,
 //! loopback, link-local and other non-public destinations are refused unless explicitly allowed,
 //! including after redirects and DNS answers that mix public and private addresses.
+//!
+//! [`LinkChecker::visit`] reuses the same resolution, destination policy, redirect handling and
+//! TLS to `GET` a URL the way a mail client would, reading a bounded amount of the final response
+//! body. Sandpost Personas use it to load remote images and follow links.
 
 mod address;
 mod classification;
@@ -18,7 +22,7 @@ mod tests;
 
 pub use address::is_public_address;
 pub use classification::{classify_status, status_reason};
-pub use client::{LinkCheckSettings, LinkChecker};
+pub use client::{LinkCheckSettings, LinkChecker, VisitPurpose, VisitResult};
 pub use extraction::{
     ExtractedLinks, MAXIMUM_LINKS, MAXIMUM_URL_LENGTH, extract_links, normalize_link,
 };

@@ -109,8 +109,8 @@ vi.mock('@/features/mail/MessageSelectionPanel.vue', () => ({
 
 vi.mock('@/features/mail/MessageList.vue', () => ({
   default: defineComponent({
-    props: ['messages', 'folder', 'search', 'loading', 'hasOlder', 'error', 'selection', 'showEmptyTrash', 'emptyTrashDisabled', 'readMessageIds', 'seenBusy', 'canMutate', 'checkingLinks', 'linkCheckNotice'],
-    emits: ['select', 'clearSearch', 'refresh', 'older', 'filter', 'update:selection', 'delete', 'move', 'emptyTrash', 'set-seen', 'check-links'],
+    props: ['messages', 'folder', 'search', 'loading', 'hasOlder', 'error', 'selection', 'showEmptyTrash', 'emptyTrashDisabled', 'readMessageIds', 'seenBusy', 'canMutate', 'checkingLinks', 'linkCheckNotice', 'currentUserId'],
+    emits: ['select', 'clearSearch', 'refresh', 'older', 'filter', 'update:selection', 'delete', 'move', 'emptyTrash', 'set-seen', 'check-links', 'persona-activity', 'persona-edit'],
 
     /**
      * Create the component stand-in render function used by the custom Vue test renderer.
@@ -423,6 +423,24 @@ describe('MailPage', () => {
     harness.route.query = { folder: 'smart-1' };
     await flushUi();
     expect(harness.client.messages.list).toHaveBeenLastCalledWith({ viewId: 'smart-1', before: undefined, limit: 50 });
+    app.unmount();
+  });
+
+  it('lists a Persona view through the Persona endpoint', async () => {
+    const persona = {
+      id: 'persona-1', ownerId: 'user', name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true,
+      revision: 1, createdAt: 1, updatedAt: 1, addressAccess: 'confirmed' as const, lastExecution: null,
+    };
+    const personaFolder = { id: persona.id, kind: 'persona' as const, name: 'Alice', address: persona.address, view: null, manual: null, persona };
+    const findFolder = harness.workspace.findFolder;
+    harness.workspace.findFolder = (id) => id === persona.id ? personaFolder : findFolder(id);
+    (harness.client as { personas?: unknown }).personas = { listMessages: vi.fn(async () => []) };
+    harness.route.query = { folder: persona.id };
+    const app = mountPage();
+    await flushUi();
+    expect(harness.client.personas!.listMessages).toHaveBeenLastCalledWith('persona-1', { before: undefined, limit: 50 });
+    expect(harness.lists[0]!.props.folder).toMatchObject({ kind: 'persona', address: 'alice@example.test' });
+    expect(harness.client.messages.list).not.toHaveBeenCalled();
     app.unmount();
   });
 

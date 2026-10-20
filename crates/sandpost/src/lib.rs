@@ -12,7 +12,7 @@ mod smtp_delivery;
 mod smtp_listener;
 mod startup;
 
-pub use configuration::{Configuration, ConfigurationError};
+pub use configuration::{Configuration, ConfigurationError, PersonaConfiguration};
 pub use lifecycle::{RunningSandpost, RuntimeError, SandpostRuntime};
 pub use maintenance::{MaintenanceCommand, MigrationOperation};
 pub use startup::StartupSummary;

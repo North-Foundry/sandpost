@@ -1757,3 +1757,71 @@ fn mail_file_certificate_environment_overrides() {
     let error = listener_sources("[smtp]\ntls_certificate = 'file.crt'", &[]).unwrap_err();
     assert!(error.to_string().contains("together"), "{error}");
 }
+
+/**
+ * Persona limits default safely, follow TOML, and are overridden field by field by the
+ * environment.
+ */
+#[test]
+fn persona_settings_follow_toml_and_environment() {
+    let defaults = listener_sources("", &[]).unwrap().personas;
+    assert_eq!(defaults, crate::PersonaConfiguration::default());
+    assert!(!defaults.allow_internal_addresses);
+    let toml = "[personas]\nallow_internal_addresses = true\nmaximum_wait_seconds = 30\nexecution_timeout_seconds = 120\nconcurrent_executions = 4\nconcurrent_requests = 2";
+    let configured = listener_sources(toml, &[]).unwrap().personas;
+    assert_eq!(
+        configured,
+        crate::PersonaConfiguration {
+            allow_internal_addresses: true,
+            maximum_wait_seconds: 30,
+            execution_timeout_seconds: 120,
+            concurrent_executions: 4,
+            concurrent_requests: 2,
+        }
+    );
+    let overridden = listener_sources(
+        toml,
+        &[
+            ("SANDPOST_PERSONAS_ALLOW_INTERNAL_ADDRESSES", "false"),
+            ("SANDPOST_PERSONAS_CONCURRENT_REQUESTS", "16"),
+        ],
+    )
+    .unwrap()
+    .personas;
+    assert!(!overridden.allow_internal_addresses);
+    assert_eq!(overridden.concurrent_requests, 16);
+    assert_eq!(overridden.maximum_wait_seconds, 30);
+    let settings = configured.settings();
+    assert_eq!(settings.maximum_wait, std::time::Duration::from_secs(30));
+    assert_eq!(
+        settings.execution_timeout,
+        std::time::Duration::from_secs(120)
+    );
+    assert!(settings.allow_internal_addresses);
+}
+
+/**
+ * Persona limits that could not work are refused before startup.
+ */
+#[test]
+fn invalid_persona_settings_are_refused() {
+    for (setting, value) in [
+        ("SANDPOST_PERSONAS_MAXIMUM_WAIT_SECONDS", "0"),
+        ("SANDPOST_PERSONAS_MAXIMUM_WAIT_SECONDS", "1351"),
+        ("SANDPOST_PERSONAS_EXECUTION_TIMEOUT_SECONDS", "3"),
+        ("SANDPOST_PERSONAS_CONCURRENT_EXECUTIONS", "0"),
+        ("SANDPOST_PERSONAS_CONCURRENT_REQUESTS", "257"),
+        ("SANDPOST_PERSONAS_ALLOW_INTERNAL_ADDRESSES", "yes"),
+        ("SANDPOST_PERSONAS_CONCURRENT_EXECUTIONS", "many"),
+    ] {
+        let error = listener_sources("", &[(setting, value)]).unwrap_err();
+        assert!(
+            error.to_string().contains(setting),
+            "{setting}={value}: {error}"
+        );
+    }
+    for field in ["maximum_wait_seconds = '5'", "concurrency = 2"] {
+        let error = listener_sources(&format!("[personas]\n{field}"), &[]).unwrap_err();
+        assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+    }
+}

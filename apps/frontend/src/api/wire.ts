@@ -415,3 +415,87 @@ export interface WireQueryValidation {
   valid: boolean
   error: { message: string; position: number } | null
 }
+
+/**
+ * Rust outbound request outcome of a Persona step.
+ */
+export interface WirePersonaHttpRequest {
+  url: string
+  final_url: string | null
+  status_code: number | null
+  redirect_count: number
+  content_type: string | null
+  received_bytes: number
+  truncated: boolean
+  error_kind: string | null
+  error_message: string | null
+  duration_milliseconds: number
+}
+
+/**
+ * Rust Persona step detail, tagged by kind.
+ */
+export type WirePersonaActionDetail =
+  | { kind: 'branch'; condition: string; outcome: boolean }
+  | { kind: 'open'; images: WirePersonaHttpRequest[]; omitted_images: number; embedded_images: number; rejected_images: number }
+  | { kind: 'wait'; milliseconds: number }
+  | { kind: 'click'; selector: string; href: string | null; text: string | null; url: string | null; request: WirePersonaHttpRequest | null }
+
+/**
+ * Rust recorded Persona step.
+ */
+export interface WirePersonaExecutionAction {
+  step: number
+  status: string
+  line: number
+  column: number
+  started_at: number
+  duration_milliseconds: number | null
+  error_message: string | null
+  detail: WirePersonaActionDetail
+}
+
+/**
+ * Rust Persona execution with its message subject.
+ */
+export interface WirePersonaExecution {
+  id: string
+  seq: number
+  persona_id: string
+  message_id: string
+  status: string
+  scheduled_at: number
+  started_at: number | null
+  completed_at: number | null
+  persona_revision: number | null
+  error_message: string | null
+  subject: string
+  actions?: WirePersonaExecutionAction[]
+}
+
+/**
+ * Rust Persona details.
+ */
+export interface WirePersona {
+  id: string
+  owner_id: string
+  name: string
+  address: string
+  script: string
+  enabled: boolean
+  revision: number
+  created_at: number
+  updated_at: number
+  address_access: string
+  last_execution: WirePersonaExecution | null
+}
+
+/**
+ * Rust PersonaScript validation result.
+ */
+export interface WirePersonaScriptValidation {
+  valid: boolean
+  error: { message: string; position: number; line: number; column: number } | null
+  statements: number | null
+  longest_wait_milliseconds: number | null
+}

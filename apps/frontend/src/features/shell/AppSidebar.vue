@@ -2,6 +2,7 @@
 import { Sidebar, SidebarContent, SidebarFooter, SidebarRail } from '@/components/ui/sidebar'
 import AdministrationNav from './AdministrationNav.vue'
 import MailNavigation from './MailNavigation.vue'
+import PersonaNavigation from './PersonaNavigation.vue'
 import UserMenu from './UserMenu.vue'
 </script>
 
@@ -12,6 +13,7 @@ import UserMenu from './UserMenu.vue'
   <Sidebar collapsible="icon" class="top-12 h-[calc(100svh-3rem)]">
     <SidebarContent class="gap-1 py-1">
       <MailNavigation />
+      <PersonaNavigation />
       <AdministrationNav />
     </SidebarContent>
     <SidebarFooter class="gap-1 border-t border-sidebar-border">

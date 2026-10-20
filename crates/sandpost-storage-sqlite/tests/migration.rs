@@ -98,7 +98,7 @@ async fn a_fresh_database_ignores_arbitrary_user_version() {
 
     let mut connection = open_connection(&path).await;
     let actual = migration_history(&mut connection).await;
-    assert_eq!(expected.len(), 50);
+    assert_eq!(expected.len(), 53);
     assert_eq!(actual, expected);
     let legacy_smtp_server_table: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'smtp_server'",
@@ -131,7 +131,7 @@ async fn admin_role_upgrade_preserves_related_rows_and_guards_future_values() {
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 50);
+    assert_eq!(scripts.len(), 53);
     let admin_identifier = uuid::Uuid::new_v4().to_string();
     let scoped_admin_identifier = uuid::Uuid::new_v4().to_string();
     let member_identifier = uuid::Uuid::new_v4().to_string();
@@ -212,7 +212,7 @@ async fn admin_role_upgrade_preserves_related_rows_and_guards_future_values() {
         .fetch_one(&mut connection)
         .await
         .unwrap();
-    assert_eq!(applied, 50);
+    assert_eq!(applied, 53);
     let message: (String, Vec<u8>) =
         sqlx::query_as("SELECT subject,raw_message FROM mail WHERE identifier='legacy-message'")
             .fetch_one(&mut connection)
@@ -235,7 +235,7 @@ async fn a_baseline_prefix_upgrade_preserves_imap_state_and_uses_final_table_sha
         .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
         .collect();
     scripts.sort();
-    assert_eq!(scripts.len(), 50);
+    assert_eq!(scripts.len(), 53);
 
     let owner = uuid::Uuid::new_v4().to_string();
     let account = uuid::Uuid::new_v4().to_string();
@@ -772,6 +772,9 @@ async fn link_check_upgrade_rolls_back_cleanly() {
             .map(|record| record.migration.as_str())
             .collect::<Vec<_>>(),
         [
+            "0053_create_persona_execution_actions_table.sql",
+            "0052_create_persona_executions_table.sql",
+            "0051_create_personas_table.sql",
             "0050_create_message_link_check_results_table.sql",
             "0049_create_message_link_checks_table.sql",
         ]
@@ -792,4 +795,127 @@ async fn link_check_upgrade_rolls_back_cleanly() {
     .unwrap();
     assert_eq!(preserved, (1, 1));
     connection.close().await.unwrap();
+}
+
+/**
+ * Upgrade a database without Personas, then roll the new batch back without losing mail.
+ *
+ * Existing users and messages survive; scheduling starts working after the upgrade, and reverting
+ * the batch removes only the Persona tables and their history.
+ */
+#[tokio::test]
+async fn persona_upgrade_rolls_back_cleanly() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    let migration_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut scripts: Vec<_> = std::fs::read_dir(&migration_directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect();
+    scripts.sort();
+    let member_identifier = uuid::Uuid::new_v4().to_string();
+    {
+        let mut connection = open_connection(&path).await;
+        for script_path in scripts.iter().take(50) {
+            let name = script_path.file_name().unwrap().to_string_lossy();
+            let script = std::fs::read_to_string(script_path).unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(script.as_str()))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO migrations(migration, batch) VALUES (?1, 1)")
+                .bind(name.as_ref())
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO users(identifier,name,email,password_hash,global_role,mail_access,personal_filter,created_at,updated_at) VALUES (?1,'Member','member@example.test','hash','member','all',NULL,1,2)")
+            .bind(&member_identifier).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO mail(identifier,subject,text_body,markup_body,raw_message,received_at,size) VALUES (?1,'Kept','body','',X'010203',3,3)")
+            .bind(MessageIdentifier::new().to_string()).execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+    }
+
+    let storage = SqliteStorage::open(&path).await.unwrap();
+    let owner: UserIdentifier = member_identifier.parse().unwrap();
+    let persona = sandpost_storage::PersonaStorage::create_persona(
+        &storage,
+        &sandpost_storage::NewPersona {
+            identifier: sandpost_core::PersonaIdentifier::new(),
+            owner_identifier: owner,
+            name: "Alice".into(),
+            address: "alice@example.test".into(),
+            script: "open;".into(),
+            enabled: true,
+            created_at: 4,
+        },
+    )
+    .await
+    .unwrap();
+    let mut message = Message {
+        identifier: MessageIdentifier::new(),
+        facts: MessageFacts {
+            subject: "Scheduled".into(),
+            envelope_to: vec![sandpost_core::Mailbox {
+                address: "alice@example.test".into(),
+                domain: "example.test".into(),
+            }],
+            ..MessageFacts::default()
+        },
+        raw_message: Vec::new(),
+        attachments: Vec::new(),
+    };
+    message.facts.received_at = 5;
+    storage.insert_message(&message).await.unwrap();
+    let scheduled = sandpost_storage::PersonaStorage::list_persona_executions(
+        &storage,
+        persona.identifier,
+        owner,
+        &sandpost_query::Expression::True,
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(scheduled.len(), 1);
+    storage.close().await;
+
+    let reverted = SqliteStorage::rollback_last_migration_batch(&path)
+        .await
+        .unwrap();
+    assert_eq!(
+        reverted
+            .iter()
+            .map(|record| record.migration.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "0053_create_persona_execution_actions_table.sql",
+            "0052_create_persona_executions_table.sql",
+            "0051_create_personas_table.sql",
+        ]
+    );
+    let mut connection = open_connection(&path).await;
+    let remaining_tables: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name LIKE 'persona%'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(remaining_tables, 0);
+    let preserved: (i64, i64) =
+        sqlx::query_as("SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM mail)")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(preserved, (1, 2));
+    connection.close().await.unwrap();
+    let reopened = SqliteStorage::open(&path).await.unwrap();
+    assert!(
+        sandpost_storage::PersonaStorage::list_personas(&reopened, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    reopened.close().await;
 }

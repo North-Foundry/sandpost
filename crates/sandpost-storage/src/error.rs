@@ -44,6 +44,9 @@ pub enum StorageError {
     /// A compatibility inbox already uses this address for the owner.
     #[error("inbox address already exists")]
     DuplicateInboxAddress,
+    /// Another Persona already uses this normalized email address.
+    #[error("a persona already uses this email address")]
+    DuplicatePersonaAddress,
     /// A compatibility inbox address is not a valid normalized ASCII email address.
     #[error("inbox address is invalid")]
     InvalidInboxAddress,

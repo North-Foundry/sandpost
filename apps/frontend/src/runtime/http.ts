@@ -62,6 +62,18 @@ import {
   normalizeIssuedImapCredentials,
 } from '@/api/imap'
 import { normalizeInboxAddress } from '@/api/inboxAddress'
+import {
+  normalizePersona,
+  normalizePersonaExecution,
+  normalizePersonaExecutionDetails,
+  normalizePersonaScriptValidation,
+  personaWire,
+} from '@/api/personas'
+import type {
+  WirePersona,
+  WirePersonaExecution,
+  WirePersonaScriptValidation,
+} from '@/api/wire'
 
 /**
  * Adapt the local versioned HTTP API and its event stream.
@@ -568,6 +580,115 @@ export function createHttpClient(): SandpostClient {
         return Number(
           (await sendJson<{ deleted: number }>('DELETE', '/api/v1/trash'))
             .deleted
+        )
+      },
+    },
+    personas: {
+      /**
+       * List the caller's own Personas.
+       */
+      async list() {
+        return (await sendJson<WirePersona[]>('GET', '/api/v1/personas')).map(
+          normalizePersona
+        )
+      },
+
+      /**
+       * Read one Persona.
+       */
+      async get(id) {
+        return normalizePersona(
+          await sendJson<WirePersona>('GET', `/api/v1/personas/${segment(id)}`)
+        )
+      },
+
+      /**
+       * Create a Persona owned by the caller.
+       */
+      async create(input) {
+        return normalizePersona(
+          await sendJson<WirePersona>(
+            'POST',
+            '/api/v1/personas',
+            personaWire(input)
+          )
+        )
+      },
+
+      /**
+       * Replace the caller's own Persona definition.
+       */
+      async update(id, input) {
+        return normalizePersona(
+          await sendJson<WirePersona>(
+            'PUT',
+            `/api/v1/personas/${segment(id)}`,
+            personaWire(input)
+          )
+        )
+      },
+
+      /**
+       * Enable or disable a Persona.
+       */
+      async setEnabled(id, enabled) {
+        return normalizePersona(
+          await sendJson<WirePersona>(
+            'PUT',
+            `/api/v1/personas/${segment(id)}/enabled`,
+            { enabled }
+          )
+        )
+      },
+
+      /**
+       * Delete a Persona and its history.
+       */
+      delete: (id) => sendEmpty('DELETE', `/api/v1/personas/${segment(id)}`),
+
+      /**
+       * Validate PersonaScript without saving it.
+       */
+      async validate(script) {
+        return normalizePersonaScriptValidation(
+          await sendJson<WirePersonaScriptValidation>(
+            'POST',
+            '/api/v1/personas/validate',
+            { script }
+          )
+        )
+      },
+
+      /**
+       * List readable mail addressed to a Persona.
+       */
+      async listMessages(id, options = {}) {
+        return listMessages(
+          `/api/v1/personas/${segment(id)}/messages${pageSuffix(options)}`
+        )
+      },
+
+      /**
+       * List a Persona's visible executions, newest first.
+       */
+      async executions(id, options = {}) {
+        return (
+          await sendJson<WirePersonaExecution[]>(
+            'GET',
+            `/api/v1/personas/${segment(id)}/executions${pageSuffix(options)}`
+          )
+        ).map(normalizePersonaExecution)
+      },
+
+      /**
+       * Read one execution with its recorded steps.
+       */
+      async execution(id, executionId) {
+        return normalizePersonaExecutionDetails(
+          await sendJson<WirePersonaExecution>(
+            'GET',
+            `/api/v1/personas/${segment(id)}/executions/${segment(executionId)}`
+          )
         )
       },
     },

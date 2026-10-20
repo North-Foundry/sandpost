@@ -87,6 +87,7 @@ fn is_protected_api_route(path: &str) -> bool {
         | "/api/v1/smtp/accesses"
         | "/api/v1/imap/server"
         | "/api/v1/imap/accounts"
+        | "/api/v1/personas"
         | "/api/v1/events" => true,
         _ => {
             if path.starts_with("/api/v1/scopes/")
@@ -95,6 +96,7 @@ fn is_protected_api_route(path: &str) -> bool {
                 || path.starts_with("/api/v1/smtp/accesses/")
                 || path.starts_with("/api/v1/imap/accounts/")
                 || path.starts_with("/api/v1/folders/")
+                || path.starts_with("/api/v1/personas/")
             {
                 return true;
             }
