@@ -21,7 +21,8 @@ source of conventions/contracts; read applicable documents before editing:
 - `.agents/docs/imap-operation-matrix.md` — IMAP lifecycle audit, operation matrix and mode ownership decisions.
 - `.agents/docs/imap-implementation-report.md` — completed specification review, implementation changes, test evidence and compatibility limits.
 - `.agents/docs/commits.md` — commit format and workflow.
-- `.agents/docs/versioning.md` — shared release versions, tags, artifacts and current release workflow.
+- `.agents/docs/versioning.md` — autonomous alpha/minor selection, first stable
+  `1.0.0` criteria, shared versions, tags, artifacts, release workflow.
 
 When changing `.agents/docs/`, check that this index's paths/descriptions match
 all documents present; index only documents inside `.agents/`. Other changes do
@@ -30,3 +31,11 @@ not require an index review.
 Apply these conventions rather than introducing competing ones. Query, scope
 visibility and persistence changes must keep implementation, tests and the
 corresponding documentation consistent. Distinguish implemented from planned behavior.
+
+## Version selection skill
+
+When completing product changes or preparing a release, use
+`.agents/skills/sandpost-versioning/SKILL.md` to evaluate the accumulated release
+scope and choose or reuse the appropriate version without asking the user to
+choose the increment. Documentation/test-only work does not require a bump.
+This skill follows `.agents/docs/versioning.md`; it does not authorize publishing.
