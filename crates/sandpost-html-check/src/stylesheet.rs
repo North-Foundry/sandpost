@@ -4,7 +4,7 @@
 //! the check reports what was written, not what a browser would accept.
 
 use cssparser::{
-    AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserInput, ParserState,
+    AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserState,
     QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, StyleSheetParser, Token,
 };
 
@@ -70,8 +70,7 @@ struct RuleCollector {
  * Parse the contents of a `<style>` element into its top-level rules, skipping invalid rules.
  */
 pub(crate) fn parse_stylesheet(source: &str) -> Vec<CssRule> {
-    let mut input = ParserInput::new(source);
-    let mut parser = Parser::new(&mut input);
+    let mut parser = Parser::new(source);
     let mut collector = RuleCollector {
         content: BodyContent::Rules,
         depth: 0,
@@ -89,8 +88,7 @@ pub(crate) fn parse_stylesheet(source: &str) -> Vec<CssRule> {
  * Parse a `style` attribute into its declarations, skipping invalid ones.
  */
 pub(crate) fn parse_declaration_list(source: &str) -> Vec<Declaration> {
-    let mut input = ParserInput::new(source);
-    let mut parser = Parser::new(&mut input);
+    let mut parser = Parser::new(source);
     let mut collector = RuleCollector {
         content: BodyContent::Declarations,
         depth: 0,
@@ -110,8 +108,7 @@ pub(crate) fn parse_declaration_list(source: &str) -> Vec<Declaration> {
  * Nested functions and blocks are descended into, up to [`MAXIMUM_NESTING_DEPTH`].
  */
 pub(crate) fn analyse_value(source: &str) -> ValueFacts {
-    let mut input = ParserInput::new(source);
-    let mut parser = Parser::new(&mut input);
+    let mut parser = Parser::new(source);
     let mut facts = ValueFacts::default();
     collect_value_facts(&mut parser, &mut facts, 0);
     facts
@@ -120,7 +117,7 @@ pub(crate) fn analyse_value(source: &str) -> ValueFacts {
 /**
  * Record the facts of every remaining token of `input` into `facts`.
  */
-fn collect_value_facts<'i>(input: &mut Parser<'i, '_>, facts: &mut ValueFacts, depth: usize) {
+fn collect_value_facts<'i>(input: &mut Parser<'i>, facts: &mut ValueFacts, depth: usize) {
     let mut after_exclamation_mark = false;
     while let Ok(token) = input.next() {
         let token = token.clone();
@@ -133,7 +130,7 @@ fn collect_value_facts<'i>(input: &mut Parser<'i, '_>, facts: &mut ValueFacts, d
                         facts.urls.push(url.to_string());
                     }
                     while nested.next().is_ok() {}
-                    Ok::<(), ParseError<'i, ()>>(())
+                    Ok::<(), ParseError<()>>(())
                 });
             }
             Token::Function(name) => {
@@ -158,7 +155,7 @@ fn collect_value_facts<'i>(input: &mut Parser<'i, '_>, facts: &mut ValueFacts, d
         if descend && depth < MAXIMUM_NESTING_DEPTH {
             let _ = input.parse_nested_block(|nested| {
                 collect_value_facts(nested, facts, depth + 1);
-                Ok::<(), ParseError<'i, ()>>(())
+                Ok::<(), ParseError<()>>(())
             });
         }
     }
@@ -167,7 +164,7 @@ fn collect_value_facts<'i>(input: &mut Parser<'i, '_>, facts: &mut ValueFacts, d
 /**
  * Consume the rest of `input` and return its trimmed source text.
  */
-fn consume_remaining(input: &mut Parser<'_, '_>) -> String {
+fn consume_remaining(input: &mut Parser<'_>) -> String {
     let start = input.position();
     while input.next().is_ok() {}
     input.slice_from(start).trim().to_owned()
@@ -180,7 +177,7 @@ impl RuleCollector {
     fn parse_body(
         &self,
         content: BodyContent,
-        input: &mut Parser<'_, '_>,
+        input: &mut Parser<'_>,
     ) -> (Vec<Declaration>, Vec<CssRule>) {
         let mut declarations = Vec::new();
         let mut rules = Vec::new();
@@ -210,22 +207,19 @@ impl<'i> QualifiedRuleParser<'i> for RuleCollector {
     /**
      * Keep the selector list as source text; it is analysed separately.
      */
-    fn parse_prelude<'t>(
-        &mut self,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<String, ParseError<'i, ()>> {
+    fn parse_prelude(&mut self, input: &mut Parser<'i>) -> Result<String, ParseError<()>> {
         Ok(consume_remaining(input))
     }
 
     /**
      * Parse a style rule body, which may nest rules.
      */
-    fn parse_block<'t>(
+    fn parse_block(
         &mut self,
         selectors: String,
         _start: &ParserState,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<BodyItem, ParseError<'i, ()>> {
+        input: &mut Parser<'i>,
+    ) -> Result<BodyItem, ParseError<()>> {
         let (declarations, nested_rules) = self.parse_body(BodyContent::Mixed, input);
         Ok(BodyItem::Rule(CssRule::Style {
             selectors,
@@ -243,11 +237,11 @@ impl<'i> AtRuleParser<'i> for RuleCollector {
     /**
      * Keep the lowercase at-rule name and its prelude source text.
      */
-    fn parse_prelude<'t>(
+    fn parse_prelude(
         &mut self,
         name: CowRcStr<'i>,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<(String, String), ParseError<'i, ()>> {
+        input: &mut Parser<'i>,
+    ) -> Result<(String, String), ParseError<()>> {
         Ok((name.to_ascii_lowercase(), consume_remaining(input)))
     }
 
@@ -271,12 +265,12 @@ impl<'i> AtRuleParser<'i> for RuleCollector {
      * Parse an at-rule block: descriptors for `@font-face`/`@page`, otherwise nested rules (and
      * declarations when the at-rule itself is nested in a style rule).
      */
-    fn parse_block<'t>(
+    fn parse_block(
         &mut self,
         (name, prelude): (String, String),
         _start: &ParserState,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<BodyItem, ParseError<'i, ()>> {
+        input: &mut Parser<'i>,
+    ) -> Result<BodyItem, ParseError<()>> {
         let content = if name.ends_with("font-face") || name == "page" {
             BodyContent::Declarations
         } else if self.content == BodyContent::Mixed {
@@ -304,12 +298,12 @@ impl<'i> DeclarationParser<'i> for RuleCollector {
      * Inside style rules a value containing a `{}` block is rejected so that cssparser retries the
      * input as a nested rule, as in `a:hover { color: red }`.
      */
-    fn parse_value<'t>(
+    fn parse_value(
         &mut self,
         name: CowRcStr<'i>,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser<'i>,
         _declaration_start: &ParserState,
-    ) -> Result<BodyItem, ParseError<'i, ()>> {
+    ) -> Result<BodyItem, ParseError<()>> {
         let name = if name.starts_with("--") {
             name.to_string()
         } else {
@@ -318,7 +312,7 @@ impl<'i> DeclarationParser<'i> for RuleCollector {
         let start = input.position();
         while let Ok(token) = input.next() {
             if self.content == BodyContent::Mixed && matches!(token, Token::CurlyBracketBlock) {
-                return Err(input.new_custom_error(()));
+                return Err(ParseError::custom(()));
             }
         }
         let value = input.slice_from(start).trim().to_owned();

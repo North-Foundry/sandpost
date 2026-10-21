@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use cssparser::{ParseError, Parser, ParserInput, SourcePosition, Token, serialize_identifier};
+use cssparser::{ParseError, Parser, SourcePosition, Token, serialize_identifier};
 
 use crate::features;
 
@@ -144,8 +144,7 @@ impl SelectorBuilder {
  * Analyse every selector of a comma-separated selector list.
  */
 pub(crate) fn analyse_selector_list(source: &str) -> Vec<AnalysedSelector> {
-    let mut input = ParserInput::new(source);
-    let mut parser = Parser::new(&mut input);
+    let mut parser = Parser::new(source);
     let mut selectors = Vec::new();
     let mut builder = SelectorBuilder::new();
     let mut selector_start = parser.position();
@@ -211,7 +210,7 @@ pub(crate) fn analyse_selector_list(source: &str) -> Vec<AnalysedSelector> {
  * Analyse the pseudo-class or pseudo-element following a colon that started at `colon_start`.
  */
 fn analyse_pseudo(
-    parser: &mut Parser<'_, '_>,
+    parser: &mut Parser<'_>,
     colon_start: SourcePosition,
     builder: &mut SelectorBuilder,
 ) {
@@ -251,10 +250,10 @@ fn analyse_pseudo(
 /**
  * Consume the block opened by the previous token.
  */
-fn skip_block(parser: &mut Parser<'_, '_>) {
+fn skip_block(parser: &mut Parser<'_>) {
     let _ = parser.parse_nested_block(|nested| {
         while nested.next_including_whitespace_and_comments().is_ok() {}
-        Ok::<(), ParseError<'_, ()>>(())
+        Ok::<(), ParseError<()>>(())
     });
 }
 
