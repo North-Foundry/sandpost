@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Sandpost delivery report</title>
+  <style>
+    body { margin: 0; padding: 0; background: #f1f5f9; color: #172033; }
+    table { border-collapse: collapse; }
+    a { color: #2563eb; }
+    .card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; }
+    .muted { color: #64748b; }
+    .button:hover { background: #1d4ed8 !important; }
+    @media screen and (max-width: 620px) {
+      .container { width: 100% !important; }
+      .padding { padding: 24px 16px !important; }
+      .column { display: block !important; width: 100% !important; padding-bottom: 16px !important; }
+      h1 { font-size: 28px !important; }
+    }
+    @media (prefers-color-scheme: dark) {
+      body, .background { background: #0f172a !important; color: #e2e8f0 !important; }
+      .card { background: #1e293b !important; border-color: #334155 !important; }
+      .muted { color: #94a3b8 !important; }
+    }
+  </style>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; line-height: 1.6;">
+  <div style="display: none; max-height: 0; overflow: hidden;">
+    Your development email is ready: responsive HTML with a plain-text alternative.
+  </div>
+  <table role="presentation" class="background" width="100%" style="background: #f1f5f9;">
+    <tr><td align="center" style="padding: 32px 12px;">
+      <table role="presentation" class="container" width="600" style="width: 600px; max-width: 100%;">
+        <tr><td style="padding: 0 0 20px; font-size: 24px; font-weight: bold;">Sandpost<span style="color: #2563eb;">.</span></td></tr>
+        <tr><td class="card">
+          <table role="presentation" width="100%">
+            <tr><td class="padding" style="padding: 40px; background: #172554; color: #ffffff;">
+              <p style="margin: 0; color: #93c5fd; font-size: 12px; letter-spacing: 2px; text-transform: uppercase;">Delivery report</p>
+              <h1 style="margin: 12px 0; font-size: 36px; line-height: 1.2;">Your email has landed.</h1>
+              <p style="margin: 0;">A realistic HTML message to inspect in your development inbox.</p>
+            </td></tr>
+            <tr><td class="padding" style="padding: 32px 40px;">
+              <h2 style="margin: 0 0 12px; font-size: 22px;">Hello, developer!</h2>
+              <p>This message exercises <strong>rich formatting</strong>, <em>typography</em>,
+                nested tables, responsive columns, CSS media queries and a call to action.</p>
+              <p class="muted">Local load test: cycle {{cycle}}, burst {{group}}, email {{number}}.</p>
+              <table role="presentation" width="100%" style="margin: 24px 0;">
+                <tr>
+                  <td class="column" width="50%" valign="top">
+                    <strong style="color: #16a34a;">&#10003; Accepted</strong><br>
+                    <span class="muted">Captured over SMTP</span>
+                  </td>
+                  <td class="column" width="50%" valign="top">
+                    <strong>HTML + plain text</strong><br>
+                    <span class="muted">Local development</span>
+                  </td>
+                </tr>
+              </table>
+              <h2 style="font-size: 18px;">Message summary</h2>
+              <table width="100%" style="font-size: 14px; text-align: left;">
+                <caption class="muted" style="text-align: left; padding-bottom: 8px;">Delivery checks</caption>
+                <thead><tr>
+                  <th scope="col" style="padding: 10px 0; border-bottom: 2px solid #cbd5e1;">Check</th>
+                  <th scope="col" style="padding: 10px 0; border-bottom: 2px solid #cbd5e1;">Result</th>
+                </tr></thead>
+                <tbody>
+                  <tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0;">SMTP capture</td><td>1 message</td></tr>
+                  <tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0;">HTML preview</td><td>Ready</td></tr>
+                  <tr><td style="padding: 10px 0;">Text alternative</td><td>Included</td></tr>
+                </tbody>
+              </table>
+              <p style="margin: 28px 0;">
+                <a class="button" href="https://example.test/deliveries/{{identifier}}"
+                  style="display: inline-block; padding: 12px 24px; background: #2563eb; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                  Inspect delivery &#8594;
+                </a>
+              </p>
+              <p class="muted" style="font-size: 13px;">Tip: resize the preview to inspect the mobile layout and compare the HTML and text tabs.</p>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td class="muted" align="center" style="padding: 24px 16px; font-size: 12px;">
+          <p>This synthetic message was generated by the Sandpost email tester.</p>
+          <p>&copy; Sandpost &middot; Built for development &amp; testing</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

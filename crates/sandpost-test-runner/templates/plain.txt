@@ -1,0 +1,1 @@
+Local load test: cycle {{cycle}}, burst {{group}}, email {{number}}.

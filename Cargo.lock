@@ -2268,6 +2268,7 @@ version = "0.2.0-alpha.1"
 dependencies = [
  "libc",
  "mail-parser",
+ "sandpost-core",
  "serde_json",
  "sqlx",
  "tempfile",

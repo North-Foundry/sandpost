@@ -1,0 +1,54 @@
+Sandpost Weekly
+Issue 024 - October edit
+A little more care, a better inbox.
+
+Hello there,
+
+Good work often comes down to small details. This week, we're taking a closer
+look at the messages we send, the tools we keep, and the little things that
+make a busy day feel a bit calmer.
+
+THE BIG IDEA - 4 MIN READ
+Good email starts before you hit send.
+
+A clear subject. A useful link. A layout that still works on a small screen.
+A few considered choices can turn an ordinary message into one people are
+glad to open.
+
+Read the story:
+https://example.test/newsletter/articles/calmer-inbox
+
+ALSO WORTH YOUR TIME
+
+01. A look inside the workshop
+Behind the scenes - 3 min read
+From the first rough sketch to the final polish: how we make room for
+better ideas.
+https://example.test/newsletter/articles/workshop
+
+02. Fewer tools. Better days.
+The shortlist - 2 min read
+Three small finds from the community that earn their place in the
+everyday toolkit.
+https://example.test/newsletter/articles/community-picks
+
+"Make it useful. Then make it feel effortless."
+A note from our desk to yours.
+
+Read this week's edition:
+https://example.test/newsletter/issues/{{identifier}}
+
+See you next week,
+The Sandpost team
+
+A little less noise. Something worth reading.
+You're receiving Sandpost Weekly because you signed up for our newsletter.
+
+Manage preferences:
+https://example.test/newsletter/preferences?message={{identifier}}
+
+Unsubscribe:
+https://example.test/newsletter/unsubscribe?message={{identifier}}
+
+Sandpost - 123 Example Street, Test City
+This is a sample newsletter for email testing.

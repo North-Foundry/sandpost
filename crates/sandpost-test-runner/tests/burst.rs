@@ -1,3 +1,4 @@
+use mail_parser::MimeHeaders;
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
@@ -16,6 +17,8 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 struct SessionReport {
     ehlo_count: usize,
+    senders: Vec<String>,
+    recipients: Vec<String>,
     accepted_messages: Vec<Vec<u8>>,
 }
 
@@ -35,7 +38,9 @@ struct RunningCli {
 
 struct ChildGuard(Child);
 
-/// Verify one full burst uses one SMTP session, sends three accepted messages, and emits distinct MIME identifiers.
+/**
+ * Verify one full burst uses one SMTP session, sends three accepted messages, and emits distinct MIME identifiers.
+ */
 #[test]
 fn full_burst_uses_one_session_and_unique_message_ids() {
     let (address, server) = start_server(1, None);
@@ -56,6 +61,14 @@ fn full_burst_uses_one_session_and_unique_message_ids() {
     assert_eq!(report.sessions[0].ehlo_count, 1);
     assert_eq!(report.attempts, 3);
     assert_eq!(report.sessions[0].accepted_messages.len(), 3);
+    assert_eq!(
+        report.sessions[0].senders,
+        vec!["<mail-burst@sandpost.test>"; 3]
+    );
+    assert_eq!(
+        report.sessions[0].recipients,
+        vec!["<developer@sandpost.test>"; 3]
+    );
     let message_ids: Vec<_> = report.sessions[0]
         .accepted_messages
         .iter()
@@ -70,13 +83,87 @@ fn full_burst_uses_one_session_and_unique_message_ids() {
         3
     );
     for message in &report.sessions[0].accepted_messages {
+        assert_eq!(
+            header_value(message, "From").as_deref(),
+            Some("mail-burst@sandpost.test")
+        );
+        assert_eq!(
+            header_value(message, "To").as_deref(),
+            Some("developer@sandpost.test")
+        );
+        assert_eq!(
+            header_value(message, "Content-Type").as_deref(),
+            Some("text/plain; charset=utf-8")
+        );
         assert!(header_value(message, "MIME-Version").is_some());
         assert!(header_value(message, "Content-Type").is_some());
     }
     assert!(!report.extra_connection);
 }
 
-/// Verify two tiny cycles open one session per burst and receive exactly ten SMTP acceptances.
+/**
+ * Verify one full HTML burst delivers a parseable multipart alternative with both bodies and burst metadata.
+ */
+#[test]
+fn full_burst_html_format_sends_multipart_alternative() {
+    let (address, server) = start_server(1, None);
+    let mut cli = spawn_cli(&[
+        "mail-burst",
+        "full",
+        "--count",
+        "1",
+        "--format",
+        "html",
+        "--to",
+        "Persona+preview@Sandpost.test",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &address.port().to_string(),
+    ]);
+    let status = wait_for_exit(&mut cli, PROCESS_TIMEOUT);
+    assert!(status.success(), "{}", cli.stderr());
+
+    let report = join_server(server);
+    assert_eq!(report.sessions.len(), 1);
+    assert_eq!(report.sessions[0].accepted_messages.len(), 1);
+    assert_eq!(report.sessions[0].senders, ["<mail-burst@sandpost.test>"]);
+    assert_eq!(
+        report.sessions[0].recipients,
+        ["<Persona+preview@Sandpost.test>"]
+    );
+    assert_eq!(
+        header_value(&report.sessions[0].accepted_messages[0], "To").as_deref(),
+        Some("Persona+preview@Sandpost.test")
+    );
+    assert_eq!(
+        header_value(&report.sessions[0].accepted_messages[0], "From").as_deref(),
+        Some("mail-burst@sandpost.test")
+    );
+    let message = mail_parser::MessageParser::default()
+        .parse(&report.sessions[0].accepted_messages[0])
+        .expect("parse accepted HTML message");
+    assert!(message.message_id().is_some());
+    assert!(message.is_content_type("multipart", "alternative"));
+
+    let text = message.body_text(0).expect("plain-text alternative");
+    assert!(text.contains("cycle 1, burst 1, email 1"), "{text}");
+    let html = message.body_html(0).expect("HTML alternative");
+    let html_lowercase = html.to_ascii_lowercase();
+    assert!(html_lowercase.contains("<!doctype html>"), "{html}");
+    assert!(html_lowercase.contains("<table"), "{html}");
+    assert!(html_lowercase.contains("<style"), "{html}");
+    assert!(html_lowercase.contains("<a "), "{html}");
+    assert!(
+        html.contains("cycle 1") && html.contains("burst 1") && html.contains("email 1"),
+        "{html}"
+    );
+    assert!(!report.extra_connection);
+}
+
+/**
+ * Verify two tiny cycles open one session per burst and receive exactly ten SMTP acceptances.
+ */
 #[test]
 fn tiny_pattern_repeats_exact_counts_in_four_sessions() {
     let (address, server) = start_server(4, None);
@@ -85,6 +172,10 @@ fn tiny_pattern_repeats_exact_counts_in_four_sessions() {
         "tiny",
         "--pattern",
         "2,10ms,rand(3,3)",
+        "--format",
+        "txt",
+        "--to",
+        "persona@sandpost.test",
         "--cycles",
         "2",
         "--interval",
@@ -115,6 +206,30 @@ fn tiny_pattern_repeats_exact_counts_in_four_sessions() {
         [2, 3, 2, 3]
     );
     assert_eq!(report.attempts, 10);
+    for session in &report.sessions {
+        assert!(
+            session
+                .senders
+                .iter()
+                .all(|sender| sender == "<mail-burst@sandpost.test>")
+        );
+        assert!(
+            session
+                .recipients
+                .iter()
+                .all(|recipient| recipient == "<persona@sandpost.test>")
+        );
+        for message in &session.accepted_messages {
+            assert_eq!(
+                header_value(message, "To").as_deref(),
+                Some("persona@sandpost.test")
+            );
+            assert_eq!(
+                header_value(message, "Content-Type").as_deref(),
+                Some("text/plain; charset=utf-8")
+            );
+        }
+    }
     assert_eq!(report.rejected, 0);
     assert!(!report.extra_connection);
 }
@@ -262,7 +377,9 @@ fn serve(
     Ok(report)
 }
 
-/// Serve one SMTP session, recording each completed DATA transaction and returning a configured 451.
+/**
+ * Serve one SMTP session, recording each completed DATA transaction and returning a configured 451.
+ */
 fn serve_session(
     stream: &mut TcpStream,
     reject_attempt: Option<usize>,
@@ -272,6 +389,8 @@ fn serve_session(
     write_reply(stream, "220 fake.smtp.test ready\r\n")?;
     let mut session = SessionReport {
         ehlo_count: 0,
+        senders: Vec::new(),
+        recipients: Vec::new(),
         accepted_messages: Vec::new(),
     };
     loop {
@@ -281,8 +400,14 @@ fn serve_session(
                 session.ehlo_count += 1;
                 write_reply(stream, "250-fake.smtp.test\r\n250 OK\r\n")?;
             }
-            line if line.starts_with("MAIL FROM:") => write_reply(stream, "250 sender ok\r\n")?,
-            line if line.starts_with("RCPT TO:") => write_reply(stream, "250 recipient ok\r\n")?,
+            line if line.starts_with("MAIL FROM:") => {
+                session.senders.push(line["MAIL FROM:".len()..].to_owned());
+                write_reply(stream, "250 sender ok\r\n")?;
+            }
+            line if line.starts_with("RCPT TO:") => {
+                session.recipients.push(line["RCPT TO:".len()..].to_owned());
+                write_reply(stream, "250 recipient ok\r\n")?;
+            }
             "DATA" => {
                 write_reply(stream, "354 send message\r\n")?;
                 let message = read_message(&mut reader)?;

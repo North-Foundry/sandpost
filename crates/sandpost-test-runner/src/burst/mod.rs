@@ -16,16 +16,25 @@ use std::{
 };
 use uuid::Uuid;
 
-const USAGE: &str = "Usage:\n  sandpost-test-runner mail-burst full --count 50k [options]\n  sandpost-test-runner mail-burst tiny --pattern '50,10,1,50' [options]\n\nModes:\n  full   Send --count messages consecutively, then exit\n  tiny   Send --pattern bursts; --cycles defaults to 1, 0 repeats until Ctrl+C\n\nCommon options:\n  --host HOST             SMTP host (default: 127.0.0.1)\n  --port PORT             SMTP port (default: 1025)\n  --username USER         Authenticate with SMTP AUTH LOGIN\n  --password-env NAME     Password environment variable (default: SANDPOST_SMTP_PASSWORD)\n\nTiny options:\n  --interval DURATION     Pause between bursts and cycles (default: 1s)\n  --cycles COUNT          Pattern repetitions (default: 1; 0 means continuous)\n\nPatterns use positive counts, optional k suffix, rand(min,max), and pauses in ms/s/m.\nExample: --pattern '50,10s,10,1s,rand(10,100)'\nExplicit pauses replace --interval. No pause follows the final finite burst.\nUses one connection per burst; no automatic retries. Ctrl+C prints a summary and exits 130.";
+const USAGE: &str = "Usage:\n  sandpost-test-runner mail-burst full --count 50k [options]\n  sandpost-test-runner mail-burst tiny --pattern '50,10,1,50' [options]\n\nModes:\n  full   Send --count messages consecutively, then exit\n  tiny   Send --pattern bursts; --cycles defaults to 1, 0 repeats until Ctrl+C\n\nCommon options:\n  --host HOST             SMTP host (default: 127.0.0.1)\n  --port PORT             SMTP port (default: 1025)\n  --format FORMAT         txt (default), html or newsletter; HTML includes a text alternative\n  --to ADDRESS            Recipient (default: developer@sandpost.test)\n  --username USER         Authenticate with SMTP AUTH LOGIN\n  --password-env NAME     Password environment variable (default: SANDPOST_SMTP_PASSWORD)\n\nTiny options:\n  --interval DURATION     Pause between bursts and cycles (default: 1s)\n  --cycles COUNT          Pattern repetitions (default: 1; 0 means continuous)\n\nPatterns use positive counts, optional k suffix, rand(min,max), and pauses in ms/s/m.\nExample: --pattern '50,10s,10,1s,rand(10,100)'\nExplicit pauses replace --interval. No pause follows the final finite burst.\nUses one connection per burst; no automatic retries. Ctrl+C prints a summary and exits 130.";
 
 struct Options {
     host: String,
     port: u16,
+    recipient: String,
+    message_format: MessageFormat,
     username: Option<String>,
     password: Option<String>,
     bursts: Vec<Burst>,
     cycles: u64,
     expected_total: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MessageFormat {
+    Plain,
+    Html,
+    Newsletter,
 }
 
 struct Statistics {
@@ -77,7 +86,9 @@ pub async fn run(arguments: &[OsString]) -> Result<ExitCode> {
     }
 }
 
-/// Validate all command arguments and bounds before opening any network connection.
+/**
+ * Validate all command arguments and bounds before opening any network connection.
+ */
 fn parse_arguments(arguments: &[OsString]) -> Result<Option<Options>> {
     if arguments.is_empty()
         || arguments
@@ -107,6 +118,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Option<Options>> {
                 | "--cycles"
                 | "--host"
                 | "--port"
+                | "--format"
+                | "--to"
                 | "--username"
                 | "--password-env"
         ) {
@@ -136,6 +149,20 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Option<Options>> {
     if port == 0 {
         return Err("--port must be between 1 and 65535".into());
     }
+    let recipient = values
+        .get("--to")
+        .copied()
+        .unwrap_or("developer@sandpost.test");
+    if recipient.trim() != recipient || sandpost_core::normalize_inbox_address(recipient).is_none()
+    {
+        return Err("--to must be a single ASCII email address without a display name".into());
+    }
+    let message_format = match values.get("--format").copied().unwrap_or("txt") {
+        "txt" => MessageFormat::Plain,
+        "html" => MessageFormat::Html,
+        "newsletter" => MessageFormat::Newsletter,
+        _ => return Err("--format must be txt, html or newsletter".into()),
+    };
     let (bursts, cycles) = if mode == "full" {
         for option in ["--pattern", "--interval", "--cycles"] {
             if values.contains_key(option) {
@@ -201,6 +228,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Option<Options>> {
     Ok(Some(Options {
         host,
         port,
+        recipient: recipient.to_owned(),
+        message_format,
         username,
         password,
         bursts,
@@ -234,7 +263,9 @@ fn finite_total(bursts: &[Burst], cycles: u64) -> Result<Option<u64>> {
     Ok(all_fixed.then_some(maximum_total))
 }
 
-/// Send each burst over one session, counting only final SMTP acceptance and never retrying sends.
+/**
+ * Send each burst over one session, counting only final SMTP acceptance and never retrying sends.
+ */
 fn execute(
     options: &Options,
     interrupted: &AtomicBool,
@@ -275,8 +306,14 @@ fn execute(
                     .accepted
                     .checked_add(1)
                     .ok_or("accepted counter exhausted")?;
-                let message = make_message(cycle, group + 1, number)?;
-                connection.send("load-test@example.test", "developer@example.test", &message)?;
+                let message = make_message(
+                    cycle,
+                    group + 1,
+                    number,
+                    options.message_format,
+                    &options.recipient,
+                )?;
+                connection.send("mail-burst@sandpost.test", &options.recipient, &message)?;
                 statistics.accepted = next_accepted;
                 statistics.group_accepted = number;
                 if statistics.last_report.elapsed() >= Duration::from_millis(500) {
@@ -323,11 +360,68 @@ fn sample_quantity(quantity: &Quantity) -> u64 {
     }
 }
 
-/// Generate one unique plain-text MIME message without retaining the burst in memory.
-fn make_message(cycle: u64, group: usize, number: u64) -> Result<Vec<u8>> {
+/**
+ * Generate one unique plain-text or multipart HTML message without retaining the burst in memory.
+ * Body templates are embedded at build time and rendered with CRLF lines for 7bit transport.
+ */
+fn make_message(
+    cycle: u64,
+    group: usize,
+    number: u64,
+    message_format: MessageFormat,
+    recipient: &str,
+) -> Result<Vec<u8>> {
     let timestamp = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())?;
     let date = mail_parser::DateTime::from_timestamp(timestamp).to_rfc822();
-    Ok(format!("From: load-test@example.test\r\nTo: developer@example.test\r\nSubject: Sandpost | cycle {cycle} | burst {group} | email {number}\r\nDate: {date}\r\nMessage-ID: <{}@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\nLocal load test: cycle {cycle}, burst {group}, email {number}.\r\n", Uuid::new_v4()).into_bytes())
+    let identifier = Uuid::new_v4();
+    let subject = match message_format {
+        MessageFormat::Newsletter => {
+            "Sandpost Weekly | A little more care, a better inbox".to_owned()
+        }
+        _ => format!("Sandpost | cycle {cycle} | burst {group} | email {number}"),
+    };
+    let headers = format!(
+        "From: mail-burst@sandpost.test\r\nTo: {recipient}\r\nSubject: {subject}\r\nDate: {date}\r\nMessage-ID: <{identifier}@example.test>\r\nMIME-Version: 1.0\r\n"
+    );
+    let plain_headers =
+        "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n";
+    let text_template = match message_format {
+        MessageFormat::Plain => include_str!("../../templates/plain.txt"),
+        MessageFormat::Html => include_str!("../../templates/delivery-report.txt"),
+        MessageFormat::Newsletter => include_str!("../../templates/newsletter.txt"),
+    };
+    let text = render_template(text_template, cycle, group, number, &identifier);
+    match message_format {
+        MessageFormat::Plain => Ok(format!("{headers}{plain_headers}{text}").into_bytes()),
+        MessageFormat::Html | MessageFormat::Newsletter => {
+            let boundary = format!("sandpost-alternative-{identifier}");
+            let html_template = match message_format {
+                MessageFormat::Newsletter => include_str!("../../templates/newsletter.html"),
+                _ => include_str!("../../templates/delivery-report.html"),
+            };
+            let html = render_template(html_template, cycle, group, number, &identifier);
+            Ok(format!("{headers}Content-Type: multipart/alternative;\r\n boundary=\"{boundary}\"\r\n\r\n--{boundary}\r\n{plain_headers}{text}\r\n--{boundary}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n{html}\r\n--{boundary}--\r\n").into_bytes())
+        }
+    }
+}
+
+/**
+ * Substitute numeric burst metadata and the message identifier, normalizing template lines to CRLF.
+ */
+fn render_template(
+    template: &str,
+    cycle: u64,
+    group: usize,
+    number: u64,
+    identifier: &Uuid,
+) -> String {
+    template
+        .replace("{{cycle}}", &cycle.to_string())
+        .replace("{{group}}", &group.to_string())
+        .replace("{{number}}", &number.to_string())
+        .replace("{{identifier}}", &identifier.to_string())
+        .replace("\r\n", "\n")
+        .replace('\n', "\r\n")
 }
 
 /// Wait after an accepted burst, allowing Ctrl+C to interrupt long pauses promptly.
