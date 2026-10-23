@@ -5,6 +5,7 @@ mod imap;
 mod link_checks;
 pub(crate) mod messages;
 mod migrations;
+mod outbound;
 mod personas;
 mod records;
 mod schema;
@@ -17,7 +18,7 @@ mod views;
 pub use connection::SqliteStorage;
 pub use migrations::AppliedMigration;
 pub use sandpost_storage::{
-    ImapStorage, LinkCheckStorage, MessageStorage, PersonaStorage, ScopeStorage,
+    ImapStorage, LinkCheckStorage, MessageStorage, OutboundStorage, PersonaStorage, ScopeStorage,
     SearchSynchronizationStorage, SmtpServerStorage, Storage, StorageError, StorageHealth,
     UserStorage, ViewStorage,
 };

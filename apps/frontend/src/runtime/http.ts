@@ -63,6 +63,18 @@ import {
 } from '@/api/imap'
 import { normalizeInboxAddress } from '@/api/inboxAddress'
 import {
+  normalizeConnectionTest,
+  normalizeOutboundDelivery,
+  normalizeOutboundDeliveryDetail,
+  normalizeOutboundPolicy,
+  normalizeRoutingAction,
+  normalizeSmtpOutbound,
+  outboundDeliveryListQuery,
+  routingActionWire,
+  smtpOutboundTestWire,
+  smtpOutboundWire,
+} from '@/api/outbound'
+import {
   normalizePersona,
   normalizePersonaExecution,
   normalizePersonaExecutionDetails,
@@ -70,9 +82,15 @@ import {
   personaWire,
 } from '@/api/personas'
 import type {
+  WireConnectionTestResult,
+  WireOutboundDelivery,
+  WireOutboundDeliveryDetail,
+  WireOutboundPolicy,
   WirePersona,
   WirePersonaExecution,
   WirePersonaScriptValidation,
+  WireRoutingAction,
+  WireSmtpOutbound,
 } from '@/api/wire'
 
 /**
@@ -893,6 +911,201 @@ export function createHttpClient(): SandpostClient {
          */
         delete: (id) =>
           sendEmpty('DELETE', `/api/v1/smtp/accesses/${segment(id)}`),
+      },
+      outbound: {
+        /**
+         * Read the instance-wide outbound delivery policy.
+         */
+        async policy() {
+          return normalizeOutboundPolicy(
+            await sendJson<WireOutboundPolicy>('GET', '/api/v1/outbound/policy')
+          )
+        },
+
+        /**
+         * List SMTP Outbounds ordered by name.
+         */
+        async list() {
+          return (
+            await sendJson<WireSmtpOutbound[]>('GET', '/api/v1/smtp/outbounds')
+          ).map(normalizeSmtpOutbound)
+        },
+
+        /**
+         * Read one SMTP Outbound.
+         */
+        async get(id) {
+          return normalizeSmtpOutbound(
+            await sendJson<WireSmtpOutbound>(
+              'GET',
+              `/api/v1/smtp/outbounds/${segment(id)}`
+            )
+          )
+        },
+
+        /**
+         * Create an SMTP Outbound.
+         */
+        async create(input) {
+          return normalizeSmtpOutbound(
+            await sendJson<WireSmtpOutbound>(
+              'POST',
+              '/api/v1/smtp/outbounds',
+              smtpOutboundWire(input)
+            )
+          )
+        },
+
+        /**
+         * Replace an SMTP Outbound; an omitted password keeps the stored one.
+         */
+        async update(id, input) {
+          return normalizeSmtpOutbound(
+            await sendJson<WireSmtpOutbound>(
+              'PUT',
+              `/api/v1/smtp/outbounds/${segment(id)}`,
+              smtpOutboundWire(input)
+            )
+          )
+        },
+
+        /**
+         * Enable or disable an SMTP Outbound.
+         */
+        async setEnabled(id, enabled) {
+          return normalizeSmtpOutbound(
+            await sendJson<WireSmtpOutbound>(
+              'PUT',
+              `/api/v1/smtp/outbounds/${segment(id)}/enabled`,
+              { enabled }
+            )
+          )
+        },
+
+        /**
+         * Delete an SMTP Outbound that no routing action references.
+         */
+        delete: (id) =>
+          sendEmpty('DELETE', `/api/v1/smtp/outbounds/${segment(id)}`),
+
+        /**
+         * Test the stored configuration of an SMTP Outbound.
+         */
+        async test(id) {
+          return normalizeConnectionTest(
+            await sendJson<WireConnectionTestResult>(
+              'POST',
+              `/api/v1/smtp/outbounds/${segment(id)}/test`
+            )
+          )
+        },
+
+        /**
+         * Test unsaved settings, reusing the stored password of `id` when none is typed.
+         */
+        async testDraft(input, id) {
+          return normalizeConnectionTest(
+            await sendJson<WireConnectionTestResult>(
+              'POST',
+              '/api/v1/smtp/outbounds/test',
+              smtpOutboundTestWire(input, id)
+            )
+          )
+        },
+      },
+      routing: {
+        /**
+         * List the routing actions of one scope.
+         */
+        async list(scopeId) {
+          return (
+            await sendJson<WireRoutingAction[]>(
+              'GET',
+              `/api/v1/scopes/${segment(scopeId)}/routing-actions`
+            )
+          ).map(normalizeRoutingAction)
+        },
+
+        /**
+         * Add a routing action to a scope.
+         */
+        async create(scopeId, input) {
+          return normalizeRoutingAction(
+            await sendJson<WireRoutingAction>(
+              'POST',
+              `/api/v1/scopes/${segment(scopeId)}/routing-actions`,
+              routingActionWire(input)
+            )
+          )
+        },
+
+        /**
+         * Replace a routing action.
+         */
+        async update(id, input) {
+          return normalizeRoutingAction(
+            await sendJson<WireRoutingAction>(
+              'PUT',
+              `/api/v1/routing-actions/${segment(id)}`,
+              routingActionWire(input)
+            )
+          )
+        },
+
+        /**
+         * Delete a routing action.
+         */
+        delete: (id) =>
+          sendEmpty('DELETE', `/api/v1/routing-actions/${segment(id)}`),
+      },
+      deliveries: {
+        /**
+         * List deliveries newest first.
+         */
+        async list(options = {}) {
+          return (
+            await sendJson<WireOutboundDelivery[]>(
+              'GET',
+              `/api/v1/outbound/deliveries${outboundDeliveryListQuery(options)}`
+            )
+          ).map(normalizeOutboundDelivery)
+        },
+
+        /**
+         * Read one delivery with its attempt history.
+         */
+        async get(id) {
+          return normalizeOutboundDeliveryDetail(
+            await sendJson<WireOutboundDeliveryDetail>(
+              'GET',
+              `/api/v1/outbound/deliveries/${segment(id)}`
+            )
+          )
+        },
+
+        /**
+         * Schedule a failed delivery again.
+         */
+        async retry(id) {
+          return normalizeOutboundDelivery(
+            await sendJson<WireOutboundDelivery>(
+              'POST',
+              `/api/v1/outbound/deliveries/${segment(id)}/retry`
+            )
+          )
+        },
+
+        /**
+         * List the deliveries of one readable message.
+         */
+        async forMessage(messageId) {
+          return (
+            await sendJson<WireOutboundDelivery[]>(
+              'GET',
+              `/api/v1/messages/${segment(messageId)}/deliveries`
+            )
+          ).map(normalizeOutboundDelivery)
+        },
       },
       scopes: {
         /**

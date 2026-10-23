@@ -4,7 +4,8 @@ use crate::smtp_delivery::MailDelivery;
 use crate::smtp_listener::{MailEncryption, MailServer, authentication_policy};
 use crate::{Configuration, bootstrap};
 use sandpost_application::{
-    Application, Instance, LinkCheckSettings, SearchCoordinator, SmtpAuthenticator,
+    Application, Instance, LinkCheckSettings, OutboundSecretKey, SearchCoordinator,
+    SmtpAuthenticator,
 };
 use sandpost_smtp::AuthenticationPolicy;
 use std::{error::Error, net::SocketAddr, sync::Arc};
@@ -57,6 +58,10 @@ impl SandpostRuntime {
             Instance::open(storage.clone(), configuration.data_directory.clone()).await?;
         let index_directory = configuration.data_directory.join("search");
         let search = SearchCoordinator::open(storage.clone(), index_directory).await?;
+        // The key that encrypts SMTP Outbound passwords lives outside the database. It is read
+        // (or created) after the installation lock is held, so two processes never race on it.
+        let outbound_secret_key =
+            OutboundSecretKey::load_or_create(&configuration.outbound.secret_key_path)?;
         let mail_server = MailServer::new(
             MailDelivery {
                 authenticator: SmtpAuthenticator::new(storage.clone()),
@@ -78,7 +83,8 @@ impl SandpostRuntime {
             allow_internal_addresses: configuration.link_check_allow_internal_addresses,
             ..LinkCheckSettings::default()
         })
-        .with_persona_settings(configuration.personas.settings());
+        .with_persona_settings(configuration.personas.settings())
+        .with_outbound_settings(configuration.outbound.settings(Some(outbound_secret_key)));
         let mail_authentication_required = authentication_policy(
             configuration.mail_authentication,
             configuration.mail_listen_address,
@@ -150,6 +156,14 @@ impl SandpostRuntime {
             // Persona executions run outside transport supervision: a failing Persona must never
             // stop a listener. Shutdown stops them, leaving recorded state to resume after restart.
             persona_application.run_personas(persona_shutdown).await;
+        });
+        let outbound_application = application.clone();
+        let outbound_shutdown = shutdown_receiver.clone();
+        tokio::spawn(async move {
+            // External deliveries run outside transport supervision: a slow or failing SMTP
+            // server must never stop a listener. Shutdown stops running attempts; their jobs are
+            // retried after the next start.
+            outbound_application.run_outbound(outbound_shutdown).await;
         });
         let supervision_shutdown = shutdown_sender.clone();
         let supervisor = tokio::spawn(async move {

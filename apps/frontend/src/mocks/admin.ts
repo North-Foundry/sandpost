@@ -3,6 +3,7 @@ import type {
   SmtpServer, UserAccount,
 } from '@/api/contracts'
 import { SCOPE_PREVIEW_LIMIT } from '@/api/admin'
+import { createMockOutbound } from './outbound'
 
 /**
  * Ports the mock pretends another process already holds, to exercise failed listeners.
@@ -159,6 +160,7 @@ export function createMockAdmin(activeUser: () => SessionUser | null, summaries:
   }
 
   return {
+    ...createMockOutbound(requireGlobalAdmin, (scopeId) => scopes.some((scope) => scope.id === scopeId)),
     smtp: {
 
       /**

@@ -4,7 +4,7 @@
 pub(crate) type MigrationScript = (&'static str, &'static str);
 
 /// Apply each script once, in order; append new scripts to evolve released databases.
-pub(crate) const MIGRATIONS: [MigrationScript; 53] = [
+pub(crate) const MIGRATIONS: [MigrationScript; 59] = [
     (
         "0001_create_migrations_table.sql",
         include_str!("../../migrations/0001_create_migrations_table.sql"),
@@ -216,5 +216,29 @@ pub(crate) const MIGRATIONS: [MigrationScript; 53] = [
     (
         "0053_create_persona_execution_actions_table.sql",
         include_str!("../../migrations/0053_create_persona_execution_actions_table.sql"),
+    ),
+    (
+        "0054_create_smtp_outbounds_table.sql",
+        include_str!("../../migrations/0054_create_smtp_outbounds_table.sql"),
+    ),
+    (
+        "0055_create_scope_routing_actions_table.sql",
+        include_str!("../../migrations/0055_create_scope_routing_actions_table.sql"),
+    ),
+    (
+        "0056_create_mail_routing_evaluations_table.sql",
+        include_str!("../../migrations/0056_create_mail_routing_evaluations_table.sql"),
+    ),
+    (
+        "0057_create_outbound_deliveries_table.sql",
+        include_str!("../../migrations/0057_create_outbound_deliveries_table.sql"),
+    ),
+    (
+        "0058_create_outbound_delivery_recipients_table.sql",
+        include_str!("../../migrations/0058_create_outbound_delivery_recipients_table.sql"),
+    ),
+    (
+        "0059_create_outbound_delivery_attempts_table.sql",
+        include_str!("../../migrations/0059_create_outbound_delivery_attempts_table.sql"),
     ),
 ];

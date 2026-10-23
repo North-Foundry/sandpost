@@ -7,12 +7,18 @@
 pub type FilterExpression = sandpost_query::Expression;
 
 mod messages;
+mod outbound;
 mod personas;
 mod search;
 mod smtp;
 mod users;
 
 pub use messages::{MessageListQuery, MessageSummary};
+pub use outbound::{
+    NewOutboundDelivery, NewOutboundRecipient, NewRoutingAction, NewSmtpOutbound,
+    OutboundAttemptResult, OutboundDeliveryQuery, OutboundDeliveryReader, OutboundRecipientUpdate,
+    RoutingActionUpdate, SmtpOutboundCredential, SmtpOutboundPassword, SmtpOutboundSettings,
+};
 pub use personas::{NewPersona, PersonaExecutionEntry, PersonaUpdate};
 pub use search::{IndexedMessage, SearchOperation, SearchSynchronization};
 pub use smtp::{NewSmtpAccess, SmtpAccessCredential};

@@ -25,6 +25,11 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
   Scope assignments are role-less inherited query restrictions. Personal/shared
   **Views** organize/filter mail, never grant access.
 
+- **SMTP Outbounds** are Owner-managed, instance-level connections to external SMTP servers;
+  **routing actions** attach relay or forward delivery to one scope and reference one outbound.
+  Delivery jobs are durable SQLite state; passwords are encrypted under a key file kept outside
+  SQLite. Nothing leaves the sandbox until an Owner configures both. See [outbound.md](outbound.md).
+
 | Crate | Responsibility |
 | --- | --- |
 | `sandpost-core` | Domain IDs/mail facts, users/roles/access, scopes/Views, SMTP accesses, IMAP accounts/mailbox sources/flags. |
@@ -35,6 +40,7 @@ embeds Rust through a Node-API addon. No external database, queue, or cache is r
 | `sandpost-application` | Authentication/authorization, management, mail access/events, index coordination; `SmtpAuthenticator`, `ImapService`, `MailListenerControl`. |
 | `sandpost-mime` | I/O-free MIME facts/captured bytes; alternative/related selection, boundary recovery, `cid:`/`mid:` resolution, shared attachment transfer decoding for size/hash/download without charset conversion. |
 | `sandpost-link-check` | Server-side link verification: I/O-free link extraction and normalization, public-address policy, HTTP/1.1 `HEAD`/`GET` checks over hyper/rustls with manual redirects, per-resolution address validation (no DNS rebinding), timeouts, concurrency limits and status classification. No storage dependency. |
+| `sandpost-smtp-outbound` | Outbound SMTP transport over `lettre`'s async client (tokio, rustls, system roots): DNS-pinned destination policy reusing the link checker's public-address rule, plain/enforced STARTTLS/implicit TLS, AUTH PLAIN/LOGIN, per-phase timeouts, one `RCPT TO` per recipient with individual outcomes, failure classification, connection tests and re-submission content preparation. No storage or routing policy. |
 | `sandpost-smtp` | Bounded `SmtpServer`: selected RFC 5321 behavior, SIZE/8BITMIME, AUTH PLAIN/LOGIN, STARTTLS/implicit TLS (rustls), enhanced status/trace fields; MIME parsing and `SessionHandler` delivery. |
 | `sandpost-imap` | `ImapServer`: IMAP4rev1 framing/sessions/ENVELOPE/BODYSTRUCTURE/sections/SEARCH; IDLE, UIDPLUS, MOVE, UNSELECT, NAMESPACE, ID, CHILDREN, LITERAL-, SASL-IR, STARTTLS/implicit TLS. `ImapBackend` supplies accounts/mailboxes/UIDs/flags/access; no storage/search dependency. |
 | `sandpost-web-api` | HTTP/session middleware/SSE/SPA hosting, embedded at build time or served from a directory. |
@@ -216,7 +222,7 @@ required elsewhere; with a certificate, TLS requires STARTTLS off loopback.
 unchanged credentials before every delivery. Read/write timeout is 300 s.
 Envelope local-part spelling/case survives, domains fold; MIME address normalization
 is separate. Blocking MIME work retains its connection lease until completion;
-cancellation does not guarantee exactly-once external effects. No outbound mail;
+cancellation does not guarantee exactly-once external effects. External delivery is opt-in through SMTP Outbounds ([outbound.md](outbound.md));
 without TLS, credentials are clear text. Configuration: [project.md](project.md).
 
 One IMAP listener serves personal accounts. `ImapService` authenticates/throttles,
@@ -250,3 +256,15 @@ runtime. `sandpost-link-check` extracts and verifies links; the result replaces 
 stored check in one storage transaction, ignoring an older run. Reads combine stored results
 with the in-memory running state and never start a check. Runtime shutdown cancels runs. The
 `[link_check]` configuration only decides whether non-public destinations may be requested.
+
+## Outbound delivery
+
+Message insertion queues a routing evaluation in the same SQL transaction as the message, only while
+an enabled routing action uses an enabled SMTP Outbound; SMTP never waits for an external server.
+`Application::run_outbound` runs beside the listeners, outside transport supervision, and stops with
+the same shutdown signal. It evaluates queued messages against the most specific matching scopes
+(explicit actions, no inheritance), creates one durable job per applicable action, and runs due
+attempts as independent tasks bounded instance-wide and per outbound. Attempts reread configuration,
+decrypt the password with the key file, deliver through `sandpost-smtp-outbound` and record
+per-recipient outcomes with exponential-backoff retries. Jobs left `processing` by a stopped process
+are retried after restart, accepting possible duplicates. Contracts: [outbound.md](outbound.md).

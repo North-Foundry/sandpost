@@ -55,7 +55,7 @@ fn migration_commands_report_batches_and_respect_the_running_instance_lock() {
     assert!(status.status.success());
     assert!(
         String::from_utf8_lossy(&status.stdout)
-            .starts_with("migrations: applied=53 batches=1\n1\t0001_")
+            .starts_with("migrations: applied=59 batches=1\n1\t0001_")
     );
     let installation_lock = std::fs::OpenOptions::new()
         .read(true)
@@ -78,7 +78,7 @@ fn migration_commands_report_batches_and_respect_the_running_instance_lock() {
         "{}",
         String::from_utf8_lossy(&reverted.stderr)
     );
-    assert!(String::from_utf8_lossy(&reverted.stdout).contains("migrations: reverted=53"));
+    assert!(String::from_utf8_lossy(&reverted.stdout).contains("migrations: reverted=59"));
     let status = run_migration_command(directory, "status");
     assert_eq!(
         String::from_utf8_lossy(&status.stdout),

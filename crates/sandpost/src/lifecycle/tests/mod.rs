@@ -204,6 +204,7 @@ async fn runtime_serves_the_compiled_frontend_and_preserves_api_misses() {
 }
 
 mod imap;
+mod outbound;
 mod personas;
 mod smtp;
 

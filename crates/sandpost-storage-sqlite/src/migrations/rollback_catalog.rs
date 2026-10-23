@@ -57,4 +57,10 @@ pub(crate) const ROLLBACKS: [&str; super::MIGRATIONS.len()] = [
     include_str!("../../migrations/down/0051_create_personas_table.sql"),
     include_str!("../../migrations/down/0052_create_persona_executions_table.sql"),
     include_str!("../../migrations/down/0053_create_persona_execution_actions_table.sql"),
+    include_str!("../../migrations/down/0054_create_smtp_outbounds_table.sql"),
+    include_str!("../../migrations/down/0055_create_scope_routing_actions_table.sql"),
+    include_str!("../../migrations/down/0056_create_mail_routing_evaluations_table.sql"),
+    include_str!("../../migrations/down/0057_create_outbound_deliveries_table.sql"),
+    include_str!("../../migrations/down/0058_create_outbound_delivery_recipients_table.sql"),
+    include_str!("../../migrations/down/0059_create_outbound_delivery_attempts_table.sql"),
 ];

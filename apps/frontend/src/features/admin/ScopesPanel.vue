@@ -22,6 +22,7 @@ import { Spinner } from '@/components/ui/spinner'
 import BusyDialog from '@/components/BusyDialog.vue'
 import QueryEditor from '@/features/query/QueryEditor.vue'
 import ScopePreview from './ScopePreview.vue'
+import ScopeRoutingActions from './ScopeRoutingActions.vue'
 import { ancestors, flattenScopes, nextPosition, siblings, subtreeIds } from './scopeTree'
 
 /**
@@ -385,6 +386,10 @@ watch(() => [props.scopes, route.query.scope] as const, ([scopes, requested]) =>
             </FieldSet>
           </template>
         </form>
+        <template v-if="!draft.isNew">
+          <Separator class="my-6" />
+          <ScopeRoutingActions :scope-id="draft.id" />
+        </template>
         <Alert v-if="error" variant="destructive" class="mt-4" role="alert"><AlertDescription>{{ error }}</AlertDescription></Alert>
       </CardContent>
       <CardFooter class="flex flex-wrap gap-2 border-t">

@@ -85,6 +85,9 @@ fn is_protected_api_route(path: &str) -> bool {
         | "/api/v1/query/validate"
         | "/api/v1/smtp/server"
         | "/api/v1/smtp/accesses"
+        | "/api/v1/smtp/outbounds"
+        | "/api/v1/outbound/policy"
+        | "/api/v1/outbound/deliveries"
         | "/api/v1/imap/server"
         | "/api/v1/imap/accounts"
         | "/api/v1/personas"
@@ -94,6 +97,9 @@ fn is_protected_api_route(path: &str) -> bool {
                 || path.starts_with("/api/v1/views/")
                 || path.starts_with("/api/v1/users/")
                 || path.starts_with("/api/v1/smtp/accesses/")
+                || path.starts_with("/api/v1/smtp/outbounds/")
+                || path.starts_with("/api/v1/routing-actions/")
+                || path.starts_with("/api/v1/outbound/deliveries/")
                 || path.starts_with("/api/v1/imap/accounts/")
                 || path.starts_with("/api/v1/folders/")
                 || path.starts_with("/api/v1/personas/")
@@ -106,7 +112,10 @@ fn is_protected_api_route(path: &str) -> bool {
             let segments: Vec<_> = path.split('/').collect();
             segments.len() == 1
                 || (segments.len() == 2
-                    && matches!(segments[1], "raw" | "html-check" | "link-check"))
+                    && matches!(
+                        segments[1],
+                        "raw" | "html-check" | "link-check" | "deliveries"
+                    ))
                 || (segments.len() == 3 && segments[1] == "attachments")
         }
     }

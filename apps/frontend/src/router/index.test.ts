@@ -73,4 +73,29 @@ describe('authentication route guards', () => {
      */
     expect(client.session).toHaveBeenCalledTimes(checks)
   })
+
+  /**
+   * Require a session for the SMTP Outbound page and keep the shell mounted between admin pages.
+   */
+  it('guards the SMTP Outbound administration route like the other admin pages', async () => {
+    let authenticated = false
+    const client = {
+      instanceStatus: vi.fn(async () => ({ initialized: true })),
+      session: vi.fn(async () => authenticated ? {
+        id: 'owner', name: 'Owner', email: 'owner@example.test', role: 'owner' as const,
+      } : null),
+    } as unknown as SandpostClient
+    const router = createAppRouter(client, createMemoryHistory())
+
+    await router.push('/admin/smtp-outbound')
+    expect(router.currentRoute.value.name).toBe('login')
+    authenticated = true
+    await router.push('/admin/smtp-outbound')
+    expect(router.currentRoute.value.name).toBe('admin-smtp-outbound')
+    const checks = vi.mocked(client.session).mock.calls.length
+    await router.push('/admin/smtp-access')
+    await router.push('/admin/smtp-outbound')
+    expect(router.currentRoute.value.name).toBe('admin-smtp-outbound')
+    expect(client.session).toHaveBeenCalledTimes(checks)
+  })
 })

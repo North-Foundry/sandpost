@@ -3,7 +3,8 @@
 use crate::{
     ApplicationState, authentication,
     error::{HttpError, map_application_error},
-    events, imap, inboxes, link_checks, mailbox, management, messages, personas, read_status, smtp,
+    events, imap, inboxes, link_checks, mailbox, management, messages, outbound, personas,
+    read_status, smtp,
 };
 use axum::{
     Json, Router,
@@ -130,6 +131,54 @@ fn api_router() -> Router<ApplicationState> {
         .route(
             "/api/v1/smtp/accesses/{identifier}/password",
             axum::routing::post(smtp::regenerate_smtp_access_password),
+        )
+        .route("/api/v1/outbound/policy", get(outbound::outbound_policy))
+        .route(
+            "/api/v1/smtp/outbounds",
+            get(outbound::list_smtp_outbounds).post(outbound::create_smtp_outbound),
+        )
+        .route(
+            "/api/v1/smtp/outbounds/test",
+            axum::routing::post(outbound::test_smtp_outbound_draft),
+        )
+        .route(
+            "/api/v1/smtp/outbounds/{identifier}",
+            get(outbound::smtp_outbound)
+                .put(outbound::update_smtp_outbound)
+                .delete(outbound::delete_smtp_outbound),
+        )
+        .route(
+            "/api/v1/smtp/outbounds/{identifier}/enabled",
+            axum::routing::put(outbound::set_smtp_outbound_enabled),
+        )
+        .route(
+            "/api/v1/smtp/outbounds/{identifier}/test",
+            axum::routing::post(outbound::test_smtp_outbound),
+        )
+        .route(
+            "/api/v1/scopes/{identifier}/routing-actions",
+            get(outbound::list_routing_actions).post(outbound::create_routing_action),
+        )
+        .route(
+            "/api/v1/routing-actions/{identifier}",
+            axum::routing::put(outbound::update_routing_action)
+                .delete(outbound::delete_routing_action),
+        )
+        .route(
+            "/api/v1/outbound/deliveries",
+            get(outbound::list_outbound_deliveries),
+        )
+        .route(
+            "/api/v1/outbound/deliveries/{identifier}",
+            get(outbound::outbound_delivery),
+        )
+        .route(
+            "/api/v1/outbound/deliveries/{identifier}/retry",
+            axum::routing::post(outbound::retry_outbound_delivery),
+        )
+        .route(
+            "/api/v1/messages/{identifier}/deliveries",
+            get(outbound::message_deliveries),
         )
         .route("/api/v1/imap/server", get(imap::imap_server))
         .route(

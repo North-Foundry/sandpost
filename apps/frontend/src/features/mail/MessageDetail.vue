@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { computed, ref, shallowRef, watch } from 'vue'
-import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, CopyIcon, DownloadIcon, FileTextIcon, LinkIcon, MailIcon, MailOpenIcon, PaperclipIcon, RotateCwIcon, ShieldCheckIcon, Trash2Icon } from '@lucide/vue'
+import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, CopyIcon, DownloadIcon, FileTextIcon, LinkIcon, MailIcon, MailOpenIcon, PaperclipIcon, RotateCwIcon, SendIcon, ShieldCheckIcon, Trash2Icon } from '@lucide/vue'
 import type { MessageDetail, MessageFlags, MessageFlagOperation } from '@/api/contracts'
 import { formatBytes, formatFullDate, mailboxName, senderInitial } from '@/utils/format'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,10 @@ import LinkCheckStatus from './LinkCheckStatus.vue'
 import LinkCheckTab from './LinkCheckTab.vue'
 import { createEmailPreviewDocument } from './previewLayout'
 import { useLinkCheck } from './useLinkCheck'
+import { useMessageDeliveries } from './useMessageDeliveries'
+import MessageDeliveries from './MessageDeliveries.vue'
+import { overallDeliveryStatus, deliveryTone } from '@/features/outbound/delivery'
+import { TONE_DOT } from '@/features/personas/format'
 import { useCopy } from '@/composables/useCopy'
 import { useSandpostClient } from '@/runtime/client'
 
@@ -41,13 +45,18 @@ const props = withDefaults(defineProps<{
    * The message is in Trash, so Delete removes it permanently instead of moving it to Trash.
    */
   trash?: boolean
+
+  /**
+   * Show outbound delivery status; only Owners may read it, so nothing is requested otherwise.
+   */
+  showDeliveries?: boolean
 }>(), {
   downloadingAttachment: null, deleting: false,
 
   /**
    * Give each message detail instance its own empty destination list by default.
    */
-  folders: () => [], trash: false, seen: false
+  folders: () => [], trash: false, seen: false, showDeliveries: false
 })
 const { t } = useI18n()
 const emit = defineEmits<{
@@ -114,7 +123,13 @@ watch(() => [props.message, props.loading], () => {
  */
 const linkCheck = useLinkCheck(useSandpostClient(), computed(() => props.message?.id ?? null))
 
-const activeTab = ref<'html' | 'text' | 'headers' | 'links' | 'attachments' | 'compatibility'>('html')
+/**
+ * Outbound deliveries of the shown message, requested only for Owners; the tab appears only when there is one.
+ */
+const messageDeliveries = useMessageDeliveries(useSandpostClient(), computed(() => props.message?.id ?? null), computed(() => props.showDeliveries))
+const deliveryStatus = computed(() => overallDeliveryStatus(messageDeliveries.deliveries.value))
+
+const activeTab = ref<'html' | 'text' | 'headers' | 'links' | 'attachments' | 'compatibility' | 'deliveries'>('html')
 const metadataExpanded = ref(false)
 const { copied, error: copyError, copy, reset: resetCopy } = useCopy<'headers'>(t('mail.error.copyHeaders'))
 const hasHtml = computed(() => Boolean(renderedMessage.value?.html.trim()))
@@ -269,6 +284,10 @@ async function copyAllHeaders(): Promise<void> {
                 <Badge variant="secondary" class="tabular-nums">{{ renderedMessage.attachments.length }}</Badge>
               </TabsTrigger>
               <TabsTrigger v-if="hasOriginalHtml" value="compatibility" class="flex-none">{{ t('mail.compatibility.tab') }}</TabsTrigger>
+              <TabsTrigger v-if="deliveryStatus" value="deliveries" class="flex-none">
+                <SendIcon aria-hidden="true" />{{ t('outbound.message.tab') }}
+                <span :class="cn('size-1.5 rounded-full', TONE_DOT[deliveryTone(deliveryStatus)])" :title="t(`outbound.status.${deliveryStatus}`)" aria-hidden="true" />
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent v-if="hasHtml" value="html">
@@ -353,6 +372,10 @@ async function copyAllHeaders(): Promise<void> {
 
             <TabsContent v-if="hasOriginalHtml" value="compatibility">
               <HtmlCompatibility :message-id="renderedMessage.id" />
+            </TabsContent>
+
+            <TabsContent v-if="deliveryStatus" value="deliveries">
+              <MessageDeliveries :deliveries="messageDeliveries.deliveries.value" @changed="messageDeliveries.refresh" />
             </TabsContent>
           </Tabs>
 

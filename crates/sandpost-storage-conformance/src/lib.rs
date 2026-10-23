@@ -2,7 +2,7 @@
 //!
 //! A third-party backend runs this suite against one dyn Storage implementation to prove it
 //! satisfies the behaviour the application relies on. The suite is self-contained: it creates
-//! its own users, SMTP accesses, IMAP accounts, scopes, views, messages, link checks, and Personas with fresh identifiers and depends only
+//! its own users, SMTP accesses, IMAP accounts, scopes, views, messages, link checks, Personas, SMTP Outbounds and routing actions with fresh identifiers and depends only
 //! on the storage contract, the shared domain types, the canonical query AST, and Tokio.
 //!
 //! The storage under test must have no users when run_all starts, because the first check proves
@@ -10,6 +10,7 @@
 mod imap;
 mod link_checks;
 mod messages;
+mod outbound;
 mod personas;
 mod scopes;
 mod search;
@@ -27,6 +28,9 @@ pub use link_checks::link_check_results;
 pub use messages::{
     index_messages_revisions, message_deletion, message_filter_equivalence,
     message_ingestion_and_retrieval, message_ordering_and_pagination, user_message_deletions,
+};
+pub use outbound::{
+    outbound_delivery_lifecycle, routing_actions_and_queue, smtp_outbound_definitions,
 };
 pub use personas::{
     persona_definitions, persona_execution_lifecycle, persona_execution_scheduling,
@@ -111,6 +115,9 @@ pub async fn run_all(storage: &dyn Storage) -> Result<(), ConformanceFailure> {
     persona_definitions(storage).await?;
     persona_execution_scheduling(storage).await?;
     persona_execution_lifecycle(storage).await?;
+    smtp_outbound_definitions(storage).await?;
+    routing_actions_and_queue(storage).await?;
+    outbound_delivery_lifecycle(storage).await?;
     Ok(())
 }
 

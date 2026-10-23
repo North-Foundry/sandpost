@@ -1,0 +1,17 @@
+[package]
+name = "sandpost-smtp-outbound"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sandpost-core.workspace = true
+sandpost-link-check.workspace = true
+lettre.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+
+[dev-dependencies]
+sandpost-smtp.workspace = true
+rcgen.workspace = true

@@ -3,6 +3,7 @@
 mod health;
 mod link_checks;
 mod messages;
+mod outbound;
 mod personas;
 mod scopes;
 mod search;
@@ -14,6 +15,7 @@ mod views;
 pub use health::StorageHealth;
 pub use link_checks::LinkCheckStorage;
 pub use messages::MessageStorage;
+pub use outbound::{OUTBOUND_ATTEMPT_RETENTION, OUTBOUND_DELIVERY_RETENTION, OutboundStorage};
 pub use personas::{PERSONA_EXECUTION_RETENTION, PERSONA_PENDING_EXECUTION_LIMIT, PersonaStorage};
 pub use scopes::ScopeStorage;
 pub use search::SearchSynchronizationStorage;

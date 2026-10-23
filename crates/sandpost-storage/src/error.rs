@@ -47,6 +47,12 @@ pub enum StorageError {
     /// Another Persona already uses this normalized email address.
     #[error("a persona already uses this email address")]
     DuplicatePersonaAddress,
+    /// Another SMTP Outbound already uses this name, ignoring ASCII case.
+    #[error("an SMTP Outbound with this name already exists")]
+    DuplicateSmtpOutboundName,
+    /// Routing actions still reference the SMTP Outbound.
+    #[error("the SMTP Outbound is used by {0} routing action(s)")]
+    SmtpOutboundInUse(u64),
     /// A compatibility inbox address is not a valid normalized ASCII email address.
     #[error("inbox address is invalid")]
     InvalidInboxAddress,

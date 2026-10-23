@@ -2,7 +2,7 @@
 use super::*;
 
 /// Send one request with an optional JSON body and return the status, headers, and JSON body.
-async fn exchange(
+pub(super) async fn exchange(
     application: &Router,
     method: &str,
     uri: &str,
@@ -31,7 +31,7 @@ async fn exchange(
 }
 
 /// Create a non-administrator account and return a router authenticated as it.
-async fn member_router(
+pub(super) async fn member_router(
     state: &ApplicationState,
     owner_token: &str,
     email: &str,

@@ -11,6 +11,7 @@ mod link_check;
 mod listeners;
 mod mailbox;
 mod management;
+mod outbound;
 mod personas;
 mod read_status;
 mod smtp_access;
@@ -38,6 +39,12 @@ pub use listeners::{
 pub use mailbox::WebFolderRequest;
 pub use management::{
     AccountDetails, NewAccount, QueryDiagnostic, QueryValidation, ScopePreview, UpdateAccount,
+};
+pub use outbound::{
+    ConnectionTestResult, MAXIMUM_ALLOWED_RECIPIENT_PATTERNS, MAXIMUM_FORWARD_RECIPIENTS,
+    OutboundDeliveryDetails, OutboundDeliveryListRequest, OutboundPolicy, OutboundSecretKey,
+    OutboundSettings, RoutingActionRequest, SmtpOutboundDetails, SmtpOutboundEnabledRequest,
+    SmtpOutboundRequest, SmtpOutboundTestRequest,
 };
 pub use personas::{
     AddressAccess, MAXIMUM_PERSONAS_PER_USER, PersonaDetails, PersonaEnabledRequest,
@@ -176,6 +183,8 @@ pub struct Application {
     link_checks: Arc<link_check::LinkCheckCoordinator>,
     /// Background Persona executions shared by every transport.
     personas: Arc<personas::PersonaRuntime>,
+    /// Background outbound routing and delivery shared by every transport.
+    outbound: Arc<outbound::OutboundRuntime>,
 }
 /// Reusable message authorization boundary for HTTP, native hosts, and other callers.
 #[derive(Clone)]
@@ -221,6 +230,7 @@ impl Application {
                 LinkCheckSettings::default(),
             )),
             personas: Arc::new(personas::PersonaRuntime::new(PersonaSettings::default())),
+            outbound: Arc::new(outbound::OutboundRuntime::new(OutboundSettings::default())),
         }
     }
     /// Attach the hosting runtime's read-only SMTP listener status.

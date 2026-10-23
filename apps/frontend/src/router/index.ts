@@ -9,7 +9,7 @@ const MAIL_ROUTES = new Set<RouteRecordNameGeneric>(['mail', 'mail-message'])
 /**
  * Routes inside the administration area, whose layout verifies the session itself.
  */
-const ADMIN_ROUTES = new Set<RouteRecordNameGeneric>(['admin-scopes', 'admin-smtp-access', 'admin-users'])
+const ADMIN_ROUTES = new Set<RouteRecordNameGeneric>(['admin-scopes', 'admin-smtp-access', 'admin-smtp-outbound', 'admin-users'])
 
 /**
  * The signed-in user's IMAP account pages, which handle session errors themselves.
@@ -118,6 +118,15 @@ export function createAppRouter(client: SandpostClient, history: RouterHistory =
                  * Load administration of the SMTP listener and submission accesses.
                  */
                 component: () => import('@/features/admin/SmtpAccessPage.vue')
+              },
+              {
+                path: 'smtp-outbound',
+                name: 'admin-smtp-outbound',
+
+                /**
+                 * Load administration of SMTP Outbound connections and recent deliveries.
+                 */
+                component: () => import('@/features/admin/SmtpOutboundPage.vue')
               },
               {
                 path: 'users',

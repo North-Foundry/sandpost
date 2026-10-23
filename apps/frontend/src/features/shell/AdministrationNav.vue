@@ -2,7 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { KeyRoundIcon, LayersIcon, MailboxIcon, UsersIcon } from '@lucide/vue'
+import { KeyRoundIcon, LayersIcon, MailboxIcon, SendIcon, UsersIcon } from '@lucide/vue'
 import { SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarMenu } from '@/components/ui/sidebar'
 import SidebarNavItem from './SidebarNavItem.vue'
 import { useWorkspace } from './workspace'
@@ -22,6 +22,7 @@ const sections = computed(() => [
       { name: 'admin-users', label: t('common.users'), icon: UsersIcon, routes: ['admin-users'] },
       { name: 'admin-scopes', label: t('common.scopes'), icon: LayersIcon, routes: ['admin-scopes'] },
       { name: 'admin-smtp-access', label: 'SMTP', icon: KeyRoundIcon, routes: ['admin-smtp-access'] },
+      { name: 'admin-smtp-outbound', label: t('outbound.nav'), icon: SendIcon, routes: ['admin-smtp-outbound'] },
     ]
     : []),
   { name: 'imap', label: 'IMAP', icon: MailboxIcon, routes: ['imap', 'imap-account'] },

@@ -123,6 +123,9 @@ pub struct Configuration {
     pub link_check_allow_internal_addresses: bool,
     /// Persona execution limits and network policy from `[personas]` and `SANDPOST_PERSONAS_*`.
     pub personas: PersonaConfiguration,
+    /// SMTP Outbound delivery limits, network policy and key file from `[outbound]` and
+    /// `SANDPOST_OUTBOUND_*`.
+    pub outbound: OutboundConfiguration,
     pub log_level: String,
     /// The configuration file that was read; absent while defaults and environment alone apply.
     pub configuration_path: Option<PathBuf>,
@@ -154,6 +157,40 @@ impl Default for PersonaConfiguration {
             execution_timeout_seconds: 1800,
             concurrent_executions: 64,
             concurrent_requests: 8,
+        }
+    }
+}
+
+/// SMTP Outbound delivery limits, retry policy, network policy and password key location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundConfiguration {
+    /// Let SMTP Outbounds use loopback, private and other non-public addresses; off by default.
+    pub allow_internal_addresses: bool,
+    /// Delivery attempts running at once; defaults to 4.
+    pub concurrent_deliveries: usize,
+    /// Attempts before transiently failing recipients are given up; defaults to 8.
+    pub maximum_attempts: u32,
+    /// Delay before the second attempt, doubling afterwards up to one hour; defaults to 60.
+    pub retry_delay_seconds: u64,
+    /// File holding the key that encrypts SMTP Outbound passwords; created when missing.
+    pub secret_key_path: PathBuf,
+}
+
+impl OutboundConfiguration {
+    /**
+     * Convert the configuration into application settings with the loaded key.
+     */
+    pub fn settings(
+        &self,
+        secret_key: Option<sandpost_application::OutboundSecretKey>,
+    ) -> sandpost_application::OutboundSettings {
+        sandpost_application::OutboundSettings {
+            allow_internal_addresses: self.allow_internal_addresses,
+            concurrent_deliveries: self.concurrent_deliveries,
+            maximum_attempts: self.maximum_attempts,
+            retry_delay: std::time::Duration::from_secs(self.retry_delay_seconds),
+            secret_key,
+            ..sandpost_application::OutboundSettings::default()
         }
     }
 }
@@ -261,6 +298,25 @@ impl Configuration {
             return Err(invalid(
                 "SANDPOST_PERSONAS_CONCURRENT_REQUESTS",
                 "expected a number from 1 to 256",
+            ));
+        }
+        let outbound = &self.outbound;
+        if !(1..=64).contains(&outbound.concurrent_deliveries) {
+            return Err(invalid(
+                "SANDPOST_OUTBOUND_CONCURRENT_DELIVERIES",
+                "expected a number from 1 to 64",
+            ));
+        }
+        if !(1..=100).contains(&outbound.maximum_attempts) {
+            return Err(invalid(
+                "SANDPOST_OUTBOUND_MAXIMUM_ATTEMPTS",
+                "expected a number from 1 to 100",
+            ));
+        }
+        if !(1..=86_400).contains(&outbound.retry_delay_seconds) {
+            return Err(invalid(
+                "SANDPOST_OUTBOUND_RETRY_DELAY_SECONDS",
+                "expected a number of seconds from 1 to 86400",
             ));
         }
         if !(1..=10_000).contains(&self.imap.maximum_connection_count) {
@@ -527,6 +583,38 @@ impl Configuration {
                 "a whole number",
             )?,
         };
+        let outbound = OutboundConfiguration {
+            allow_internal_addresses: environment_setting(
+                environment_value,
+                "SANDPOST_OUTBOUND_ALLOW_INTERNAL_ADDRESSES",
+                file.outbound.allow_internal_addresses.unwrap_or(false),
+                "true or false",
+            )?,
+            concurrent_deliveries: environment_setting(
+                environment_value,
+                "SANDPOST_OUTBOUND_CONCURRENT_DELIVERIES",
+                file.outbound.concurrent_deliveries.unwrap_or(4),
+                "a whole number",
+            )?,
+            maximum_attempts: environment_setting(
+                environment_value,
+                "SANDPOST_OUTBOUND_MAXIMUM_ATTEMPTS",
+                file.outbound.maximum_attempts.unwrap_or(8),
+                "a whole number",
+            )?,
+            retry_delay_seconds: environment_setting(
+                environment_value,
+                "SANDPOST_OUTBOUND_RETRY_DELAY_SECONDS",
+                file.outbound.retry_delay_seconds.unwrap_or(60),
+                "a whole number of seconds",
+            )?,
+            // Relative paths resolve against the data directory, like the database path.
+            secret_key_path: data_directory.join(
+                path_value("SANDPOST_OUTBOUND_SECRET_KEY_FILE")
+                    .or_else(|| file.outbound.secret_key_file.clone())
+                    .unwrap_or_else(|| "outbound-secret.key".into()),
+            ),
+        };
         let web_listen_address = listener_address(
             environment_value,
             "SANDPOST_HTTP_BIND_ADDRESS",
@@ -559,6 +647,7 @@ impl Configuration {
             maximum_scope_depth,
             link_check_allow_internal_addresses,
             personas,
+            outbound,
             log_level: environment_value("SANDPOST_LOG_LEVEL")
                 .or_else(|| file.sandpost.log_level.clone())
                 .unwrap_or_else(|| "info".into()),

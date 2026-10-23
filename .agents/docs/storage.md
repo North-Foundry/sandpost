@@ -17,7 +17,7 @@ boundary, and nothing in the contract depends on a backend.
 
 `sandpost-storage` defines the capability traits `UserStorage`,
 `SmtpServerStorage`, `ImapStorage`, `ScopeStorage`, `ViewStorage`, `MessageStorage`,
-`LinkCheckStorage`, `SearchSynchronizationStorage`, and `StorageHealth`, and composes them into the
+`LinkCheckStorage`, `OutboundStorage`, `SearchSynchronizationStorage`, and `StorageHealth`, and composes them into the
 object-safe `Storage` trait through a blanket implementation for any type that
 implements every capability. No database driver type, SQL text, connection, transaction object, or
 backend-specific error appears here.
@@ -25,7 +25,7 @@ backend-specific error appears here.
 - Errors are semantic `StorageError` values: `Unavailable`,
   `NotFound`, `ConstraintViolation`, `InvalidData`, `Migration`,
   `NewerSchema`, `DuplicateMessageIdentifier`, `DuplicateUserEmail`, `DuplicateSmtpUsername`,
-  `DuplicateImapUsername`, `DuplicateImapFolderName`, `DuplicateInboxAddress`, `InvalidInboxAddress`,
+  `DuplicateImapUsername`, `DuplicateImapFolderName`, `DuplicateInboxAddress`, `DuplicateSmtpOutboundName`, `SmtpOutboundInUse`, `InvalidInboxAddress`,
   `PolicyVersionConflict`, `LastOwner`, `InstanceAlreadyInitialized`,
   `IntegerRange`, `BatchLimitExceeded`, and `Backend`. A backend maps its
   own driver failures into these.
@@ -92,6 +92,21 @@ ordered sequence of migration scripts.
   check), fails with `NotFound` for a missing message, and ignores a check older than the
   stored one. Reads are not user-scoped; callers authorize the message first. Physical message
   deletion cascades the check and its results. Running checks are application memory, not storage.
+- **SMTP Outbounds and routing.** `SmtpOutbound` holds connection settings, a recipient allowlist
+  (JSON array) and `password_configured`; the password crosses the contract only encrypted
+  (`SmtpOutboundCredential` is the only read returning it). Names are unique ignoring ASCII case
+  (`DuplicateSmtpOutboundName`). `RoutingAction { scope, smtp_outbound, kind (relay/forward),
+  forward_recipients, enabled }` cascades with its scope; deleting a referenced outbound fails with
+  `SmtpOutboundInUse`. `insert_message` queues the message in `mail_routing_evaluations` only while an
+  enabled action uses an enabled outbound. `complete_routing_evaluation` creates deliveries (unique per
+  message and action) and dequeues atomically. `OutboundDelivery` jobs move through `pending`,
+  `processing`, `retrying`, `delivered`, `failed` with per-recipient rows and numbered attempts;
+  `claim_outbound_delivery` starts an attempt, `finish_outbound_delivery_attempt` records it (keeping
+  the newest 10,000 finished jobs and 50 attempts per job), `interrupt_outbound_deliveries` returns
+  `processing` jobs to `retrying` at startup, and `retry_outbound_delivery` reschedules failed jobs.
+  Disabling or deleting an outbound or action fails its waiting jobs in the same transaction; job
+  references become null on deletion while the recorded outbound name stays. Listings accept a
+  reader whose composed filter and deletions bound the result. See [outbound.md](outbound.md).
 - **Primary state.** `user_message_deletions` permanently removes a message from the
   primary user's view and every Mirror projection, while Independent references survive.
   `user_message_placements`, `user_message_copies`, `user_message_trash` and
@@ -140,7 +155,7 @@ Full behavior, protocol decisions, subscriptions, and notifications: [imap.md](i
 
 ## SQLite backend, startup, and migrations
 
-`sandpost-storage-sqlite` keeps one ordered sequence of 50 SQL scripts (0001–0050, without gaps),
+`sandpost-storage-sqlite` keeps one ordered sequence of 59 SQL scripts (0001–0059, without gaps),
 with table/index definitions and trigger groups in separate files. The `migrations` table records
 applied script names and a positive integer `batch`. Every execution with pending scripts records
 all of them in the same batch, one greater than the largest applied batch; fresh databases use batch
@@ -177,6 +192,14 @@ assumption that could overwrite a later role change. Migrations 0049 and 0050 cr
 `message_link_check_results` (unique URL and position per check, constrained outcome and status
 range, cascading from the check). Their down scripts drop the tables and stored results.
 Every authenticated reader may start checks; the user model has no link-check permission fields.
+Migrations 0054–0059 create `smtp_outbounds` (unique
+`NOCASE` name, constrained security/authentication, nullable encrypted password BLOB, JSON-array
+allowlist), `scope_routing_actions` (cascading from `scopes`, `RESTRICT` on `smtp_outbounds`),
+`mail_routing_evaluations` (one queued row per message, cascading from `mail`),
+`outbound_deliveries` (AUTOINCREMENT sequence, unique message/action pair, constrained status,
+cascading from `mail`, `SET NULL` on scope/action/outbound deletion), `outbound_delivery_recipients`
+and `outbound_delivery_attempts` (cascading from their delivery). Their down scripts drop the tables
+and delivery history.
 
 The application has not shipped. Its pre-release baseline was consolidated: historical ALTERs,
 data backfills, trigger replacements, and fingerprint invalidation scripts were removed. Scripts
@@ -255,7 +278,8 @@ detail of `sandpost-storage-sqlite` and does not cross the storage contract.
 ## Mail writes and reads
 
 SMTP ingestion writes the message, normalized recipient/header/attachment facts, and
-exactly one search-outbox operation in one transaction. SQLite reserves the next
+exactly one search-outbox operation, and (only while routing is configured) its routing
+evaluation in one transaction. SQLite reserves the next
 AUTOINCREMENT sequence under an immediate write transaction, writes child facts before
 the parent, and defers foreign-key checks until commit. The final parent insert enqueues
 one complete revision; later child mutations still advance revisions through the existing

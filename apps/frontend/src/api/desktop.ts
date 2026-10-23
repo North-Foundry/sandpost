@@ -7,6 +7,7 @@ import type {
 } from './contracts'
 import type {
   WireAccount,
+  WireConnectionTestResult,
   WireImapAccount,
   WireImapAccountInput,
   WireImapAccountUpdate,
@@ -21,15 +22,23 @@ import type {
   WireLinkCheckReport,
   WireMessageDetail,
   WireMessageSummary,
+  WireOutboundDelivery,
+  WireOutboundDeliveryDetail,
+  WireOutboundDeliveryListOptions,
+  WireOutboundPolicy,
   WirePersona,
   WirePersonaExecution,
   WirePersonaScriptValidation,
   WireQueryValidation,
+  WireRoutingAction,
+  WireRoutingActionInput,
   WireScope,
   WireSessionUser,
   WireSmtpAccess,
   WireSmtpAccessInput,
   WireSmtpAccessUpdate,
+  WireSmtpOutbound,
+  WireSmtpOutboundInput,
   WireSmtpServer,
   WireView,
   WireWebFolder,
@@ -582,9 +591,124 @@ export interface SandpostDesktopAdminBridge {
   }
 
   /**
+   * SMTP Outbound administration; absent in preloads that predate outbound delivery.
+   */
+  outbound?: SandpostDesktopOutboundBridge
+
+  /**
+   * Scope routing actions; absent in preloads that predate outbound delivery.
+   */
+  routing?: SandpostDesktopRoutingBridge
+
+  /**
+   * Outbound delivery jobs; absent in preloads that predate outbound delivery.
+   */
+  deliveries?: SandpostDesktopDeliveryBridge
+
+  /**
    * Validate a query and return any compiler diagnostic.
    */
   validateQuery(query: string): Promise<WireQueryValidation>
+}
+
+/**
+ * SMTP Outbound operations, each on its own `sandpost:admin:outbound:*` IPC channel.
+ */
+export interface SandpostDesktopOutboundBridge {
+  /**
+   * Read the instance-wide outbound policy (`admin:outbound:policy`).
+   */
+  policy(): Promise<WireOutboundPolicy>
+
+  /**
+   * List SMTP Outbounds (`admin:outbound:list`).
+   */
+  list(): Promise<WireSmtpOutbound[]>
+
+  /**
+   * Read one SMTP Outbound (`admin:outbound:get`).
+   */
+  get(id: string): Promise<WireSmtpOutbound>
+
+  /**
+   * Create an SMTP Outbound (`admin:outbound:create`).
+   */
+  create(input: WireSmtpOutboundInput): Promise<WireSmtpOutbound>
+
+  /**
+   * Replace an SMTP Outbound (`admin:outbound:update`).
+   */
+  update(id: string, input: WireSmtpOutboundInput): Promise<WireSmtpOutbound>
+
+  /**
+   * Enable or disable an SMTP Outbound (`admin:outbound:enabled`).
+   */
+  setEnabled(id: string, enabled: boolean): Promise<WireSmtpOutbound>
+
+  /**
+   * Delete an SMTP Outbound (`admin:outbound:delete`).
+   */
+  delete(id: string): Promise<void | null>
+
+  /**
+   * Test a stored SMTP Outbound (`admin:outbound:test`).
+   */
+  test(id: string): Promise<WireConnectionTestResult>
+
+  /**
+   * Test unsaved settings, reusing the stored password of `id` (`admin:outbound:test-draft`).
+   */
+  testDraft(input: WireSmtpOutboundInput, id: string | null): Promise<WireConnectionTestResult>
+}
+
+/**
+ * Scope routing action operations, each on its own `sandpost:admin:routing:*` IPC channel.
+ */
+export interface SandpostDesktopRoutingBridge {
+  /**
+   * List the routing actions of a scope (`admin:routing:list`).
+   */
+  list(scopeId: string): Promise<WireRoutingAction[]>
+
+  /**
+   * Add a routing action to a scope (`admin:routing:create`).
+   */
+  create(scopeId: string, input: WireRoutingActionInput): Promise<WireRoutingAction>
+
+  /**
+   * Replace a routing action (`admin:routing:update`).
+   */
+  update(id: string, input: WireRoutingActionInput): Promise<WireRoutingAction>
+
+  /**
+   * Delete a routing action (`admin:routing:delete`).
+   */
+  delete(id: string): Promise<void | null>
+}
+
+/**
+ * Outbound delivery operations, each on its own `sandpost:admin:deliveries:*` IPC channel.
+ */
+export interface SandpostDesktopDeliveryBridge {
+  /**
+   * List deliveries newest first (`admin:deliveries:list`).
+   */
+  list(options: WireOutboundDeliveryListOptions): Promise<WireOutboundDelivery[]>
+
+  /**
+   * Read one delivery with its attempts (`admin:deliveries:get`).
+   */
+  get(id: string): Promise<WireOutboundDeliveryDetail>
+
+  /**
+   * Schedule a failed delivery again (`admin:deliveries:retry`).
+   */
+  retry(id: string): Promise<WireOutboundDelivery>
+
+  /**
+   * List the deliveries of one readable message (`admin:deliveries:message`).
+   */
+  message(messageId: string): Promise<WireOutboundDelivery[]>
 }
 
 /**

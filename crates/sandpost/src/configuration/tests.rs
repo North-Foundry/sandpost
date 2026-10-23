@@ -1825,3 +1825,61 @@ fn invalid_persona_settings_are_refused() {
         assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
     }
 }
+
+/**
+ * Outbound delivery defaults refuse internal destinations and keep the password key beside the
+ * database; TOML and the environment override each field, and unusable values are refused.
+ */
+#[test]
+fn outbound_settings_follow_toml_and_environment() {
+    let defaults = listener_sources("", &[]).unwrap();
+    let outbound = &defaults.outbound;
+    assert!(!outbound.allow_internal_addresses);
+    assert_eq!(outbound.concurrent_deliveries, 4);
+    assert_eq!(outbound.maximum_attempts, 8);
+    assert_eq!(outbound.retry_delay_seconds, 60);
+    assert_eq!(
+        outbound.secret_key_path,
+        defaults.data_directory.join("outbound-secret.key")
+    );
+    let toml = "[outbound]\nallow_internal_addresses = true\nconcurrent_deliveries = 2\nmaximum_attempts = 3\nretry_delay_seconds = 10\nsecret_key_file = 'keys/outbound.key'";
+    let configured = listener_sources(toml, &[]).unwrap();
+    assert!(configured.outbound.allow_internal_addresses);
+    assert_eq!(configured.outbound.maximum_attempts, 3);
+    assert_eq!(
+        configured.outbound.secret_key_path,
+        configured.data_directory.join("keys/outbound.key")
+    );
+    let overridden = listener_sources(
+        toml,
+        &[
+            ("SANDPOST_OUTBOUND_ALLOW_INTERNAL_ADDRESSES", "false"),
+            ("SANDPOST_OUTBOUND_SECRET_KEY_FILE", "/secrets/outbound.key"),
+        ],
+    )
+    .unwrap()
+    .outbound;
+    assert!(!overridden.allow_internal_addresses);
+    assert_eq!(
+        overridden.secret_key_path,
+        std::path::PathBuf::from("/secrets/outbound.key")
+    );
+    let settings = configured.outbound.settings(None);
+    assert_eq!(settings.retry_delay, std::time::Duration::from_secs(10));
+    assert_eq!(settings.concurrent_deliveries, 2);
+    assert!(settings.secret_key.is_none());
+    for (setting, value) in [
+        ("SANDPOST_OUTBOUND_CONCURRENT_DELIVERIES", "0"),
+        ("SANDPOST_OUTBOUND_MAXIMUM_ATTEMPTS", "101"),
+        ("SANDPOST_OUTBOUND_RETRY_DELAY_SECONDS", "0"),
+        ("SANDPOST_OUTBOUND_ALLOW_INTERNAL_ADDRESSES", "yes"),
+    ] {
+        let error = listener_sources("", &[(setting, value)]).unwrap_err();
+        assert!(
+            error.to_string().contains(setting),
+            "{setting}={value}: {error}"
+        );
+    }
+    let error = listener_sources("[outbound]\nretry = 1", &[]).unwrap_err();
+    assert!(matches!(error, ConfigurationError::File { .. }), "{error}");
+}

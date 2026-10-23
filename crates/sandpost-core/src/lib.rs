@@ -3,6 +3,7 @@ mod imap;
 mod inbox_addresses;
 mod link_checks;
 mod messages;
+mod outbound;
 mod personas;
 mod scopes;
 mod smtp_access;
@@ -10,8 +11,9 @@ mod users;
 
 pub use identifiers::{
     ImapAccountIdentifier, ImapFolderIdentifier, ImapMailboxIdentifier, InboxIdentifier,
-    MessageIdentifier, MessageSequence, PersonaExecutionIdentifier, PersonaIdentifier,
-    ScopeIdentifier, SmtpAccessIdentifier, UserIdentifier, ViewIdentifier,
+    MessageIdentifier, MessageSequence, OutboundDeliveryIdentifier, PersonaExecutionIdentifier,
+    PersonaIdentifier, RoutingActionIdentifier, ScopeIdentifier, SmtpAccessIdentifier,
+    SmtpOutboundIdentifier, UserIdentifier, ViewIdentifier,
 };
 pub use imap::{
     ImapAccount, ImapAccountMode, ImapFolderKind, ImapLinkedView, ImapLocalFolder,
@@ -20,6 +22,12 @@ pub use imap::{
 pub use inbox_addresses::normalize_inbox_address;
 pub use link_checks::{LinkCheckErrorKind, LinkCheckResult, LinkOutcome, MessageLinkCheck};
 pub use messages::{Attachment, Mailbox, Message, MessageFacts};
+pub use outbound::{
+    OutboundAttemptOutcome, OutboundDelivery, OutboundDeliveryAttempt, OutboundDeliveryStatus,
+    OutboundFailure, OutboundFailureKind, OutboundRecipient, OutboundRecipientStatus,
+    RoutingAction, RoutingActionKind, SmtpOutbound, SmtpOutboundAuthentication,
+    SmtpOutboundSecurity,
+};
 pub use personas::{
     Persona, PersonaActionDetail, PersonaActionKind, PersonaActionStatus, PersonaExecution,
     PersonaExecutionAction, PersonaExecutionStatus, PersonaHttpRequest,

@@ -47,6 +47,9 @@ opaque_identifier!(ImapFolderIdentifier);
 opaque_identifier!(ImapMailboxIdentifier);
 opaque_identifier!(PersonaIdentifier);
 opaque_identifier!(PersonaExecutionIdentifier);
+opaque_identifier!(SmtpOutboundIdentifier);
+opaque_identifier!(RoutingActionIdentifier);
+opaque_identifier!(OutboundDeliveryIdentifier);
 
 /// Internal SQLite AUTOINCREMENT key; opaque UUIDs are used in public APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

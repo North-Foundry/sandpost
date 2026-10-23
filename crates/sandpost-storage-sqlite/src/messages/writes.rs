@@ -45,6 +45,7 @@ pub(super) async fn insert_message(
         return Err(StorageError::DuplicateMessageIdentifier(message.identifier));
     }
     schedule_persona_executions(connection, message).await?;
+    queue_routing_evaluation(connection, message).await?;
     Ok(MessageSequence(
         u64::try_from(stored_sequence).map_err(|_| StorageError::IntegerRange)?,
     ))
@@ -107,6 +108,29 @@ async fn schedule_persona_executions(
         .await
         .storage()?;
     }
+    Ok(())
+}
+
+/**
+ * Queue the message for routing evaluation while any enabled routing action uses an enabled
+ * SMTP Outbound.
+ *
+ * Runs inside the caller's message transaction, so the queued evaluation commits or rolls back
+ * with the message and SMTP never waits for external delivery. Without routing configuration
+ * nothing is written.
+ */
+async fn queue_routing_evaluation(
+    connection: &mut SqliteConnection,
+    message: &Message,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO mail_routing_evaluations(message_identifier, queued_at) SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM scope_routing_actions AS action JOIN smtp_outbounds AS outbound ON outbound.identifier = action.smtp_outbound_identifier WHERE action.enabled = 1 AND outbound.enabled = 1)",
+    )
+    .bind(message.identifier.to_string())
+    .bind(message.facts.received_at)
+    .execute(&mut *connection)
+    .await
+    .storage()?;
     Ok(())
 }
 

@@ -4,8 +4,9 @@ use napi::{Error, Result, Status};
 use sandpost_application::{ApplicationError, InstanceError};
 use sandpost_core::{
     ImapAccountIdentifier, ImapFolderIdentifier, InboxIdentifier, MessageIdentifier,
-    MessageSequence, PersonaExecutionIdentifier, PersonaIdentifier, ScopeIdentifier,
-    SmtpAccessIdentifier, UserIdentifier, ViewIdentifier,
+    MessageSequence, OutboundDeliveryIdentifier, PersonaExecutionIdentifier, PersonaIdentifier,
+    RoutingActionIdentifier, ScopeIdentifier, SmtpAccessIdentifier, SmtpOutboundIdentifier,
+    UserIdentifier, ViewIdentifier,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -139,6 +140,35 @@ pub(super) fn parse_persona_execution_identifier(
     value
         .parse()
         .map_err(|_| Error::new(Status::InvalidArg, "invalid persona execution identifier"))
+}
+
+/**
+ * Parse an SMTP Outbound UUID at the native trust boundary.
+ */
+pub(super) fn parse_smtp_outbound_identifier(value: &str) -> Result<SmtpOutboundIdentifier> {
+    value
+        .parse()
+        .map_err(|_| Error::new(Status::InvalidArg, "invalid SMTP Outbound identifier"))
+}
+
+/**
+ * Parse a routing action UUID at the native trust boundary.
+ */
+pub(super) fn parse_routing_action_identifier(value: &str) -> Result<RoutingActionIdentifier> {
+    value
+        .parse()
+        .map_err(|_| Error::new(Status::InvalidArg, "invalid routing action identifier"))
+}
+
+/**
+ * Parse an outbound delivery UUID at the native trust boundary.
+ */
+pub(super) fn parse_outbound_delivery_identifier(
+    value: &str,
+) -> Result<OutboundDeliveryIdentifier> {
+    value
+        .parse()
+        .map_err(|_| Error::new(Status::InvalidArg, "invalid outbound delivery identifier"))
 }
 
 /// Decode a native JSON object into its typed application input.

@@ -759,6 +759,280 @@ export interface ScopePreviewInput {
 }
 
 /**
+ * How an SMTP Outbound protects the connection: plain text, upgraded with STARTTLS, or implicit TLS.
+ */
+export type OutboundSecurity = 'none' | 'starttls' | 'tls'
+
+/**
+ * How an SMTP Outbound authenticates to the external server.
+ */
+export type OutboundAuthenticationType = 'none' | 'plain' | 'login'
+
+/**
+ * Category of an outbound connection or delivery failure.
+ */
+export type OutboundErrorKind =
+  | 'configuration'
+  | 'policy'
+  | 'connection'
+  | 'tls'
+  | 'authentication'
+  | 'temporary'
+  | 'permanent'
+  | 'interrupted'
+
+/**
+ * An outbound failure; the message keeps the server's original text, including any SMTP reply.
+ */
+export interface OutboundError {
+  kind: OutboundErrorKind
+  message: string
+
+  /**
+   * SMTP reply code when the failure came from an SMTP reply.
+   */
+  code: number | null
+}
+
+/**
+ * Connection settings shared by stored SMTP Outbounds and their edit input.
+ */
+export interface SmtpOutboundSettings {
+  name: string
+  host: string
+  port: number
+  security: OutboundSecurity
+  authenticationType: OutboundAuthenticationType
+  username: string | null
+
+  /**
+   * Replaces the message From header; null keeps the original.
+   */
+  overrideFrom: string | null
+
+  /**
+   * Replaces the SMTP envelope sender; null keeps the original.
+   */
+  envelopeFrom: string | null
+
+  /**
+   * Seconds; null uses the server default of 10.
+   */
+  connectTimeoutSeconds: number | null
+
+  /**
+   * Seconds; null uses the server default of 60.
+   */
+  smtpTimeoutSeconds: number | null
+  tlsVerify: boolean
+  heloName: string | null
+
+  /**
+   * Null uses the server default of 2.
+   */
+  maxConnections: number | null
+
+  /**
+   * Recipient safety allowlist of glob patterns. Empty permits no recipient; `*` permits everyone.
+   */
+  allowedRecipients: string[]
+}
+
+/**
+ * An instance-level connection to an external SMTP server. The password is never returned.
+ */
+export interface SmtpOutbound extends SmtpOutboundSettings {
+  id: string
+  enabled: boolean
+
+  /**
+   * Whether a password is stored for this outbound.
+   */
+  passwordConfigured: boolean
+
+  /**
+   * Number of scope routing actions that deliver through this outbound.
+   */
+  routingActionCount: number
+
+  /**
+   * Milliseconds since the Unix epoch.
+   */
+  createdAt: number
+
+  /**
+   * Milliseconds since the Unix epoch.
+   */
+  updatedAt: number
+}
+
+/**
+ * Create or replace an SMTP Outbound, or test a draft.
+ */
+export interface SmtpOutboundInput extends SmtpOutboundSettings {
+  /**
+   * Write-only; omit, null or blank keeps the stored password on update.
+   */
+  password?: string | null
+
+  /**
+   * Omit to keep the current state on update; creation defaults to disabled.
+   */
+  enabled?: boolean
+}
+
+/**
+ * Instance-wide limits for outbound delivery.
+ */
+export interface OutboundPolicy {
+  allowInternalAddresses: boolean
+  maximumAttempts: number
+  retryDelaySeconds: number
+
+  /**
+   * False when the instance has no secret key, so passwords cannot be saved.
+   */
+  credentialsAvailable: boolean
+}
+
+/**
+ * Result of connecting, negotiating TLS and authenticating to an external server without sending mail.
+ */
+export interface OutboundConnectionTest {
+  success: boolean
+  address: string | null
+  encrypted: boolean
+  authenticated: boolean
+  extensions: string[]
+  durationMilliseconds: number
+  error: OutboundError | null
+}
+
+/**
+ * Relay delivers to the original envelope recipients; forward delivers a copy to configured recipients.
+ */
+export type RoutingActionType = 'relay' | 'forward'
+
+/**
+ * A delivery action of one scope through an SMTP Outbound; never inherited by child scopes.
+ */
+export interface RoutingAction {
+  id: string
+  scopeId: string
+  smtpOutboundId: string
+  actionType: RoutingActionType
+
+  /**
+   * Empty for relay actions.
+   */
+  forwardRecipients: string[]
+  enabled: boolean
+
+  /**
+   * Milliseconds since the Unix epoch.
+   */
+  createdAt: number
+
+  /**
+   * Milliseconds since the Unix epoch.
+   */
+  updatedAt: number
+}
+
+export interface RoutingActionInput {
+  smtpOutboundId: string
+  actionType: RoutingActionType
+
+  /**
+   * Required (1 to 50) for forward actions; ignored for relay actions.
+   */
+  forwardRecipients: string[]
+  enabled?: boolean
+}
+
+export type OutboundDeliveryStatus = 'pending' | 'processing' | 'retrying' | 'delivered' | 'failed'
+
+export type OutboundRecipientStatus = 'pending' | 'delivered' | 'failed'
+
+export interface OutboundDeliveryRecipient {
+  address: string
+  status: OutboundRecipientStatus
+  error: OutboundError | null
+
+  /**
+   * The server's accepting reply, for example `250 2.0.0 queued`.
+   */
+  response: string | null
+
+  /**
+   * Milliseconds since the Unix epoch.
+   */
+  deliveredAt: number | null
+}
+
+/**
+ * A durable background delivery of one message through one routing action. Times are milliseconds.
+ */
+export interface OutboundDelivery {
+  id: string
+
+  /**
+   * Keyset cursor for listing older deliveries.
+   */
+  sequence: number
+  messageId: string
+  subject: string
+  scopeId: string | null
+  routingActionId: string | null
+  smtpOutboundId: string | null
+  smtpOutboundName: string
+  actionType: RoutingActionType
+  status: OutboundDeliveryStatus
+  envelopeFrom: string | null
+  attemptCount: number
+  lastError: OutboundError | null
+  createdAt: number
+  lastAttemptAt: number | null
+  nextAttemptAt: number | null
+  deliveredAt: number | null
+  recipients: OutboundDeliveryRecipient[]
+}
+
+export type OutboundAttemptOutcome = 'delivered' | 'partial' | 'deferred' | 'failed' | 'interrupted'
+
+/**
+ * One connection attempt of a delivery. Times are milliseconds.
+ */
+export interface OutboundDeliveryAttempt {
+  number: number
+  startedAt: number
+  finishedAt: number | null
+  outcome: OutboundAttemptOutcome
+  error: OutboundError | null
+  deliveredRecipients: number
+  deferredRecipients: number
+  failedRecipients: number
+}
+
+export interface OutboundDeliveryDetail extends OutboundDelivery {
+  attempts: OutboundDeliveryAttempt[]
+}
+
+export interface OutboundDeliveryListOptions {
+  status?: OutboundDeliveryStatus
+
+  /**
+   * Exclusive delivery sequence; returns older deliveries.
+   */
+  before?: number
+
+  /**
+   * 1 to 100; the server defaults to 50.
+   */
+  limit?: number
+}
+
+/**
  * Administration of SMTP access, scopes, and accounts.
  */
 export interface SandpostAdminClient {
@@ -800,6 +1074,105 @@ export interface SandpostAdminClient {
      * Delete the record identified by the supplied ID.
      */
     delete(id: string): Promise<void>
+  }
+  /**
+   * SMTP Outbound connections to external servers; only owners may use these.
+   */
+  outbound: {
+    /**
+     * Read the instance-wide outbound delivery policy.
+     */
+    policy(): Promise<OutboundPolicy>
+
+    /**
+     * List SMTP Outbounds ordered by name.
+     */
+    list(): Promise<SmtpOutbound[]>
+
+    /**
+     * Read one SMTP Outbound.
+     */
+    get(id: string): Promise<SmtpOutbound>
+
+    /**
+     * Create an SMTP Outbound; a duplicate name is a conflict.
+     */
+    create(input: SmtpOutboundInput): Promise<SmtpOutbound>
+
+    /**
+     * Replace an SMTP Outbound; a blank password keeps the stored one.
+     */
+    update(id: string, input: SmtpOutboundInput): Promise<SmtpOutbound>
+
+    /**
+     * Enable or disable an SMTP Outbound.
+     */
+    setEnabled(id: string, enabled: boolean): Promise<SmtpOutbound>
+
+    /**
+     * Delete an SMTP Outbound; refused while routing actions reference it.
+     */
+    delete(id: string): Promise<void>
+
+    /**
+     * Test the stored configuration of an SMTP Outbound without sending mail.
+     */
+    test(id: string): Promise<OutboundConnectionTest>
+
+    /**
+     * Test unsaved settings; with `id`, an omitted password reuses that outbound's stored password.
+     */
+    testDraft(input: SmtpOutboundInput, id?: string | null): Promise<OutboundConnectionTest>
+  }
+
+  /**
+   * Scope routing actions; only owners may use these.
+   */
+  routing: {
+    /**
+     * List the routing actions of one scope.
+     */
+    list(scopeId: string): Promise<RoutingAction[]>
+
+    /**
+     * Add a routing action to a scope.
+     */
+    create(scopeId: string, input: RoutingActionInput): Promise<RoutingAction>
+
+    /**
+     * Replace a routing action.
+     */
+    update(id: string, input: RoutingActionInput): Promise<RoutingAction>
+
+    /**
+     * Delete a routing action.
+     */
+    delete(id: string): Promise<void>
+  }
+
+  /**
+   * Outbound delivery jobs; only owners may use these.
+   */
+  deliveries: {
+    /**
+     * List deliveries newest first, optionally by status and before a sequence.
+     */
+    list(options?: OutboundDeliveryListOptions): Promise<OutboundDelivery[]>
+
+    /**
+     * Read one delivery with its attempt history.
+     */
+    get(id: string): Promise<OutboundDeliveryDetail>
+
+    /**
+     * Schedule a failed delivery again.
+     */
+    retry(id: string): Promise<OutboundDelivery>
+
+    /**
+     * List the deliveries of one readable message.
+     */
+    forMessage(messageId: string): Promise<OutboundDelivery[]>
   }
   scopes: {
     /**

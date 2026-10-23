@@ -16,6 +16,8 @@ sandpost-mime.workspace = true
 sandpost-html-check.workspace = true
 sandpost-link-check.workspace = true
 sandpost-persona-script.workspace = true
+sandpost-smtp-outbound.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -28,3 +30,5 @@ sha2.workspace = true
 
 [dev-dependencies]
 sandpost-storage-sqlite.workspace = true
+sandpost-smtp.workspace = true
+rcgen.workspace = true

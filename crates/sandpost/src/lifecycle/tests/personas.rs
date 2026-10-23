@@ -44,7 +44,7 @@ async fn recording_server() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<
 /**
  * Submit one HTML message over plain SMTP to the given envelope recipient.
  */
-async fn submit_html(address: SocketAddr, recipient: &str, subject: &str, html: &str) {
+pub(super) async fn submit_html(address: SocketAddr, recipient: &str, subject: &str, html: &str) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut stream = BufReader::new(tokio::net::TcpStream::connect(address).await.unwrap());
     let mut line = String::new();

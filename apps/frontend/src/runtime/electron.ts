@@ -1,5 +1,12 @@
-import type { SandpostDesktopBridge, SandpostDesktopPersonaBridge, WireDesktopEvent } from '@/api/desktop'
-import type { SandpostClient, SandpostEvent, SandpostPersonaClient } from '@/api/contracts'
+import type {
+  SandpostDesktopBridge,
+  SandpostDesktopDeliveryBridge,
+  SandpostDesktopOutboundBridge,
+  SandpostDesktopPersonaBridge,
+  SandpostDesktopRoutingBridge,
+  WireDesktopEvent,
+} from '@/api/desktop'
+import type { SandpostAdminClient, SandpostClient, SandpostEvent, SandpostPersonaClient } from '@/api/contracts'
 import {
   normalizeBulkLinkCheck,
   normalizeCompatibilityReport,
@@ -33,6 +40,18 @@ import {
   normalizeImapServer,
   normalizeIssuedImapCredentials,
 } from '@/api/imap'
+import {
+  normalizeConnectionTest,
+  normalizeOutboundDelivery,
+  normalizeOutboundDeliveryDetail,
+  normalizeOutboundPolicy,
+  normalizeRoutingAction,
+  normalizeSmtpOutbound,
+  outboundDeliveryListWire,
+  routingActionWire,
+  smtpOutboundTestWire,
+  smtpOutboundWire,
+} from '@/api/outbound'
 import {
   normalizePersona,
   normalizePersonaExecution,
@@ -95,6 +114,130 @@ function personaClient(bridge: SandpostDesktopPersonaBridge): SandpostPersonaCli
      * Read one execution with its recorded steps.
      */
     execution: async (id, executionId) => normalizePersonaExecutionDetails(await nativeCall(() => bridge.execution(id, executionId))),
+  }
+}
+
+/**
+ * Error raised when the desktop preload predates outbound delivery.
+ */
+const OUTBOUND_UNAVAILABLE = 'SMTP Outbound delivery is not available in this version of the desktop app.'
+
+/**
+ * Return the bridge section, or fail with a readable error when the preload does not provide it.
+ */
+function requireSection<T>(section: T | undefined): T {
+  if (!section) throw new Error(OUTBOUND_UNAVAILABLE)
+  return section
+}
+
+/**
+ * Adapt the native SMTP Outbound bridge to the shared client contract.
+ */
+function outboundClient(bridge: SandpostDesktopOutboundBridge | undefined): SandpostAdminClient['outbound'] {
+  return {
+    /**
+     * Read the instance-wide outbound delivery policy.
+     */
+    policy: async () => normalizeOutboundPolicy(await nativeCall(() => requireSection(bridge).policy())),
+
+    /**
+     * List SMTP Outbounds ordered by name.
+     */
+    list: async () => (await nativeCall(() => requireSection(bridge).list())).map(normalizeSmtpOutbound),
+
+    /**
+     * Read one SMTP Outbound.
+     */
+    get: async (id) => normalizeSmtpOutbound(await nativeCall(() => requireSection(bridge).get(id))),
+
+    /**
+     * Create an SMTP Outbound.
+     */
+    create: async (input) => normalizeSmtpOutbound(await nativeCall(() => requireSection(bridge).create(smtpOutboundWire(input)))),
+
+    /**
+     * Replace an SMTP Outbound; an omitted password keeps the stored one.
+     */
+    update: async (id, input) => normalizeSmtpOutbound(await nativeCall(() => requireSection(bridge).update(id, smtpOutboundWire(input)))),
+
+    /**
+     * Enable or disable an SMTP Outbound.
+     */
+    setEnabled: async (id, enabled) => normalizeSmtpOutbound(await nativeCall(() => requireSection(bridge).setEnabled(id, enabled))),
+
+    /**
+     * Delete an SMTP Outbound that no routing action references.
+     */
+    delete: async (id) => { await nativeCall(() => requireSection(bridge).delete(id)) },
+
+    /**
+     * Test the stored configuration of an SMTP Outbound.
+     */
+    test: async (id) => normalizeConnectionTest(await nativeCall(() => requireSection(bridge).test(id))),
+
+    /**
+     * Test unsaved settings, reusing the stored password of `id` when none is typed.
+     */
+    testDraft: async (input, id) => {
+      const { id: _omitted, ...wire } = smtpOutboundTestWire(input)
+      return normalizeConnectionTest(await nativeCall(() => requireSection(bridge).testDraft(wire, id ?? null)))
+    },
+  }
+}
+
+/**
+ * Adapt the native routing action bridge to the shared client contract.
+ */
+function routingClient(bridge: SandpostDesktopRoutingBridge | undefined): SandpostAdminClient['routing'] {
+  return {
+    /**
+     * List the routing actions of one scope.
+     */
+    list: async (scopeId) => (await nativeCall(() => requireSection(bridge).list(scopeId))).map(normalizeRoutingAction),
+
+    /**
+     * Add a routing action to a scope.
+     */
+    create: async (scopeId, input) => normalizeRoutingAction(await nativeCall(() => requireSection(bridge).create(scopeId, routingActionWire(input)))),
+
+    /**
+     * Replace a routing action.
+     */
+    update: async (id, input) => normalizeRoutingAction(await nativeCall(() => requireSection(bridge).update(id, routingActionWire(input)))),
+
+    /**
+     * Delete a routing action.
+     */
+    delete: async (id) => { await nativeCall(() => requireSection(bridge).delete(id)) },
+  }
+}
+
+/**
+ * Adapt the native delivery bridge; without it a message simply has no deliveries.
+ */
+function deliveriesClient(bridge: SandpostDesktopDeliveryBridge | undefined): SandpostAdminClient['deliveries'] {
+  return {
+    /**
+     * List deliveries newest first.
+     */
+    list: async (options = {}) => (await nativeCall(() => requireSection(bridge).list(outboundDeliveryListWire(options)))).map(normalizeOutboundDelivery),
+
+    /**
+     * Read one delivery with its attempt history.
+     */
+    get: async (id) => normalizeOutboundDeliveryDetail(await nativeCall(() => requireSection(bridge).get(id))),
+
+    /**
+     * Schedule a failed delivery again.
+     */
+    retry: async (id) => normalizeOutboundDelivery(await nativeCall(() => requireSection(bridge).retry(id))),
+
+    /**
+     * List the deliveries of one readable message, or none when the preload predates outbound delivery.
+     */
+    forMessage: async (messageId) => bridge
+      ? (await nativeCall(() => bridge.message(messageId))).map(normalizeOutboundDelivery)
+      : [],
   }
 }
 
@@ -529,6 +672,9 @@ export function createElectronClient(
          */
         delete: (id) => nativeCall(() => bridge.admin.smtp.delete(id)),
       },
+      outbound: outboundClient(bridge.admin.outbound),
+      routing: routingClient(bridge.admin.routing),
+      deliveries: deliveriesClient(bridge.admin.deliveries),
       scopes: {
         /**
          * List the records available through this client method.

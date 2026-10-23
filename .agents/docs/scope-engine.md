@@ -22,6 +22,15 @@ The application authorization module is the single composition boundary. Search 
 
 User deletion is a separate visibility condition. Lists, search, direct/raw/attachment reads, and event delivery exclude that user's tombstones. Independent accounts retain their own references; physical mail and the global index remain until every primary user and Independent view releases the message. Single deletion requires current authorization; bulk deletion affects only currently visible mail and counts only new tombstones. Repeating a single deletion returns not found.
 
+## Outbound routing
+
+Routing actions attach relay or forward delivery to a scope. They use the same canonical scope
+filters but no user composition: a message routes through its **most specific** matching scopes (a
+matching scope with a matching child yields to the child), and only those scopes' own enabled
+actions apply. Actions are not inherited by child scopes. Routing grants no access; delivery
+history shown to Owners remains bounded by their own composition and deletions. See
+[outbound.md](outbound.md).
+
 ## IMAP and placement
 
 An IMAP mailbox's membership is its owner's current authorization (mail access, assigned scopes with inherited filters, and personal filter) AND the mailbox's own filter: linked View, local-folder filter, or INBOX aggregate. Storage reconciles against authoritative SQL facts, never the search index. Definitions are canonicalized and fingerprinted; changes to scopes, assignments, personal filter, role, mail access, or Views trigger synchronization that removes no-longer-authorized members. After such changes commit, `ApplicationChange::Visibility` notifies idling clients so they receive resulting EXPUNGE responses. See [imap.md](imap.md).

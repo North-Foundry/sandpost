@@ -117,6 +117,7 @@ mod link_checks;
 mod mailbox;
 mod management;
 mod messages;
+mod outbound;
 mod personas;
 mod routing;
 mod smtp;

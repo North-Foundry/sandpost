@@ -23,6 +23,7 @@ pub(super) struct FileConfiguration {
     pub frontend: FrontendConfiguration,
     pub link_check: LinkCheckConfiguration,
     pub personas: PersonaFileConfiguration,
+    pub outbound: OutboundFileConfiguration,
 }
 
 /// Persona execution limits and network policy; omitted fields keep their defaults.
@@ -34,6 +35,18 @@ pub(super) struct PersonaFileConfiguration {
     pub execution_timeout_seconds: Option<u64>,
     pub concurrent_executions: Option<usize>,
     pub concurrent_requests: Option<usize>,
+}
+
+/// Outbound SMTP delivery limits, network policy and key location; omitted fields keep their
+/// defaults.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct OutboundFileConfiguration {
+    pub allow_internal_addresses: Option<bool>,
+    pub concurrent_deliveries: Option<usize>,
+    pub maximum_attempts: Option<u32>,
+    pub retry_delay_seconds: Option<u64>,
+    pub secret_key_file: Option<PathBuf>,
 }
 
 /// Outbound link verification policy; omission keeps internal destinations refused.

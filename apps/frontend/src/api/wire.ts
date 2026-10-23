@@ -499,3 +499,179 @@ export interface WirePersonaScriptValidation {
   statements: number | null
   longest_wait_milliseconds: number | null
 }
+
+/**
+ * Rust `OutboundError`.
+ */
+export interface WireOutboundError {
+  kind: string
+  message: string
+  code?: number | null
+}
+
+/**
+ * Rust `SmtpOutbound`; the password is never present.
+ */
+export interface WireSmtpOutbound {
+  id: string
+  name: string
+  host: string
+  port: number
+  security: 'none' | 'starttls' | 'tls'
+  auth_type: 'none' | 'plain' | 'login'
+  username: string | null
+  password_configured: boolean
+  enabled: boolean
+  override_from: string | null
+  envelope_from: string | null
+  connect_timeout: number | null
+  smtp_timeout: number | null
+  tls_verify: boolean
+  helo_name: string | null
+  max_connections: number | null
+  allowed_recipients: string[]
+  routing_action_count: number
+  created_at: number
+  updated_at: number
+}
+
+/**
+ * Rust `SmtpOutboundInput`; an omitted or null password keeps the stored one on update.
+ */
+export interface WireSmtpOutboundInput {
+  name: string
+  host: string
+  port: number
+  security: 'none' | 'starttls' | 'tls'
+  auth_type: 'none' | 'plain' | 'login'
+  username: string | null
+  password?: string | null
+  enabled?: boolean
+  override_from: string | null
+  envelope_from: string | null
+  connect_timeout: number | null
+  smtp_timeout: number | null
+  tls_verify: boolean
+  helo_name: string | null
+  max_connections: number | null
+  allowed_recipients: string[]
+}
+
+/**
+ * Draft connection test body: the input plus the outbound whose stored password may be reused.
+ */
+export interface WireSmtpOutboundTestInput extends WireSmtpOutboundInput {
+  id?: string
+}
+
+/**
+ * Rust `OutboundPolicy`.
+ */
+export interface WireOutboundPolicy {
+  allow_internal_addresses: boolean
+  maximum_attempts: number
+  retry_delay_seconds: number
+  credentials_available: boolean
+}
+
+/**
+ * Rust `ConnectionTestResult`.
+ */
+export interface WireConnectionTestResult {
+  success: boolean
+  address: string | null
+  encrypted: boolean
+  authenticated: boolean
+  extensions: string[]
+  duration_milliseconds: number
+  error: WireOutboundError | null
+}
+
+/**
+ * Rust `RoutingAction`.
+ */
+export interface WireRoutingAction {
+  id: string
+  scope_id: string
+  smtp_outbound_id: string
+  action_type: 'relay' | 'forward'
+  forward_recipients: string[]
+  enabled: boolean
+  created_at: number
+  updated_at: number
+}
+
+/**
+ * Rust `RoutingActionInput`.
+ */
+export interface WireRoutingActionInput {
+  smtp_outbound_id: string
+  action_type: 'relay' | 'forward'
+  forward_recipients: string[]
+  enabled?: boolean
+}
+
+/**
+ * Rust delivery recipient state.
+ */
+export interface WireOutboundDeliveryRecipient {
+  address: string
+  status: string
+  error: WireOutboundError | null
+  response: string | null
+  delivered_at: number | null
+}
+
+/**
+ * Rust `OutboundDelivery`.
+ */
+export interface WireOutboundDelivery {
+  id: string
+  seq: number
+  message_id: string
+  subject: string
+  scope_id: string | null
+  routing_action_id: string | null
+  smtp_outbound_id: string | null
+  smtp_outbound_name: string
+  action_type: 'relay' | 'forward'
+  status: string
+  envelope_from: string | null
+  attempt_count: number
+  last_error: WireOutboundError | null
+  created_at: number
+  last_attempt_at: number | null
+  next_attempt_at: number | null
+  delivered_at: number | null
+  recipients: WireOutboundDeliveryRecipient[]
+}
+
+/**
+ * Rust delivery attempt record.
+ */
+export interface WireOutboundDeliveryAttempt {
+  number: number
+  started_at: number
+  finished_at: number | null
+  outcome: string
+  error: WireOutboundError | null
+  delivered_recipients: number
+  deferred_recipients: number
+  failed_recipients: number
+}
+
+/**
+ * Rust `OutboundDeliveryDetail`.
+ */
+export interface WireOutboundDeliveryDetail extends WireOutboundDelivery {
+  attempts: WireOutboundDeliveryAttempt[]
+}
+
+/**
+ * Delivery list filters exchanged over IPC.
+ */
+export interface WireOutboundDeliveryListOptions {
+  status?: string
+  before?: number
+  limit?: number
+}

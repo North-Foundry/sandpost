@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0-alpha.1"
+version = "0.3.0-alpha.1"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -24,6 +24,7 @@ sandpost-search = { path = "crates/sandpost-search" }
 sandpost-html-check = { path = "crates/sandpost-html-check" }
 sandpost-link-check = { path = "crates/sandpost-link-check" }
 sandpost-persona-script = { path = "crates/sandpost-persona-script" }
+sandpost-smtp-outbound = { path = "crates/sandpost-smtp-outbound" }
 tower-http = { version = "0.7", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,6 +52,8 @@ scraper = { version = "0.27", default-features = false }
 cssparser = "0.38"
 indexmap = { version = "2", features = ["serde"] }
 url = "2"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "rustls-native-certs", "ring"] }
+ring = "0.17"
 
 [profile.release]
 lto = "thin"

@@ -690,6 +690,7 @@ onBeforeUnmount(() => {
       :seen="selectedMessage?.seen ?? detailSeen"
       :flags="selectedMessage?.flags"
       :can-mutate="canMutateMail"
+      :show-deliveries="workspace.user.value?.role === 'owner'"
       :seen-busy="pendingSeenRequests > 0"
       :loading="detailLoading"
       :error="detailError"

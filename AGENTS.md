@@ -16,6 +16,9 @@ source of conventions/contracts; read applicable documents before editing:
   filters, candidates, exact verification and durable synchronization.
 - `.agents/docs/imap.md` — accounts/credentials, virtual mailbox and Web projections,
   placement/Trash, membership/UIDs/flags/user deletion, IDLE, configuration and limits.
+- `.agents/docs/outbound.md` — SMTP Outbounds, scope relay/forward routing actions, routing
+  scope resolution, durable delivery jobs, retries/restart and duplicates, credential encryption,
+  recipient/destination safety, configuration and interfaces.
 - `.agents/docs/code-style.md` — TypeScript source policy for JavaScript-platform
   code, complete Rust/SQL naming and function/helper/test documentation rules.
 - `.agents/docs/imap-operation-matrix.md` — IMAP lifecycle audit, operation matrix and mode ownership decisions.
