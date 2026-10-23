@@ -16,6 +16,9 @@ source of conventions/contracts; read applicable documents before editing:
   filters, candidates, exact verification and durable synchronization.
 - `.agents/docs/imap.md` — accounts/credentials, virtual mailbox and Web projections,
   placement/Trash, membership/UIDs/flags/user deletion, IDLE, configuration and limits.
+- `.agents/docs/personas.md` — Persona ownership and global address uniqueness, scope
+  authorization, envelope matching and durable scheduling, execution lifecycle and restart
+  recovery, PersonaScript grammar/semantics, outbound HTTP security, configuration and interfaces.
 - `.agents/docs/outbound.md` — SMTP Outbounds, scope relay/forward routing actions, routing
   scope resolution, durable delivery jobs, retries/restart and duplicates, credential encryption,
   recipient/destination safety, configuration and interfaces.

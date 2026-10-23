@@ -481,6 +481,7 @@ export interface WirePersona {
   owner_id: string
   name: string
   address: string
+  icon?: string | null
   script: string
   enabled: boolean
   revision: number

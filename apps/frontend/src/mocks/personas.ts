@@ -95,7 +95,7 @@ export function createMockPersonas(
     if ([...personas.values()].some((persona) => persona.address === address && persona.id !== excludedId)) {
       fail('this email address is already used by a persona; choose another address')
     }
-    return { name, address, script: input.script, enabled: input.enabled }
+    return { name, address, icon: input.icon ?? null, script: input.script, enabled: input.enabled }
   }
 
   /**
@@ -143,7 +143,10 @@ export function createMockPersonas(
     async update(id, input) {
       const persona = visible(id)
       if (persona.ownerId !== requireUser().id) fail('forbidden')
-      const updated = { ...persona, ...validated(input, id), revision: persona.revision + 1, updatedAt: Math.floor(Date.now() / 1000) }
+      const definition = validated(input, id)
+      const iconOnlyChange = persona.icon !== definition.icon && persona.name === definition.name
+        && persona.address === definition.address && persona.script === definition.script && persona.enabled === definition.enabled
+      const updated = { ...persona, ...definition, revision: persona.revision + Number(!iconOnlyChange), updatedAt: Math.floor(Date.now() / 1000) }
       personas.set(id, updated)
       return copy(updated)
     },

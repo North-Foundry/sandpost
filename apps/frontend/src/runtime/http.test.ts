@@ -977,19 +977,21 @@ describe('HTTP adapter', () => {
 
   it('maps Persona operations to the versioned Persona routes', async () => {
     const persona = {
-      id: 'persona/1', owner_id: 'user', name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true,
+      id: 'persona/1', owner_id: 'user', name: 'Alice', address: 'alice@example.test', icon: 'bot', script: 'open;', enabled: true,
       revision: 1, created_at: 1, updated_at: 1, address_access: 'confirmed', last_execution: null,
     }
     const responses: unknown[] = [
-      persona, { ...persona, enabled: false },
+      persona, { ...persona, icon: null }, { ...persona, enabled: false },
       { valid: true, error: null, statements: 1, longest_wait_milliseconds: 0 },
       [], [{ id: 'run', seq: 4, persona_id: 'persona/1', message_id: 'm', status: 'running', scheduled_at: 1, started_at: 2, completed_at: null, persona_revision: 1, error_message: null, subject: 'S' }],
     ]
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => responses.shift() }))
     vi.stubGlobal('fetch', fetchMock)
     const client = createHttpClient()
-    const created = await client.personas!.create({ name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true })
-    expect(created).toMatchObject({ ownerId: 'user', addressAccess: 'confirmed' })
+    const definition = { name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true }
+    const created = await client.personas!.create({ ...definition, icon: 'bot' })
+    expect(created).toMatchObject({ ownerId: 'user', addressAccess: 'confirmed', icon: 'bot' })
+    expect((await client.personas!.update('persona/1', { ...definition, icon: null })).icon).toBeNull()
     expect((await client.personas!.setEnabled('persona/1', false)).enabled).toBe(false)
     expect((await client.personas!.validate('open;')).statements).toBe(1)
     await client.personas!.listMessages('persona/1', { before: 9, limit: 20, query: 'subject contains "x"' })
@@ -998,12 +1000,14 @@ describe('HTTP adapter', () => {
     const calls = fetchMock.mock.calls as unknown as [string, RequestInit][]
     expect(calls.map(([path, init]) => [init?.method ?? 'GET', path])).toEqual([
       ['POST', '/api/v1/personas'],
+      ['PUT', '/api/v1/personas/persona%2F1'],
       ['PUT', '/api/v1/personas/persona%2F1/enabled'],
       ['POST', '/api/v1/personas/validate'],
       ['GET', '/api/v1/personas/persona%2F1/messages?before=9&limit=20&q=subject+contains+%22x%22'],
       ['GET', '/api/v1/personas/persona%2F1/executions?limit=5'],
     ])
-    expect(JSON.parse(String(calls[0]![1].body))).toEqual({ name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true })
-    expect(JSON.parse(String(calls[1]![1].body))).toEqual({ enabled: false })
+    expect(JSON.parse(String(calls[0]![1].body))).toEqual({ ...definition, icon: 'bot' })
+    expect(JSON.parse(String(calls[1]![1].body))).toEqual({ ...definition, icon: null })
+    expect(JSON.parse(String(calls[2]![1].body))).toEqual({ enabled: false })
   })
 })

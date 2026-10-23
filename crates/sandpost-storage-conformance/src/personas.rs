@@ -46,6 +46,7 @@ async fn create_persona(
                 owner_identifier: owner,
                 name: "Conformance".into(),
                 address: address.into(),
+                icon: None,
                 script: "open;".into(),
                 enabled,
                 created_at: 100,
@@ -137,6 +138,7 @@ pub async fn persona_definitions(storage: &dyn Storage) -> Result<(), Conformanc
             owner_identifier: second_owner.identifier,
             name: "Other".into(),
             address: address.clone(),
+            icon: None,
             script: String::new(),
             enabled: true,
             created_at: 1,
@@ -153,6 +155,7 @@ pub async fn persona_definitions(storage: &dyn Storage) -> Result<(), Conformanc
             owner_identifier: UserIdentifier::new(),
             name: "Orphan".into(),
             address: unique_address("orphan"),
+            icon: None,
             script: String::new(),
             enabled: true,
             created_at: 1,
@@ -178,6 +181,7 @@ pub async fn persona_definitions(storage: &dyn Storage) -> Result<(), Conformanc
             &PersonaUpdate {
                 name: other.name.clone(),
                 address: address.clone(),
+                icon: other.icon.clone(),
                 script: other.script.clone(),
                 enabled: false,
             },
@@ -198,6 +202,7 @@ pub async fn persona_definitions(storage: &dyn Storage) -> Result<(), Conformanc
                 &PersonaUpdate {
                     name: "Renamed".into(),
                     address: address.clone(),
+                    icon: persona.icon.clone(),
                     script: "wait 1s;".into(),
                     enabled: false,
                 },
@@ -227,6 +232,7 @@ pub async fn persona_definitions(storage: &dyn Storage) -> Result<(), Conformanc
                     &PersonaUpdate {
                         name: "x".into(),
                         address: unique_address("missing"),
+                        icon: None,
                         script: String::new(),
                         enabled: true,
                     },

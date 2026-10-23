@@ -92,6 +92,24 @@ ordered sequence of migration scripts.
   check), fails with `NotFound` for a missing message, and ignores a check older than the
   stored one. Reads are not user-scoped; callers authorize the message first. Physical message
   deletion cascades the check and its results. Running checks are application memory, not storage.
+- **Personas.** `Persona { identifier, owner_identifier, name, address, icon, script, enabled,
+  revision, created_at, updated_at }` belongs to one user (deleted with it). The normalized address
+  is unique across the installation (`DuplicatePersonaAddress`, also under concurrent creation and
+  on update); updates advance `revision` except for icon-only edits, which preserve execution
+  recovery. The optional `icon` is persisted presentation metadata; null selects the default and
+  enable/disable operations preserve the choice. `insert_message` schedules, atomically with the message,
+  one `pending` `PersonaExecution` per enabled Persona whose address equals an SMTP envelope
+  recipient ignoring ASCII case, unique per Persona and message, while that Persona has fewer than
+  `PERSONA_PENDING_EXECUTION_LIMIT` (1000) pending executions. Executions move through `pending`,
+  `running`, `completed`, `failed`, `cancelled`; `start_persona_execution` returns an already running
+  execution unchanged for resumption; `record_persona_execution_action` upserts a step by number;
+  `finish_persona_execution` changes only unfinished executions, closes steps still `started`, and
+  keeps the newest `PERSONA_EXECUTION_RETENTION` (500) terminal executions per Persona;
+  `discard_persona_execution` removes an execution without trace. `list_persona_executions` joins
+  each execution's message, applies the caller-supplied composed filter and the viewer's
+  tombstones, and returns the subject from the same snapshot. Executions cascade from their Persona
+  and from physical message deletion; deleting a Persona never deletes mail. Reads are not
+  user-scoped. See [personas.md](personas.md).
 - **SMTP Outbounds and routing.** `SmtpOutbound` holds connection settings, a recipient allowlist
   (JSON array) and `password_configured`; the password crosses the contract only encrypted
   (`SmtpOutboundCredential` is the only read returning it). Names are unique ignoring ASCII case

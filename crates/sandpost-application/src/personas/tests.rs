@@ -216,6 +216,7 @@ fn request(address: &str, script: &str) -> PersonaRequest {
     PersonaRequest {
         name: "Alice".into(),
         address: address.into(),
+        icon: None,
         script: script.into(),
         enabled: true,
     }
@@ -371,6 +372,101 @@ async fn users_manage_their_own_personas() {
         caller.get_persona(identifier).await,
         Err(ApplicationError::NotFound)
     ));
+}
+
+#[tokio::test]
+/**
+ * Missing icon fields remain compatible and icon edits allow interrupted executions to resume.
+ */
+async fn persona_icons_preserve_execution_state() {
+    let storage = storage().await;
+    let application = application(storage.clone(), settings()).await;
+    let member = user(&storage, GlobalRole::Member, MailAccess::All).await;
+    let caller = application.authorized(&session(&member));
+    let mut definition: PersonaRequest = serde_json::from_value(serde_json::json!({
+        "name": "Alice", "address": "alice@example.test", "script": "open;"
+    }))
+    .unwrap();
+    assert_eq!(definition.icon, None);
+    definition.icon = Some("unknown-future-icon".into());
+    let created = caller
+        .create_persona(definition.clone())
+        .await
+        .unwrap()
+        .persona;
+    assert_eq!(created.icon, definition.icon);
+    let mut legacy = serde_json::to_value(&created).unwrap();
+    legacy.as_object_mut().unwrap().remove("icon");
+    assert_eq!(
+        serde_json::from_value::<sandpost_core::Persona>(legacy)
+            .unwrap()
+            .icon,
+        None
+    );
+
+    deliver(&application, &storage, &["alice@example.test"], "Icon", "").await;
+    let pending = storage
+        .list_persona_executions_in_status(PersonaExecutionStatus::Pending, None, 1)
+        .await
+        .unwrap()
+        .remove(0);
+    let started = storage
+        .start_persona_execution(
+            pending.identifier,
+            crate::credentials::current_unix_seconds(),
+            created.revision,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    definition.icon = Some("bug".into());
+    let updated = caller
+        .update_persona(created.identifier, definition.clone())
+        .await
+        .unwrap()
+        .persona;
+    assert_eq!(updated.icon, definition.icon);
+    assert_eq!(updated.revision, created.revision);
+    assert_eq!(
+        storage
+            .get_persona_execution(started.identifier)
+            .await
+            .unwrap()
+            .unwrap()
+            .0,
+        started
+    );
+    let dispatcher = Dispatcher::start(&application);
+    let resumed = finished(&application, &member, created.identifier).await;
+    dispatcher.stop().await;
+    assert_eq!(resumed.execution.identifier, started.identifier);
+    assert_eq!(resumed.execution.status, PersonaExecutionStatus::Completed);
+    assert_eq!(resumed.execution.persona_revision, Some(created.revision));
+
+    definition.name = "Renamed".into();
+    for expected_revision in [created.revision + 1, created.revision + 2] {
+        let updated = caller
+            .update_persona(created.identifier, definition.clone())
+            .await
+            .unwrap();
+        assert_eq!(updated.persona.revision, expected_revision);
+    }
+
+    let mut invalid = definition.clone();
+    invalid.icon = Some("BadIcon".into());
+    assert!(matches!(
+        caller.update_persona(created.identifier, invalid).await,
+        Err(ApplicationError::InvalidInput(_))
+    ));
+    for enabled in [false, true] {
+        let toggled = caller
+            .set_persona_enabled(created.identifier, enabled)
+            .await
+            .unwrap()
+            .persona;
+        assert_eq!(toggled.icon, definition.icon);
+        assert_eq!(toggled.enabled, enabled);
+    }
 }
 
 #[tokio::test]
@@ -552,6 +648,12 @@ async fn invalid_definitions_are_rejected() {
     assert!(matches!(
         caller.create_persona(nameless).await,
         Err(ApplicationError::InvalidInput(_))
+    ));
+    let mut invalid_icon = request("icon@b.test", "open;");
+    invalid_icon.icon = Some("VenetianMask".into());
+    assert!(matches!(
+        caller.create_persona(invalid_icon).await,
+        Err(ApplicationError::InvalidInput(message)) if message.contains("icon must be a lowercase kebab-case")
     ));
     let validation = caller
         .validate_persona_script("wait 5s;\nclick link(\"a[\");")

@@ -3,7 +3,7 @@ import { useI18n } from 'vue-i18n'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ActivityIcon, CheckIcon, CirclePauseIcon, CirclePlayIcon, CopyIcon, EllipsisIcon, PencilIcon, PlusIcon, Trash2Icon, VenetianMaskIcon,
+  ActivityIcon, CheckIcon, CirclePauseIcon, CirclePlayIcon, CopyIcon, EllipsisIcon, PencilIcon, PlusIcon, Trash2Icon,
 } from '@lucide/vue'
 import type { Persona } from '@/api/contracts'
 import { describeError } from '@/utils/errors'
@@ -20,6 +20,7 @@ import { Spinner } from '@/components/ui/spinner'
 import BusyDialog from '@/components/BusyDialog.vue'
 import PersonaActivitySheet from '@/features/personas/PersonaActivitySheet.vue'
 import PersonaDialog from '@/features/personas/PersonaDialog.vue'
+import { folderIcon } from '@/features/mail/folderIcons'
 import { useCopy } from '@/composables/useCopy'
 import SidebarNavItem from './SidebarNavItem.vue'
 import { useWorkspace } from './workspace'
@@ -108,7 +109,7 @@ function openMessage(persona: Persona | null, id: string): void {
           v-for="folder in workspace.personaFolders.value"
           :key="folder.id"
           :to="{ name: 'mail', query: { folder: folder.id } }"
-          :icon="folder.persona?.enabled === false ? CirclePauseIcon : VenetianMaskIcon"
+          :icon="folder.persona?.enabled === false ? CirclePauseIcon : folderIcon(folder.persona?.icon, 'persona')"
           :label="folder.name"
           :hint="folder.persona?.enabled === false ? `${folder.address} · ${t('personas.disabled')}` : folder.address ?? undefined"
           :active="activeFolderId === folder.id"

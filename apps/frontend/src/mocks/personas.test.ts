@@ -29,6 +29,27 @@ describe('mock personas', () => {
     expect(await personas.list()).toEqual([])
   })
 
+  /**
+   * Persist icon selection and resets while keeping enable/disable changes independent.
+   */
+  it('keeps custom icons through create, edit, toggle and reset', async () => {
+    const personas = createMockPersonas(() => member, () => messages)
+    const definition = { name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true }
+    const created = await personas.create({ ...definition, icon: 'bot' })
+    expect(created.icon).toBe('bot')
+    expect((await personas.get(created.id)).icon).toBe('bot')
+    const disabled = await personas.setEnabled(created.id, false)
+    expect(disabled.icon).toBe('bot')
+    expect((await personas.update(created.id, { ...definition, icon: 'user-round' })).icon).toBe('user-round')
+    const edited = (await personas.list())[0]!
+    expect(edited.icon).toBe('user-round')
+    expect(edited.revision).toBe(disabled.revision + 1)
+    const reset = await personas.update(created.id, { ...definition, icon: null })
+    expect(reset.icon).toBeNull()
+    expect(reset.revision).toBe(edited.revision)
+    expect((await personas.get(created.id)).icon).toBeNull()
+  })
+
   it('approximates validation with positions', () => {
     expect(validateMockScript('wait 5s;\nopen;')).toMatchObject({ valid: true, statements: 2, longestWaitMilliseconds: 5000 })
     expect(validateMockScript('open;\n  jump;').error).toMatchObject({ line: 2, column: 3 })

@@ -117,6 +117,7 @@ async fn captured_mail_triggers_personas_end_to_end() {
         .create_persona(PersonaRequest {
             name: "Alice".into(),
             address: "alice@example.test".into(),
+            icon: None,
             script: "open; if (subject contains \"Verify\") { click link(text: \"Verify*\"); }"
                 .into(),
             enabled: true,

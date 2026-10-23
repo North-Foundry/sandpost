@@ -51,8 +51,9 @@ pub trait PersonaStorage: Send + Sync {
     ) -> Result<Vec<Persona>, StorageError>;
 
     /**
-     * Replace a Persona's mutable fields and advance its revision. Returns `None` for an unknown
-     * Persona; an address used by another Persona fails with `DuplicatePersonaAddress`.
+     * Replace a Persona's mutable fields and advance its revision except for icon-only edits.
+     * Returns `None` for an unknown Persona; an address used by another Persona fails with
+     * `DuplicatePersonaAddress`.
      */
     async fn update_persona(
         &self,

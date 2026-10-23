@@ -12,6 +12,8 @@ import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLab
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import BusyDialog from '@/components/BusyDialog.vue'
+import FolderIconPicker from '@/features/mail/FolderIconPicker.vue'
+import { folderIcon } from '@/features/mail/folderIcons'
 import { useWorkspace } from '@/features/shell/workspace'
 import PersonaScriptEditor from './PersonaScriptEditor.vue'
 
@@ -25,6 +27,7 @@ const emit = defineEmits<{ (event: 'saved', persona: Persona): void }>()
 const { t } = useI18n()
 const workspace = useWorkspace()
 const name = ref('')
+const icon = ref<string | null>(null)
 const address = ref('')
 const script = ref('')
 const scriptValid = ref<boolean | null>(null)
@@ -54,6 +57,7 @@ async function save(): Promise<void> {
   try {
     const saved = await workspace.savePersona(props.persona?.id ?? null, {
       name: name.value.trim(),
+      icon: icon.value,
       address: address.value.trim(),
       script: script.value,
       enabled: enabled.value,
@@ -68,6 +72,7 @@ async function save(): Promise<void> {
 watch(open, (isOpen) => {
   if (!isOpen) return
   name.value = props.persona?.name ?? ''
+  icon.value = props.persona?.icon ?? null
   address.value = props.persona?.address ?? ''
   script.value = props.persona?.script ?? 'wait 5s;\nopen;\n'
   enabled.value = props.persona?.enabled ?? true
@@ -96,6 +101,10 @@ watch(open, (isOpen) => {
           </Field>
         </div>
         <FieldDescription id="persona-address-hint" class="-mt-2">{{ t('personas.field.addressHint') }}</FieldDescription>
+        <Field :data-disabled="saving">
+          <FieldLabel for="persona-icon">{{ t('mail.icon.label') }}</FieldLabel>
+          <FolderIconPicker id="persona-icon" v-model="icon" :default-icon="folderIcon(null, 'persona')" :disabled="saving" />
+        </Field>
         <Alert v-if="accessNotice">
           <InfoIcon />
           <AlertDescription>{{ accessNotice }}</AlertDescription>

@@ -296,12 +296,12 @@ export interface SandpostDesktopPersonaBridge {
   /**
    * Create a Persona owned by the caller.
    */
-  create(input: { name: string; address: string; script: string; enabled: boolean }): Promise<WirePersona>
+  create(input: { name: string; address: string; icon?: string | null; script: string; enabled: boolean }): Promise<WirePersona>
 
   /**
    * Replace the caller's own Persona definition.
    */
-  update(id: string, input: { name: string; address: string; script: string; enabled: boolean }): Promise<WirePersona>
+  update(id: string, input: { name: string; address: string; icon?: string | null; script: string; enabled: boolean }): Promise<WirePersona>
 
   /**
    * Enable or disable a Persona.

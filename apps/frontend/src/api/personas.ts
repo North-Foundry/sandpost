@@ -143,6 +143,7 @@ export function normalizePersona(representation: WirePersona): Persona {
     ownerId: String(representation.owner_id),
     name: String(representation.name),
     address: String(representation.address),
+    icon: representation.icon ?? null,
     script: String(representation.script),
     enabled: Boolean(representation.enabled),
     revision: Number(representation.revision),
@@ -175,6 +176,6 @@ export function normalizePersonaScriptValidation(representation: WirePersonaScri
 /**
  * Build the Rust Persona request body.
  */
-export function personaWire(input: PersonaInput): { name: string; address: string; script: string; enabled: boolean } {
-  return { name: input.name, address: input.address, script: input.script, enabled: input.enabled }
+export function personaWire(input: PersonaInput): { name: string; address: string; icon: string | null; script: string; enabled: boolean } {
+  return { name: input.name, address: input.address, icon: input.icon ?? null, script: input.script, enabled: input.enabled }
 }

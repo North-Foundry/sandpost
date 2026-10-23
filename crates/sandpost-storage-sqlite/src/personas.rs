@@ -18,7 +18,7 @@ use sandpost_storage::{
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 
 const PERSONA_COLUMNS: &str =
-    "identifier,owner_identifier,name,address,script,enabled,revision,created_at,updated_at";
+    "identifier,owner_identifier,name,address,icon,script,enabled,revision,created_at,updated_at";
 
 const EXECUTION_COLUMNS: &str = "execution.sequence,execution.identifier,execution.persona_identifier,execution.message_identifier,execution.status,execution.scheduled_at,execution.started_at,execution.completed_at,execution.persona_revision,execution.error_message";
 
@@ -51,6 +51,7 @@ fn decode_persona(row: SqliteRow) -> Result<Persona, sqlx::Error> {
             .map_err(|_| invalid_column("owner_identifier"))?,
         name: row.try_get("name")?,
         address: row.try_get("address")?,
+        icon: row.try_get("icon")?,
         script: row.try_get("script")?,
         enabled: enabled != 0,
         revision: unsigned(row.try_get("revision")?, "revision")?,
@@ -202,12 +203,13 @@ async fn create_persona(
         return Err(StorageError::DuplicatePersonaAddress);
     }
     sqlx::query(
-        "INSERT INTO personas(identifier,owner_identifier,name,address,script,enabled,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,1,?7,?7)",
+        "INSERT INTO personas(identifier,owner_identifier,name,address,icon,script,enabled,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8,?8)",
     )
     .bind(persona.identifier.to_string())
     .bind(persona.owner_identifier.to_string())
     .bind(&persona.name)
     .bind(&persona.address)
+    .bind(&persona.icon)
     .bind(&persona.script)
     .bind(i64::from(persona.enabled))
     .bind(persona.created_at)
@@ -222,7 +224,7 @@ async fn create_persona(
 }
 
 /**
- * Replace a Persona's mutable fields and advance its revision.
+ * Replace a Persona's mutable fields, preserving its execution revision for icon-only edits.
  */
 async fn update_persona(
     storage: &SqliteStorage,
@@ -235,21 +237,28 @@ async fn update_persona(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .storage()?;
-    if read_persona(&mut transaction, identifier).await?.is_none() {
+    let Some(previous) = read_persona(&mut transaction, identifier).await? else {
         return Ok(None);
-    }
+    };
     if address_taken(&mut transaction, &update.address, Some(identifier)).await? {
         return Err(StorageError::DuplicatePersonaAddress);
     }
+    let icon_only_change = previous.icon != update.icon
+        && previous.name == update.name
+        && previous.address == update.address
+        && previous.script == update.script
+        && previous.enabled == update.enabled;
     sqlx::query(
-        "UPDATE personas SET name=?2,address=?3,script=?4,enabled=?5,revision=revision+1,updated_at=?6 WHERE identifier=?1",
+        "UPDATE personas SET name=?2,address=?3,icon=?4,script=?5,enabled=?6,revision=revision+?8,updated_at=?7 WHERE identifier=?1",
     )
     .bind(identifier.to_string())
     .bind(&update.name)
     .bind(&update.address)
+    .bind(&update.icon)
     .bind(&update.script)
     .bind(i64::from(update.enabled))
     .bind(updated_at)
+    .bind(i64::from(!icon_only_change))
     .execute(&mut *transaction)
     .await
     .map_err(persona_write_error)?;

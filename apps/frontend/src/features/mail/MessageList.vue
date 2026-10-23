@@ -177,7 +177,7 @@ const canonicalSearch = computed(() => looksLikeCanonicalQuery(props.search))
  */
 const inTrash = computed(() => !props.search && props.folder?.kind === 'trash')
 const title = computed(() => props.search ? t('mail.list.searchResults') : props.folder?.name ?? t('mail.list.inbox'))
-const icon = computed(() => props.search ? SearchIcon : folderIcon(props.folder?.view?.icon ?? props.folder?.manual?.icon, props.folder?.kind ?? 'inbox'))
+const icon = computed(() => props.search ? SearchIcon : folderIcon(props.folder?.view?.icon ?? props.folder?.manual?.icon ?? props.folder?.persona?.icon, props.folder?.kind ?? 'inbox'))
 
 /**
  * Only a Persona's owner edits it; administrators may still read its activity.

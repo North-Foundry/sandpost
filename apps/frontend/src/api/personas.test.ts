@@ -46,6 +46,22 @@ describe('persona normalization', () => {
   it('converts validation results and request bodies', () => {
     expect(normalizePersonaScriptValidation({ valid: false, error: { message: 'unknown instruction `jump`', position: 6, line: 2, column: 1 }, statements: null, longest_wait_milliseconds: null }))
       .toEqual({ valid: false, error: { message: 'unknown instruction `jump`', position: 6, line: 2, column: 1 }, statements: null, longestWaitMilliseconds: null })
-    expect(personaWire({ name: 'A', address: 'a@b.test', script: 'open;', enabled: true })).toEqual({ name: 'A', address: 'a@b.test', script: 'open;', enabled: true })
+    expect(personaWire({ name: 'A', address: 'a@b.test', script: 'open;', enabled: true })).toEqual({ name: 'A', address: 'a@b.test', icon: null, script: 'open;', enabled: true })
+  })
+
+  /**
+   * Preserve custom icon IDs across transport conversion and accept older responses without an icon.
+   */
+  it('round-trips Persona icons and explicit resets', () => {
+    const definition = { name: 'Alice', address: 'alice@example.test', script: 'open;', enabled: true }
+    const wire: WirePersona = {
+      ...definition, id: 'persona-1', owner_id: 'user-1', revision: 1, created_at: 1, updated_at: 1,
+      address_access: 'confirmed', last_execution: null,
+    }
+    expect(normalizePersona(wire).icon).toBeNull()
+    for (const icon of ['bot', 'future-icon', null]) {
+      expect(normalizePersona({ ...wire, icon }).icon).toBe(icon)
+      expect(personaWire({ ...definition, icon }).icon).toBe(icon)
+    }
   })
 })

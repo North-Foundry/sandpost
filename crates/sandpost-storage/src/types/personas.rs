@@ -8,6 +8,7 @@ pub struct NewPersona {
     pub owner_identifier: UserIdentifier,
     pub name: String,
     pub address: String,
+    pub icon: Option<String>,
     pub script: String,
     pub enabled: bool,
     pub created_at: i64,
@@ -18,6 +19,7 @@ pub struct NewPersona {
 pub struct PersonaUpdate {
     pub name: String,
     pub address: String,
+    pub icon: Option<String>,
     pub script: String,
     pub enabled: bool,
 }

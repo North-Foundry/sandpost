@@ -1271,6 +1271,7 @@ export interface Persona {
   ownerId: string
   name: string
   address: string
+  icon?: string | null
   script: string
   enabled: boolean
   revision: number
@@ -1287,6 +1288,7 @@ export interface Persona {
 export interface PersonaInput {
   name: string
   address: string
+  icon?: string | null
   script: string
   enabled: boolean
 }

@@ -68,6 +68,7 @@ fn persona(owner: sandpost_core::UserIdentifier, address: &str) -> NewPersona {
         owner_identifier: owner,
         name: "Alice".into(),
         address: address.into(),
+        icon: None,
         script: "open;".into(),
         enabled: true,
         created_at: 1,
@@ -109,8 +110,7 @@ async fn concurrent_creation_cannot_bypass_address_uniqueness() {
 }
 
 /**
- * The schema stores optional icons and refuses duplicate and unnormalized addresses,
- * independent of the Rust code.
+ * The schema refuses duplicate and unnormalized addresses independent of the Rust code.
  */
 #[tokio::test]
 async fn schema_enforces_normalized_unique_addresses() {
@@ -131,19 +131,6 @@ async fn schema_enforces_normalized_unique_addresses() {
         .execute(&mut connection)
         .await
         .unwrap();
-    for icon in [None, Some("venetian-mask"), None] {
-        sqlx::query("UPDATE personas SET icon=?1 WHERE address='alice@example.test'")
-            .bind(icon)
-            .execute(&mut connection)
-            .await
-            .unwrap();
-        let stored: Option<String> =
-            sqlx::query_scalar("SELECT icon FROM personas WHERE address='alice@example.test'")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap();
-        assert_eq!(stored.as_deref(), icon);
-    }
     for rejected in [
         "alice@example.test",
         "Alice@Example.test",
@@ -158,6 +145,94 @@ async fn schema_enforces_normalized_unique_addresses() {
             "{rejected:?} must be refused by the schema"
         );
     }
+}
+
+/**
+ * Persist Persona icons through the storage API, preserve them across enable changes, and reset them.
+ */
+#[tokio::test]
+async fn icon_persists_through_create_update_and_reset() {
+    let directory = TestDirectory::new();
+    let path = directory.database();
+    let storage = SqliteStorage::open(&path).await.unwrap();
+    let owner = member(&storage, "owner@example.test").await;
+    let mut definition = persona(owner.identifier, "alice@example.test");
+    definition.icon = Some("venetian-mask".into());
+    let created = storage.create_persona(&definition).await.unwrap();
+    assert_eq!(created.icon.as_deref(), Some("venetian-mask"));
+    assert_eq!(
+        storage.get_persona(created.identifier).await.unwrap(),
+        Some(created.clone())
+    );
+
+    for icon in [Some("bug"), None, Some("venetian-mask")] {
+        let updated = storage
+            .update_persona(
+                created.identifier,
+                &sandpost_storage::PersonaUpdate {
+                    name: created.name.clone(),
+                    address: created.address.clone(),
+                    icon: icon.map(String::from),
+                    script: created.script.clone(),
+                    enabled: created.enabled,
+                },
+                2,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.icon.as_deref(), icon);
+        assert_eq!(updated.revision, created.revision);
+        assert_eq!(updated.updated_at, 2);
+        assert_eq!(
+            storage.get_persona(created.identifier).await.unwrap(),
+            Some(updated)
+        );
+    }
+
+    let disabled = storage
+        .update_persona(
+            created.identifier,
+            &sandpost_storage::PersonaUpdate {
+                name: created.name.clone(),
+                address: created.address.clone(),
+                icon: created.icon.clone(),
+                script: created.script.clone(),
+                enabled: false,
+            },
+            2,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(disabled.icon.as_deref(), Some("venetian-mask"));
+    assert_eq!(disabled.revision, created.revision + 1);
+    assert!(!disabled.enabled);
+
+    let reset = storage
+        .update_persona(
+            created.identifier,
+            &sandpost_storage::PersonaUpdate {
+                name: disabled.name.clone(),
+                address: disabled.address.clone(),
+                icon: None,
+                script: disabled.script.clone(),
+                enabled: true,
+            },
+            3,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.icon, None);
+    storage.close().await;
+
+    let reopened = SqliteStorage::open(&path).await.unwrap();
+    assert_eq!(
+        reopened.get_persona(created.identifier).await.unwrap(),
+        Some(reset)
+    );
+    reopened.close().await;
 }
 
 /**

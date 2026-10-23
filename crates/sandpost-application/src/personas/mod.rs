@@ -41,6 +41,8 @@ pub const MAXIMUM_PERSONAS_PER_USER: usize = 50;
 pub struct PersonaRequest {
     pub name: String,
     pub address: String,
+    #[serde(default)]
+    pub icon: Option<String>,
     pub script: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -207,6 +209,7 @@ impl AuthorizedApplication {
                 owner_identifier: self.user_identifier,
                 name: request.name,
                 address: request.address,
+                icon: request.icon,
                 script: request.script,
                 enabled: request.enabled,
                 created_at: current_unix_seconds(),
@@ -242,6 +245,7 @@ impl AuthorizedApplication {
                 &PersonaUpdate {
                     name: request.name,
                     address: request.address,
+                    icon: request.icon,
                     script: request.script,
                     enabled: request.enabled,
                 },
@@ -283,6 +287,7 @@ impl AuthorizedApplication {
                 &PersonaUpdate {
                     name: persona.name,
                     address: persona.address,
+                    icon: persona.icon,
                     script: persona.script,
                     enabled,
                 },
@@ -467,6 +472,7 @@ impl AuthorizedApplication {
         request: PersonaRequest,
     ) -> Result<PersonaRequest, ApplicationError> {
         let name = validated_name(&request.name)?;
+        crate::validate_icon(&request.icon)?;
         let address = normalize_inbox_address(&request.address).ok_or_else(|| {
             ApplicationError::InvalidInput(
                 "address must be a valid ASCII email address with a 1 to 64 character dot-atom local part"
@@ -489,6 +495,7 @@ impl AuthorizedApplication {
         Ok(PersonaRequest {
             name,
             address,
+            icon: request.icon,
             script: request.script,
             enabled: request.enabled,
         })

@@ -17,10 +17,13 @@ pub struct Persona {
     pub owner_identifier: UserIdentifier,
     pub name: String,
     pub address: String,
+    /// Optional Lucide icon name used to identify the Persona in the interface.
+    #[serde(default)]
+    pub icon: Option<String>,
     /// PersonaScript source, validated before it was stored.
     pub script: String,
     pub enabled: bool,
-    /// Increases with every change, so an execution can tell whether its script changed.
+    /// Increases with definition changes other than icon-only edits, for execution recovery.
     pub revision: u64,
     /// Unix seconds, UTC.
     pub created_at: i64,

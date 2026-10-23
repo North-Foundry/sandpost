@@ -852,6 +852,7 @@ async fn persona_upgrade_rolls_back_cleanly() {
             owner_identifier: owner,
             name: "Alice".into(),
             address: "alice@example.test".into(),
+            icon: None,
             script: "open;".into(),
             enabled: true,
             created_at: 4,
